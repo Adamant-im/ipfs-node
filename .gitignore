@@ -1,0 +1,4 @@
+node_modules
+blockstore/
+datastore/
+.idea

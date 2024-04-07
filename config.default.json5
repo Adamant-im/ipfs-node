@@ -1,0 +1,10 @@
+{
+  nodes: [
+    // ipfs0
+    "/ip4/5.161.75.77/tcp/4001/p2p/12D3KooWE849ZdcQhLP2yE4fbmU89APmjYXJPeuNChNUBGgeJJYe",
+    // ipf1
+    "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWBiqmfA32nZ2KGa8tsqigVpdY9oJB7GfrXvfgySDajpiZ",
+    // ipf2
+    // ipf3
+  ],
+}
