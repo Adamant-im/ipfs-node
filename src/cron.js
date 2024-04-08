@@ -13,7 +13,7 @@ export async function autoPeeringHandler() {
     `[Cron] Running "autoPeering" cronjob. Current node peerId: ${helia.libp2p.peerId}`,
   );
 
-  const nodes = getNodesList([peerId]);
+  const nodes = getNodesList([peerId.toString()]);
   console.log(
     "Peering nodes list:",
     nodes.map((node) => node.name),
