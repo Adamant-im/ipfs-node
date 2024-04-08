@@ -1,10 +1,16 @@
 {
   nodes: [
-    // ipf1
-    "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWBiqmfA32nZ2KGa8tsqigVpdY9oJB7GfrXvfgySDajpiZ",
-    // ipf2
-    "/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWCkyBk2qneNhVJhhNoFat4foTQt877P28Q3VwFHcmYLw1",
-    // ipf3
-    "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWGmrZg4iEV8zX3CfiitGakNDKgrDjnphbZSkW2QPW1dbD"
+    {
+      name: "ipf1",
+      multiaddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWBiqmfA32nZ2KGa8tsqigVpdY9oJB7GfrXvfgySDajpiZ"
+    },
+    {
+      name: "ipf2",
+      multiaddr: "/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWCkyBk2qneNhVJhhNoFat4foTQt877P28Q3VwFHcmYLw1",
+    },
+    {
+      name: "ipf3",
+      multiaddr: "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWGmrZg4iEV8zX3CfiitGakNDKgrDjnphbZSkW2QPW1dbD"
+    }
   ],
 }

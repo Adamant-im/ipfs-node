@@ -12,6 +12,7 @@ import { multiaddr } from "@multiformats/multiaddr";
 // import { libp2p } from "./libp2p.js";
 import { blockstore, datastore } from "./store.js";
 import config from "./config.js";
+import { getNodesList } from './utils.js';
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
@@ -55,7 +56,7 @@ const helia = await createHelia({
       /**
        * A list of multiaddrs that will always be allowed (except if they are in the deny list) to open connections to this node even if we've reached maxConnections
        */
-      allow: config.nodes
+      allow: getNodesList()
     },
   },
 });
