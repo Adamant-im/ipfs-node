@@ -46,6 +46,7 @@
     "datastore-core": "^9.2.9",
     "datastore-fs": "^9.1.8",
     "express": "^4.19.2",
+    "file-type": "^19.0.0",
     "helia": "^4.1.0",
     "it-last": "^3.0.4",
     "json5": "^2.2.3",
