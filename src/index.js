@@ -218,20 +218,38 @@ app.get("/libp2p/status", async (req, res) => {
 
 app.get("/file/:cid", async (req, res) => {
   const cid = CID.parse(req.params.cid);
-  const file = ifs.cat(cid);
 
-  const chunks = [];
-  for await (const chunk of file) {
-    chunks.push(chunk);
+  const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Operation timed out')), 30000)
+  );
+
+  try {
+    const filePromise = (async () => {
+      const file = ifs.cat(cid);
+      const chunks = [];
+      for await (const chunk of file) {
+        chunks.push(chunk);
+      }
+      return Buffer.concat(chunks);
+    })();
+
+    const result = await Promise.race([filePromise, timeoutPromise]);
+
+    // If filePromise wins the race, send the file
+    res.set("Content-Type", "image/jpeg");
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message === 'Operation timed out') {
+      res.status(408).send({
+        error: 'Can not find requested CID. Operation timed out.',
+      });
+    } else {
+      res.status(500).send({
+        error: 'Internal Server Error. Check the logs for details.'
+      });
+    }
   }
-
-  res.set("Content-Type", "image/jpeg");
-  res.send(Buffer.concat(chunks));
-
-  // res.send({
-  //   cid: cid?.toString(),
-  //   file
-  // });
 });
 
 app.get("/pins", async (req, res) => {
