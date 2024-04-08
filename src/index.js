@@ -220,7 +220,7 @@ app.get("/file/:cid", async (req, res) => {
   const cid = CID.parse(req.params.cid);
 
   const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Operation timed out')), 30000)
+    setTimeout(() => reject(new Error("Operation timed out")), 30000),
   );
 
   try {
@@ -240,13 +240,13 @@ app.get("/file/:cid", async (req, res) => {
     res.send(result);
   } catch (error) {
     console.error(error);
-    if (error.message === 'Operation timed out') {
+    if (error.message === "Operation timed out") {
       res.status(408).send({
-        error: 'Can not find requested CID. Operation timed out.',
+        error: "Can not find requested CID. Operation timed out.",
       });
     } else {
       res.status(500).send({
-        error: 'Internal Server Error. Check the logs for details.'
+        error: "Internal Server Error. Check the logs for details.",
       });
     }
   }
@@ -297,92 +297,51 @@ app.get("/pins/isPinned/:cid", async (req, res) => {
   });
 });
 
-app.post("/file/upload", upload.single("image"), async (req, res) => {
-  if (!req.file) {
+app.post("/file/upload", upload.array("files", 5), async (req, res) => {
+  if (!req.files) {
     res.statusCode = 400;
-    return res.send("No file uploaded.");
+    return res.send({
+      error: "No file uploaded",
+    });
   }
+  console.log("req.files", req.files);
 
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  const uploadDir = path.join(__dirname, "uploads"); // Directory where files will be uploaded
+  const cids = [];
+  for (const file of req.files) {
+    console.log(`Adding ${file.originalname} to IPFS`);
 
-  const { buffer, originalname } = req.file;
+    const { buffer, originalname } = file;
 
-  const cid = await ifs.addFile({
-    path: `/${originalname}`,
-    content: buffer,
-  });
-  console.log("Successfully added file", cid.toString());
+    const cid = await ifs.addFile({
+      path: `/${originalname}`,
+      content: buffer,
+    });
+    console.log("Successfully added file", cid.toString());
+    cids.push(cid);
 
-  const isPinned = await helia.pins.isPinned(cid);
-  if (isPinned) {
-    console.log("File already pinned", cid.toString());
-  } else {
-    // Pin the file
-    for await (const pinned of helia.pins.add(cid)) {
-      console.log("Filed pinned", pinned);
+    const isPinned = await helia.pins.isPinned(cid);
+    if (isPinned) {
+      console.log("File already pinned", cid.toString());
+    } else {
+      // Pin the file
+      for await (const pinned of helia.pins.add(cid)) {
+        console.log("Filed pinned", pinned);
+      }
     }
+
+    // Tell the network we can provide content for the passed CID
+    await helia.libp2p.services.dht.provide(cid);
+    console.log("Provided CID via DHT", cid.toString());
+
+    // console.log("Provide");
+    // void helia.routing.provide(cid);
+    // console.log("Provide DONE");
   }
-
-  // Tell the network we can provide content for the passed CID
-  await helia.libp2p.services.dht.provide(cid);
-  console.log("Provided CID via DHT", cid.toString());
-
-  // console.log("Provide");
-  // void helia.routing.provide(cid);
-  // console.log("Provide DONE");
 
   res.send({
-    originalname,
-    cid: cid.toString(),
+    filesNames: req.files.map((file) => file.originalname),
+    cids: cids.map((cid) => cid.toString()),
   });
-
-  // for await (const data of helia.pins.add(cid)) {
-  //   console.log('pin data', data)
-  // }
-  // try {
-  //   for await (const data of helia.libp2p.services.dht.provide(cid)) {
-  //     console.log('provide data', data)
-  //   }
-  // } catch (err) {
-  //   console.log('provide error', err)
-  // }
-  //
-  // try {
-  //   for await (const provs of helia.libp2p.services.dht.findProviders(cid)) {
-  //     console.log('found providers', provs)
-  //   }
-  // } catch (err) {
-  //   console.log('find providers error', err)
-  // }
-
-  // Provide the CIDs you create (once you're connected to a peer)
-  try {
-    // @ts-ignore
-    // for await (const event of helia.libp2p.services.dht.provide(cid)) {
-    //   console.log("PROVIDE", event);
-    // }
-  } catch (err) {
-    console.log("An error occured while providing", err);
-  }
-
-  // fs.writeFile(
-  //   path.join(uploadDir, "example.jpg"),
-  //     buffer,
-  //   "base64",
-  //   (err) => {
-  //     if (err) {
-  //       res.statusCode = 500;
-  //     }
-  //   },
-  // );
-
-  // res.send({
-  //   originalname,
-  //   cid: cid.toString(),
-  // });
-  console.log("DONE");
 });
 
 app.post("/test", async (req, res) => {
