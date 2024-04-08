@@ -12,7 +12,6 @@ import { multiaddr } from "@multiformats/multiaddr";
 // import { libp2p } from "./libp2p.js";
 import { blockstore, datastore } from "./store.js";
 import config from "./config.js";
-console.log("confi", config);
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
