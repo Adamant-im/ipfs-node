@@ -2,7 +2,7 @@
   nodes: [
     {
       name: "ipfs1",
-      multiaddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWBiqmfA32nZ2KGa8tsqigVpdY9oJB7GfrXvfgySDajpiZ"
+      multiaddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWDFkrfLKMt46J5uh77SpNkxhxtSURqDnKY7Bnfr9etSQi"
     },
     {
       name: "ipfs2",
