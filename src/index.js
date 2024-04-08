@@ -56,10 +56,7 @@ const helia = await createHelia({
       /**
        * A list of multiaddrs that will always be allowed (except if they are in the deny list) to open connections to this node even if we've reached maxConnections
        */
-      allow: [
-        "/ip4/5.161.75.77/tcp/4001/p2p/12D3KooWE849ZdcQhLP2yE4fbmU89APmjYXJPeuNChNUBGgeJJYe", // tweetbot
-        "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWBiqmfA32nZ2KGa8tsqigVpdY9oJB7GfrXvfgySDajpiZ", // ipf1
-      ],
+      allow: config.nodes
     },
   },
 });
