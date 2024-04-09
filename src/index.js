@@ -1,6 +1,6 @@
 import { unixfs } from "@helia/unixfs";
 import { peerIdFromString } from "@libp2p/peer-id";
-import { fileTypeFromBuffer } from 'file-type';
+import { fileTypeFromBuffer } from "file-type";
 import { CID } from "multiformats/cid";
 import path from "node:path";
 import express from "express";
@@ -238,7 +238,10 @@ app.get("/file/:cid", async (req, res) => {
 
     // If filePromise wins the race, send the file
     const fileType = await fileTypeFromBuffer(result);
-    res.set("Content-Type", fileType.mime);
+    if (fileType) {
+      res.set("Content-Type", fileType.mime);
+    }
+
     res.send(result);
   } catch (error) {
     console.error(error);
