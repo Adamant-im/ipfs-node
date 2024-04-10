@@ -75,6 +75,29 @@ app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
+app.get("/routing/findProviders/:cid", async (req, res) => {
+  try {
+    const cid = CID.parse(req.params.cid);
+
+    const providers = [];
+    for await (const provider of helia.routing.findProviders(cid)) {
+      console.log(
+        `Found provider of CID:${cid.toString()}, PeerId:${provider.id.toString()}`,
+      );
+      providers.push(provider.id.toString());
+    }
+
+    res.send({
+      providers,
+    });
+  } catch (err) {
+    res.send({
+      error: err.message,
+    });
+    console.error(err);
+  }
+});
+
 app.get("/cron/autopeering", async (req, res) => {
   const successPeers = await autoPeeringHandler();
 
