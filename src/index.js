@@ -361,9 +361,9 @@ app.post("/file/upload", upload.array("files", 5), async (req, res) => {
     await helia.libp2p.services.dht.provide(cid);
     console.log("Provided CID via DHT", cid.toString());
 
-    // console.log("Provide");
-    // void helia.routing.provide(cid);
-    // console.log("Provide DONE");
+    console.log(`Routing: Providing ${cid}`);
+    void helia.routing.provide(cid);
+    console.log("Routing: Provide DONE");
   }
 
   res.send({
