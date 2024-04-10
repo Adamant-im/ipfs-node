@@ -13,9 +13,9 @@ import { helia } from "./helia.js";
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
-console.log("Created Helia instance");
-await helia.libp2p.services.dht.setMode("server");
-console.log("Switched DHT to server mode");
+// console.log("Created Helia instance");
+// await helia.libp2p.services.dht.setMode("server");
+// console.log("Switched DHT to server mode");
 
 helia.libp2p.getMultiaddrs().forEach((addr) => {
   console.log(`Listening on ${addr.toString()}`);
