@@ -7,9 +7,11 @@ import express from "express";
 import { fileURLToPath } from "url";
 import multer from "multer";
 import { multiaddr } from "@multiformats/multiaddr";
+import { createVerifiedFetch } from "@helia/verified-fetch";
 import { autoPeeringHandler } from "./cron.js";
 import { helia } from "./helia.js";
 
+const verifiedFetch = await createVerifiedFetch(helia);
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
@@ -248,24 +250,20 @@ app.get("/file/:cid", async (req, res) => {
   );
 
   try {
-    const filePromise = (async () => {
-      const file = ifs.cat(cid);
-      const chunks = [];
-      for await (const chunk of file) {
-        chunks.push(chunk);
-      }
-      return Buffer.concat(chunks);
-    })();
+    const filePromise = await verifiedFetch(`ipfs://${cid}`, {
+      headers: req.headers,
+    });
 
     const result = await Promise.race([filePromise, timeoutPromise]);
+    const data = Buffer.from(await result.arrayBuffer());
 
     // If filePromise wins the race, send the file
-    const fileType = await fileTypeFromBuffer(result);
+    const fileType = await fileTypeFromBuffer(data);
     if (fileType) {
       res.set("Content-Type", fileType.mime);
     }
 
-    res.send(result);
+    res.send(data);
   } catch (error) {
     console.error(error);
     if (error.message === "Operation timed out") {
