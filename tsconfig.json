@@ -1,12 +1,20 @@
 {
   "compilerOptions": {
+    "allowJs": false,
+    "checkJs": false,
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "lib": ["ES2022", "DOM"],
     "module": "ES2022",
-    "target": "ES2021",
-    "moduleResolution": "node",
-    "allowSyntheticDefaultImports": true,
-    // only for development
-    "strict": false,
-    "strictNullChecks": true,
-    "skipLibCheck": true
-  }
+    "moduleResolution": "Bundler",
+    "sourceMap": true,
+    "target": "ES2022",
+    "noImplicitAny": false,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "outDir": "./dist"
+  },
+  "exclude": ["node_modules"],
+  "include": ["src/index.ts", "src/**/*.ts"]
 }

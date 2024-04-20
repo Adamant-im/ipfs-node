@@ -2,15 +2,16 @@
   nodes: [
     {
       name: "ipfs1",
-      multiaddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWDFkrfLKMt46J5uh77SpNkxhxtSURqDnKY7Bnfr9etSQi"
+      multiAddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWDFkrfLKMt46J5uh77SpNkxhxtSURqDnKY7Bnfr9etSQi"
     },
     {
       name: "ipfs2",
-      multiaddr: "/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWCkyBk2qneNhVJhhNoFat4foTQt877P28Q3VwFHcmYLw1",
+      multiAddr: "/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWCkyBk2qneNhVJhhNoFat4foTQt877P28Q3VwFHcmYLw1",
     },
     {
       name: "ipfs3",
-      multiaddr: "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWGmrZg4iEV8zX3CfiitGakNDKgrDjnphbZSkW2QPW1dbD"
+      multiAddr: "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWGmrZg4iEV8zX3CfiitGakNDKgrDjnphbZSkW2QPW1dbD"
     }
   ],
+  storeFolder: '.adm-ipfs'
 }
