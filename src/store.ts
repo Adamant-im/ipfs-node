@@ -13,7 +13,7 @@ export const datastore = new FsDatastore(join(userHomeDir, config.storeFolder, '
 
 const filestorePath = join(userHomeDir, config.storeFolder, 'filestore')
 if (!existsSync(filestorePath)) {
-  mkdirSync(filestorePath)
+  mkdirSync(filestorePath, { recursive: true })
 }
 export const filestore = multer.diskStorage({
   destination: function (req, file, cb) {
