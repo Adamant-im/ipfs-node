@@ -1,7 +1,7 @@
 import { bootstrap } from '@libp2p/bootstrap'
 import { createHelia } from 'helia'
-import { blockstore, datastore } from './store'
-import { getAllowNodesMultiaddrs } from './utils/utils'
+import { blockstore, datastore } from './store.js'
+import { getAllowNodesMultiaddrs } from './utils/utils.js'
 
 export const helia = await createHelia({
   datastore,

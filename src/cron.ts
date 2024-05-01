@@ -1,7 +1,7 @@
 import { CronJob } from 'cron'
-import { helia } from './helia'
-import { getNodesList } from './utils/utils'
-import { pino } from './utils/logger'
+import { helia } from './helia.js'
+import { getNodesList } from './utils/utils.js'
+import { pino } from './utils/logger.js'
 
 /**
  * Auto-peering between ADM IPFS nodes.

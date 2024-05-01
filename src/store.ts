@@ -3,7 +3,7 @@ import { FsDatastore } from 'datastore-fs'
 import { homedir } from 'os'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import config from './config'
+import config from './config.js'
 import multer from 'multer'
 
 const userHomeDir = homedir()

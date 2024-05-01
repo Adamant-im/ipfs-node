@@ -1,7 +1,7 @@
 import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
-import config from '../config'
-import { NodeWithPeerId } from './types'
+import config from '../config.js'
+import { ConfigNode, NodeWithPeerId } from './types.js'
 
 /**
  * Get peerId from multiaddr string
@@ -10,7 +10,7 @@ import { NodeWithPeerId } from './types'
  */
 export function peerIdFromMultiaddr(multiAddr: string) {
   const addrParts = multiAddr.split('/')
-  let addr
+  let addr: string | undefined
   //  parse multiAddr like this: "/ip4/38.143.66.227/tcp/4001/p2p/12D3KooWCqayYQ5B8bF6NAaDgbZRcE9eyQFEdSYGjoSadBt1oTVT/p2p-circuit"
   addrParts.forEach((part, index) => {
     if (part === 'p2p') {
@@ -24,7 +24,7 @@ export function peerIdFromMultiaddr(multiAddr: string) {
 }
 
 export function parseNodes(): NodeWithPeerId[] {
-  return config.nodes.map((node) => ({
+  return config.nodes.map((node: ConfigNode) => ({
     name: node.name,
     multiAddr: multiaddr(node.multiAddr),
     peerId: peerIdFromMultiaddr(node.multiAddr)

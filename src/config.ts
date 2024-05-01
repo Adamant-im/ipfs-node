@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import JSON5 from 'json5'
-import { pino } from './utils/logger'
+import { pino } from './utils/logger.js'
 
 const currDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(currDir, '..')

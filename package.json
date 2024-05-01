@@ -5,11 +5,9 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "build": "npx rimraf dist; run-p -s build:*",
-    "build:main": "babel -x .ts -d dist src",
-    "build:types": "tsc",
+    "build": "npx rimraf dist; tsc",
     "start": "node dist/index.js",
-    "dev": "npm run build; node dist/index.js",
+    "dev": "npm run build; nodemon",
     "prepare": "husky",
     "bump-patch": "npm version patch",
     "bump-minor": "npm version minor",
@@ -38,9 +36,6 @@
     "rimraf": "^5.0.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.3",
-    "@babel/cli": "^7.22.15",
-    "@babel/preset-typescript": "^7.22.15",
-    "babel-plugin-add-import-extension": "^1.6.0",
     "npm-run-all": "^4.1.5"
   },
   "dependencies": {

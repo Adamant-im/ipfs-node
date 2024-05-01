@@ -5,18 +5,18 @@ import { CID } from 'multiformats/cid'
 import express from 'express'
 import multer from 'multer'
 import { Multiaddr, multiaddr } from '@multiformats/multiaddr'
-import { autoPeeringHandler, autoPeering } from './cron'
-import { helia } from './helia'
+import { autoPeeringHandler, autoPeering } from './cron.js'
+import { helia } from './helia.js'
 import { Pin } from 'helia'
-import { flatFiles } from './utils/utils'
+import { flatFiles } from './utils/utils.js'
 import { Request, Response } from 'express'
-import { PeerIdDto } from './dto/peer-id.dto'
+import { PeerIdDto } from './dto/peer-id.dto.js'
 import { createVerifiedFetch } from '@helia/verified-fetch'
-import { pino } from './utils/logger'
+import { pino } from './utils/logger.js'
 import type { PingService } from '@libp2p/ping'
 import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
-import { filestore } from './store'
+import { filestore } from './store.js'
 
 const verifiedFetch = await createVerifiedFetch(helia)
 const upload = multer({ storage: filestore })
@@ -179,8 +179,8 @@ app.get('/libp2p/peerInfo', async (req: Request<never, never, never, PeerIdDto>,
 app.get(
   '/libp2p/dial',
   async (req: Request<never, never, never, PeerIdDto & { multiAddr: string }>, res: Response) => {
-    let peerId: PeerId
-    let multiAddr: Multiaddr
+    let peerId: PeerId | undefined
+    let multiAddr: Multiaddr | undefined
     try {
       if (req.query.peerId) {
         peerId = peerIdFromString(req.query.peerId || '')
@@ -205,7 +205,11 @@ app.get(
     }
 
     try {
-      const connection = await helia.libp2p.dial(multiAddr || peerId)
+      const peer = multiAddr || peerId
+      if (!peer) {
+        throw new Error('Empty peerId and MultiAddr')
+      }
+      const connection = await helia.libp2p.dial(peer)
       res.send({ success: true, connection })
     } catch (err) {
       pino.logger.warn(`Cannot dial peer: ${err.message}`)

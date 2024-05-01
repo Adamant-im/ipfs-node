@@ -6,3 +6,8 @@ export type NodeWithPeerId = {
   multiAddr: Multiaddr
   peerId: PeerId
 }
+
+export type ConfigNode = {
+  name: string
+  multiAddr: string
+}
