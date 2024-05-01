@@ -7,7 +7,7 @@ const currDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(currDir, '..')
 
 const configName = process.argv.slice(2)[0] || 'default'
-const configFileName = `config.${configName}.json5`
+export const configFileName = `config.${configName}.json5`
 
 const configPath = rootDir + `/${configFileName}`
 

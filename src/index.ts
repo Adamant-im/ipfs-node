@@ -17,6 +17,9 @@ import type { PingService } from '@libp2p/ping'
 import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
 import { filestore } from './store.js'
+import { configFileName } from './config.js'
+
+pino.logger.info(`Using config file: ${configFileName}`)
 
 const verifiedFetch = await createVerifiedFetch(helia)
 const upload = multer({ storage: filestore })
