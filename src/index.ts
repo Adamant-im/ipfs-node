@@ -17,7 +17,7 @@ import type { PingService } from '@libp2p/ping'
 import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
 import { filestore } from './store.js'
-import { configFileName } from './config.js'
+import config, { configFileName } from './config.js'
 
 pino.logger.info(`Using config file: ${configFileName}`)
 
@@ -67,7 +67,7 @@ pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
 autoPeering.start()
 
-const PORT = 4000
+const PORT = config.serverPort
 const app = express()
 
 app.use(pino)

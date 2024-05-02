@@ -1,13 +1,20 @@
 import { CronJob } from 'cron'
 import { helia } from './helia.js'
 import { getNodesList } from './utils/utils.js'
+import config from './config.js'
 import { pino } from './utils/logger.js'
 
 /**
  * Auto-peering between ADM IPFS nodes.
  */
-export const autoPeering = new CronJob('*/10 * * * * *', () => {
-  autoPeeringHandler().catch(pino.logger.error)
+let started = false
+export const autoPeering = new CronJob(config.autoPeeringPeriod, () => {
+  if (!started) {
+    started = true
+    autoPeeringHandler()
+      .catch(pino.logger.error)
+      .finally(() => (started = false))
+  }
 })
 
 export async function autoPeeringHandler() {
