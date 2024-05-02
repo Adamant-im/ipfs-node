@@ -1,12 +1,18 @@
 {
   "compilerOptions": {
-    "module": "ES2022",
-    "target": "ES2021",
-    "moduleResolution": "node",
-    "allowSyntheticDefaultImports": true,
-    // only for development
-    "strict": false,
-    "strictNullChecks": true,
-    "skipLibCheck": true
-  }
+    "allowJs": false,
+    "checkJs": false,
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "sourceMap": true,
+    "target": "ES2022",
+    "strict": true,
+    "noImplicitAny": true,
+    "useUnknownInCatchVariables": false,
+    "skipLibCheck": true,
+    "outDir": "./dist"
+  },
+  "exclude": ["node_modules"],
+  "include": ["src/index.ts", "src/**/*.ts"]
 }
