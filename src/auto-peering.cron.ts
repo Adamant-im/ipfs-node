@@ -1,7 +1,7 @@
 import { CronJob } from 'cron'
 import { helia } from './helia.js'
 import { getNodesList } from './utils/utils.js'
-import config from './config.js'
+import { config } from './config.js'
 import { pino } from './utils/logger.js'
 
 /**
@@ -12,7 +12,7 @@ export const autoPeering = new CronJob(config.autoPeeringPeriod, () => {
   if (!started) {
     started = true
     autoPeeringHandler()
-      .catch(pino.logger.error)
+      .catch((err: Error) => pino.logger.error(`${err.message}\n${err.stack}`))
       .finally(() => (started = false))
   }
 })

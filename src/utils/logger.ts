@@ -1,5 +1,5 @@
 import { pinoHttp } from 'pino-http'
-import config from '../config.js'
+import { config } from '../config.js'
 
 export const pino = pinoHttp({
   level: config.logLevel || 'info',

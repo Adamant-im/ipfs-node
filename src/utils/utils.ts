@@ -1,7 +1,10 @@
 import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
-import config from '../config.js'
+import { config } from '../config.js'
 import { ConfigNode, NodeWithPeerId } from './types.js'
+import { readdir, stat, statfs } from 'node:fs/promises'
+import { join } from 'path'
+import { pino } from './logger.js'
 
 /**
  * Get peerId from multiaddr string
@@ -63,4 +66,33 @@ export function flatFiles(
     }
     return resultFiles
   }
+}
+
+export async function dirSize(dir: string): Promise<number> {
+  const files = await readdir(dir, { withFileTypes: true })
+
+  const paths = files.map(async (file) => {
+    const path = join(dir, file.name)
+
+    if (file.isDirectory()) return await dirSize(path)
+
+    if (file.isFile()) {
+      try {
+        const { size } = await stat(path)
+
+        return size
+      } catch (e) {
+        pino.logger.debug(`${e.message}\n${e.stack}`)
+      }
+    }
+
+    return 0
+  })
+
+  return (await Promise.all(paths)).flat(Infinity).reduce((i, size) => i + size, 0)
+}
+
+export async function availableStorageSize() {
+  const statistics = await statfs('/', { bigint: true })
+  return statistics.bsize * statistics.bavail
 }

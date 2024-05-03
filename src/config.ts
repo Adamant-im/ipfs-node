@@ -9,8 +9,8 @@ const rootDir = join(currDir, '..')
 const configName = process.argv.slice(2)[0] || 'default'
 export const configFileName = `config.${configName}.json5`
 
-const configPath = rootDir + `/${configFileName}`
+const configPath = join(rootDir, configFileName)
 
-const config = JSON5.parse(fs.readFileSync(configPath, 'utf8'))
+export const config = JSON5.parse(fs.readFileSync(configPath, 'utf8'))
 
-export default config
+export const packageJson = JSON5.parse(fs.readFileSync(join(rootDir, 'package.json'), 'utf8'))

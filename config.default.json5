@@ -31,5 +31,9 @@
     ]
   },
   serverPort: 4000,
-  autoPeeringPeriod: '*/10 * * * * *'
+  autoPeeringPeriod: '*/10 * * * * *',
+  diskUsageScanPeriod: '0 */1 * * * *',
+  cors: {
+    originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh']
+  }
 }
