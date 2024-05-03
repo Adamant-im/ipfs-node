@@ -13,9 +13,7 @@ export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
   if (!started) {
     started = true
     scan()
-      .catch((err: Error) => {
-        pino.logger.error(`${err.message}\n${err.stack}`)
-      })
+      .catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
       .finally(() => (started = false))
   }
 })

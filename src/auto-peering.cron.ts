@@ -12,7 +12,7 @@ export const autoPeering = new CronJob(config.autoPeeringPeriod, () => {
   if (!started) {
     started = true
     autoPeeringHandler()
-      .catch((err: Error) => pino.logger.error(`${err.message}\n${err.stack}`))
+      .catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
       .finally(() => (started = false))
   }
 })
