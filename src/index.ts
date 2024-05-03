@@ -80,7 +80,6 @@ const corsOptions = {
   methods: ['GET', 'POST']
 }
 app.use(cors(corsOptions))
-app.options('*', cors())
 
 app.get('/', (req, res) => {
   res.send('IPFS node')
