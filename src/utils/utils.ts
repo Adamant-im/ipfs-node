@@ -2,6 +2,7 @@ import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
 import config from '../config.js'
 import { ConfigNode, NodeWithPeerId } from './types.js'
+import { Multer } from 'multer'
 
 /**
  * Get peerId from multiaddr string
@@ -49,10 +50,8 @@ export function getAllowNodesMultiaddrs() {
   return parseNodes().map((node) => node.multiAddr.toString())
 }
 
-export function flatFiles(
-  files: { [fieldname: string]: Express.Multer.File[] } | Express.Multer.File[]
-) {
-  let resultFiles: Express.Multer.File[] = []
+export function flatFiles(files: { [fieldname: string]: Multer.File[] } | Multer.File[]) {
+  let resultFiles: Multer.File[] = []
   if (Array.isArray(files)) {
     return files
   } else {
