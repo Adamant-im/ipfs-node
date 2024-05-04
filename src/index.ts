@@ -256,7 +256,7 @@ app.get('/file/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
-    setTimeout(() => reject(new Error('Operation timed out')), 30000)
+    setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
   )
 
   try {

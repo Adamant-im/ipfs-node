@@ -32,5 +32,6 @@
   },
   serverPort: 4000,
   autoPeeringPeriod: '*/10 * * * * *',
-  uploadLimitSizeBytes: 268435456
+  uploadLimitSizeBytes: 268435456,
+  findFileTimeout: 30000
 }
