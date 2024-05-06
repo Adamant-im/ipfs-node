@@ -75,11 +75,12 @@ const app = express()
 
 app.use(pino)
 
-const corsOptions = {
-  origin: config.cors.originRegexps.map((item: string) => new RegExp(`^https?:\\/\\/${item}`)),
-  methods: ['GET', 'POST']
-}
-app.use(cors(corsOptions))
+app.use(
+  cors({
+    origin: config.cors.originRegexps.map((item: string) => new RegExp(`^https?:\\/\\/${item}`)),
+    methods: ['GET', 'POST']
+  })
+)
 
 app.get('/', (req, res) => {
   res.send('IPFS node')
@@ -417,11 +418,9 @@ app.get('/node/health', async (req, res) => {
 
 app.get('/node/info', async (req, res) => {
   const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
-  const heliaVersion = (packageJson.dependencies['helia'] || 'unknown').replaceAll('^', '')
   res.send({
     version: packageJson.version,
     timestamp: Date.now(),
-    heliaVersion,
     heliaStatus: helia.libp2p.status,
     peerId: helia.libp2p.peerId,
     multiAddresses: helia.libp2p.getMultiaddrs(),
