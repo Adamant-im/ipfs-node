@@ -349,7 +349,7 @@ app.post(
 
     const cids: CID[] = []
     for (const file of files) {
-      console.log(`Adding ${file.originalName} to IPFS`)
+      pino.logger.info(`Adding ${file.originalName} to IPFS`)
 
       const { stream, originalName } = file
 
