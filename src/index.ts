@@ -1,8 +1,8 @@
 import { unixfs } from '@helia/unixfs'
 import { peerIdFromString } from '@libp2p/peer-id'
-import { CID } from 'multiformats/cid'
-import express from 'express'
-import multer, { Multer } from 'multer'
+import { CID, Version } from 'multiformats/cid'
+import express, { NextFunction } from 'express'
+import multer from 'multer'
 import { Multiaddr, multiaddr } from '@multiformats/multiaddr'
 import { autoPeeringHandler, autoPeering } from './cron.js'
 import { helia } from './helia.js'
@@ -17,11 +17,21 @@ import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
 import config, { configFileName } from './config.js'
 import { Writable } from 'node:stream'
+import { UnixfsMulterStorage } from './utils/unixfs-multer.storage.js'
+import { UnixFsMulterFile } from './utils/types.js'
 
 pino.logger.info(`Using config file: ${configFileName}`)
 
+const ifs = unixfs(helia)
 const verifiedFetch = await createVerifiedFetch(helia)
-const upload = multer({ limits: { fileSize: config.uploadLimitSizeBytes } })
+const upload = multer({
+  storage: new UnixfsMulterStorage({
+    unixfs: ifs,
+    destination: (req, file) => '/',
+    filename: (req, file) => file.originalname
+  }),
+  limits: { fileSize: config.uploadLimitSizeBytes }
+})
 
 let logNewPeers = false
 
@@ -59,8 +69,6 @@ helia.libp2p.addEventListener('start', (event) => {
 helia.libp2p.addEventListener('stop', (event) => {
   pino.logger.info('Libp2p node stopped')
 })
-
-const ifs = unixfs(helia)
 
 pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
@@ -331,76 +339,53 @@ app.get('/pins/isPinned/:cid', async (req, res) => {
   })
 })
 
-app.post(
-  '/file/upload',
-  upload.array('files', 5),
-  async (
-    req: Request & { files?: { [fieldname: string]: Multer.File[] } | Multer.File[] },
-    res
-  ) => {
-    if (!req.files) {
-      res.statusCode = 400
-      return res.send({
-        error: 'No file uploaded'
-      })
-    }
-    const files = flatFiles(req.files)
-    pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalName))}`)
-
-    const cids: CID[] = []
-    for (const file of files) {
-      pino.logger.info(`Adding ${file.originalName} to IPFS`)
-
-      const { stream, originalName } = file
-
-      const cid = await ifs.addFile({
-        path: `/${originalName}`,
-        content: stream
-      })
-      pino.logger.info(`Successfully added file ${cid}`)
-      cids.push(cid)
-
-      const isPinned = await helia.pins.isPinned(cid)
-      if (isPinned) {
-        pino.logger.info(`File already pinned ${cid}`)
-      } else {
-        // Pin the file
-        for await (const pinned of helia.pins.add(cid)) {
-          pino.logger.info(`Filed pinned: ${pinned}`)
-        }
-      }
-
-      // Tell the network we can provide content for the passed CID
-      const dht = helia.libp2p.services.dht as KadDHT
-      await dht.provide(cid)
-      pino.logger.info(`Provided CID via DHT ${cid}`)
-
-      pino.logger.info(`Routing: Providing ${cid}`)
-      void helia.routing.provide(cid)
-      pino.logger.info('Routing: Provide DONE')
-    }
-
-    res.send({
-      filesNames: files.map((file) => file.originalName),
-      cids: cids.map((cid) => cid.toString())
+app.post('/file/upload', upload.array('files', 5), async (req, res) => {
+  if (!req.files) {
+    res.statusCode = 400
+    return res.send({
+      error: 'No file uploaded'
     })
   }
-)
+  const files = flatFiles(req.files as UnixFsMulterFile[])
+  pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
 
-app.post('/test', async (req, res) => {
-  const textEncoder = new TextEncoder()
-  const cid = await ifs.addFile({
-    content: textEncoder.encode('Hello world asldgfhkasjdghsk;adjflkasgjd!')
-  })
+  const cids: CID[] = []
+  for (const file of files) {
+    pino.logger.info(`Adding ${file.originalname} to IPFS`)
 
-  const dht = helia.libp2p.services.dht as KadDHT
-  for await (const event of dht.provide(cid)) {
-    pino.logger.info('PROVIDE', event)
+    const { cid } = file
+    pino.logger.info(`Successfully added file ${cid}`)
+    cids.push(cid)
+
+    const isPinned = await helia.pins.isPinned(cid)
+    if (isPinned) {
+      pino.logger.info(`File already pinned ${cid}`)
+    } else {
+      // Pin the file
+      for await (const pinned of helia.pins.add(cid)) {
+        pino.logger.info(`Filed pinned: ${pinned}`)
+      }
+    }
+
+    // Tell the network we can provide content for the passed CID
+    const dht = helia.libp2p.services.dht as KadDHT
+    await dht.provide(cid)
+    pino.logger.info(`Provided CID via DHT ${cid}`)
+
+    pino.logger.info(`Routing: Providing ${cid}`)
+    void helia.routing.provide(cid)
+    pino.logger.info('Routing: Provide DONE')
   }
 
   res.send({
-    cid: cid.toString()
+    filesNames: files.map((file) => file.originalname),
+    cids: cids.map((cid) => cid.toString())
   })
+})
+
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  pino.logger.error(`${err.message}\n${err.stack}`)
+  res.status(500).send({ error: 'Internal Server Error. See logs.' })
 })
 
 app.listen(PORT, () => {
