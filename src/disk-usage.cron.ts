@@ -4,6 +4,8 @@ import { CronJob } from 'cron'
 import { config } from './config.js'
 import { pino } from './utils/logger.js'
 
+const oneMb = 1048576
+
 let blockstoreSizeMb = 0
 let datastoreSizeMb = 0
 let availableSizeInMb = 0
@@ -20,9 +22,9 @@ export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
 
 async function scan() {
   pino.logger.info('[Cron] Running "diskUsage" cronjob.')
-  blockstoreSizeMb = (await dirSize(blockstorePath)) / 1048576
-  datastoreSizeMb = (await dirSize(datastorePath)) / 1048576
-  availableSizeInMb = Number((await availableStorageSize()) / 1048576n)
+  blockstoreSizeMb = (await dirSize(blockstorePath)) / oneMb
+  datastoreSizeMb = (await dirSize(datastorePath)) / oneMb
+  availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
 }
 
 scan().catch(pino.logger.error)
