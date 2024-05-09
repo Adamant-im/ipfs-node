@@ -1,7 +1,7 @@
 import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
 import { config } from '../config.js'
-import { ConfigNode, NodeWithPeerId } from './types.js'
+import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
 import { statfs } from 'node:fs/promises'
 import { pino } from './logger.js'
 import { exec } from 'child_process'
@@ -55,9 +55,13 @@ export function getAllowNodesMultiaddrs() {
 }
 
 export function flatFiles(
-  files: { [fieldname: string]: Express.Multer.File[] } | Express.Multer.File[]
+  files:
+    | {
+        [fieldname: string]: UnixFsMulterFile[]
+      }
+    | UnixFsMulterFile[]
 ) {
-  let resultFiles: Express.Multer.File[] = []
+  let resultFiles: UnixFsMulterFile[] = []
   if (Array.isArray(files)) {
     return files
   } else {

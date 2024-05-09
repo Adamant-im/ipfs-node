@@ -1,8 +1,7 @@
 import { unixfs } from '@helia/unixfs'
 import { peerIdFromString } from '@libp2p/peer-id'
-import { fileTypeFromBuffer } from 'file-type'
-import { CID } from 'multiformats/cid'
-import express from 'express'
+import { CID, Version } from 'multiformats/cid'
+import express, { NextFunction } from 'express'
 import multer from 'multer'
 import { Multiaddr, multiaddr } from '@multiformats/multiaddr'
 import { autoPeeringHandler, autoPeering } from './auto-peering.cron.js'
@@ -16,15 +15,25 @@ import { pino } from './utils/logger.js'
 import type { PingService } from '@libp2p/ping'
 import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
-import { filestore } from './store.js'
+import { Writable } from 'node:stream'
+import { UnixfsMulterStorage } from './utils/unixfs-multer.storage.js'
+import { UnixFsMulterFile } from './utils/types.js'
 import { config, configFileName, packageJson } from './config.js'
 import { getDiskUsageStats, diskUsageCron } from './disk-usage.cron.js'
 import cors from 'cors'
 
 pino.logger.info(`Using config file: ${configFileName}`)
 
+const ifs = unixfs(helia)
 const verifiedFetch = await createVerifiedFetch(helia)
-const upload = multer({ storage: filestore })
+const upload = multer({
+  storage: new UnixfsMulterStorage({
+    unixfs: ifs,
+    destination: (req, file) => '/',
+    filename: (req, file) => file.originalname
+  }),
+  limits: { fileSize: config.uploadLimitSizeBytes }
+})
 
 let logNewPeers = false
 
@@ -62,8 +71,6 @@ helia.libp2p.addEventListener('start', (event) => {
 helia.libp2p.addEventListener('stop', (event) => {
   pino.logger.info('Libp2p node stopped')
 })
-
-const ifs = unixfs(helia)
 
 pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
@@ -267,7 +274,7 @@ app.get('/file/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
-    setTimeout(() => reject(new Error('Operation timed out')), 30000)
+    setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
   )
 
   try {
@@ -276,15 +283,13 @@ app.get('/file/:cid', async (req, res) => {
     })
 
     const result = await Promise.race([filePromise, timeoutPromise])
-    const data = Buffer.from(await result.arrayBuffer())
-
-    // If filePromise wins the race, send the file
-    const fileType = await fileTypeFromBuffer(data)
-    if (fileType) {
-      res.set('Content-Type', fileType.mime)
+    const data = result.body
+    if (!data) {
+      throw new Error('Empty data')
     }
-
-    res.send(data)
+    res.set('Content-Type', 'application/octet-stream')
+    const responseStream = Writable.toWeb(res)
+    await data.pipeTo(responseStream)
   } catch (error) {
     pino.logger.error(error)
     if (error.message === 'Operation timed out') {
@@ -351,19 +356,14 @@ app.post('/file/upload', upload.array('files', 5), async (req, res) => {
       error: 'No file uploaded'
     })
   }
-  const files = flatFiles(req.files)
+  const files = flatFiles(req.files as UnixFsMulterFile[])
   pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
 
   const cids: CID[] = []
   for (const file of files) {
-    console.log(`Adding ${file.originalname} to IPFS`)
+    pino.logger.info(`Adding ${file.originalname} to IPFS`)
 
-    const { buffer, originalname } = file
-
-    const cid = await ifs.addFile({
-      path: `/${originalname}`,
-      content: buffer
-    })
+    const { cid } = file
     pino.logger.info(`Successfully added file ${cid}`)
     cids.push(cid)
 
@@ -393,20 +393,9 @@ app.post('/file/upload', upload.array('files', 5), async (req, res) => {
   })
 })
 
-app.post('/test', async (req, res) => {
-  const textEncoder = new TextEncoder()
-  const cid = await ifs.addFile({
-    content: textEncoder.encode('Hello world asldgfhkasjdghsk;adjflkasgjd!')
-  })
-
-  const dht = helia.libp2p.services.dht as KadDHT
-  for await (const event of dht.provide(cid)) {
-    pino.logger.info('PROVIDE', event)
-  }
-
-  res.send({
-    cid: cid.toString()
-  })
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  pino.logger.error(`${err.message}\n${err.stack}`)
+  res.status(500).send({ error: 'Internal Server Error. See logs.' })
 })
 
 app.get('/node/health', async (req, res) => {
