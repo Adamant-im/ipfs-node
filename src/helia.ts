@@ -3,6 +3,10 @@ import { createHelia } from 'helia'
 import { blockstore, datastore } from './store.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
+import { tcp } from '@libp2p/tcp'
+import { yamux } from '@chainsafe/libp2p-yamux'
+import { noise } from '@chainsafe/libp2p-noise'
+import { FaultTolerance } from '@libp2p/interface-transport'
 
 export const helia = await createHelia({
   datastore,
@@ -37,6 +41,12 @@ export const helia = await createHelia({
        * A list of multiaddrs that will always be allowed (except if they are in the deny list) to open connections to this node even if we've reached maxConnections
        */
       allow: getAllowNodesMultiaddrs()
+    },
+    transports: [tcp()],
+    streamMuxers: [yamux()],
+    connectionEncryption: [noise()],
+    transportManager: {
+      faultTolerance: FaultTolerance.NO_FATAL
     }
   }
 })
