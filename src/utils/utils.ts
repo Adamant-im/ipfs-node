@@ -2,9 +2,11 @@ import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
 import { config } from '../config.js'
 import { ConfigNode, NodeWithPeerId } from './types.js'
-import { readdir, stat, statfs } from 'node:fs/promises'
-import { join } from 'path'
+import { statfs } from 'node:fs/promises'
 import { pino } from './logger.js'
+import { exec } from 'child_process'
+import { promisify } from 'node:util'
+const execPromise = promisify(exec)
 
 /**
  * Get peerId from multiaddr string
@@ -68,31 +70,23 @@ export function flatFiles(
   }
 }
 
-export async function dirSize(dir: string): Promise<number> {
-  const files = await readdir(dir, { withFileTypes: true })
-
-  const paths = files.map(async (file) => {
-    const path = join(dir, file.name)
-
-    if (file.isDirectory()) return await dirSize(path)
-
-    if (file.isFile()) {
-      try {
-        const { size } = await stat(path)
-
-        return size
-      } catch (e) {
-        pino.logger.debug(`${e.message}\n${e.stack}`)
-      }
-    }
-
-    return 0
-  })
-
-  return (await Promise.all(paths)).flat(Infinity).reduce((i, size) => i + size, 0)
-}
-
 export async function availableStorageSize() {
   const statistics = await statfs('/', { bigint: true })
   return statistics.bsize * statistics.bavail
+}
+
+export async function dirSize(dir: string): Promise<number> {
+  try {
+    const { stdout } = await execPromise('du -sb .', { cwd: dir })
+    const match = /^(\d+)/.exec(stdout)
+
+    if (match && match.length >= 2) {
+      return Number(match[1])
+    } else {
+      pino.logger.error('Cant parse cmd output')
+    }
+  } catch (err) {
+    pino.logger.error(`${err.message}\n${err.stack}`)
+  }
+  return 0
 }

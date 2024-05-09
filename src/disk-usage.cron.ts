@@ -22,12 +22,23 @@ export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
 
 async function scan() {
   pino.logger.info('[Cron] Running "diskUsage" cronjob.')
-  blockstoreSizeMb = (await dirSize(blockstorePath)) / oneMb
-  datastoreSizeMb = (await dirSize(datastorePath)) / oneMb
+  const start = Date.now()
+
+  const blockstoreSize = await dirSize(blockstorePath)
+  if (blockstoreSize > 0) {
+    blockstoreSizeMb = blockstoreSize / oneMb
+  }
+
+  const datastoreSize = await dirSize(datastorePath)
+  if (datastoreSize > 0) {
+    datastoreSizeMb = datastoreSize / oneMb
+  }
+
   availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
+  pino.logger.info(`Check folder size took ${Date.now() - start} ms.`)
 }
 
-scan().catch(pino.logger.error)
+scan().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
 
 export function getDiskUsageStats() {
   return {
