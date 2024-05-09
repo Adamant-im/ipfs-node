@@ -4,7 +4,7 @@ import { CID, Version } from 'multiformats/cid'
 import express, { NextFunction } from 'express'
 import multer from 'multer'
 import { Multiaddr, multiaddr } from '@multiformats/multiaddr'
-import { autoPeeringHandler, autoPeering } from './cron.js'
+import { autoPeeringHandler, autoPeering } from './auto-peering.cron.js'
 import { helia } from './helia.js'
 import { Pin } from 'helia'
 import { flatFiles } from './utils/utils.js'
@@ -15,10 +15,12 @@ import { pino } from './utils/logger.js'
 import type { PingService } from '@libp2p/ping'
 import { KadDHT } from '@libp2p/kad-dht'
 import { PeerId } from '@libp2p/interface'
-import config, { configFileName } from './config.js'
 import { Writable } from 'node:stream'
 import { UnixfsMulterStorage } from './utils/unixfs-multer.storage.js'
 import { UnixFsMulterFile } from './utils/types.js'
+import { config, configFileName, packageJson } from './config.js'
+import { getDiskUsageStats, diskUsageCron } from './disk-usage.cron.js'
+import cors from 'cors'
 
 pino.logger.info(`Using config file: ${configFileName}`)
 
@@ -73,11 +75,19 @@ helia.libp2p.addEventListener('stop', (event) => {
 pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
 autoPeering.start()
+diskUsageCron.start()
 
 const PORT = config.serverPort
 const app = express()
 
 app.use(pino)
+
+app.use(
+  cors({
+    origin: config.cors.originRegexps.map((item: string) => new RegExp(`^https?:\\/\\/${item}`)),
+    methods: ['GET', 'POST']
+  })
+)
 
 app.get('/', (req, res) => {
   res.send('IPFS node')
@@ -386,6 +396,27 @@ app.post('/file/upload', upload.array('files', 5), async (req, res) => {
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   pino.logger.error(`${err.message}\n${err.stack}`)
   res.status(500).send({ error: 'Internal Server Error. See logs.' })
+})
+
+app.get('/node/health', async (req, res) => {
+  res.send({
+    timestamp: Date.now(),
+    heliaStatus: helia.libp2p.status
+  })
+})
+
+app.get('/node/info', async (req, res) => {
+  const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
+  res.send({
+    version: packageJson.version,
+    timestamp: Date.now(),
+    heliaStatus: helia.libp2p.status,
+    peerId: helia.libp2p.peerId,
+    multiAddresses: helia.libp2p.getMultiaddrs(),
+    blockstoreSizeMb,
+    datastoreSizeMb,
+    availableSizeInMb
+  })
 })
 
 app.listen(PORT, () => {
