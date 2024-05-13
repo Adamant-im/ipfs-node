@@ -10,7 +10,7 @@
     },
     {
       name: "ipfs3",
-      multiAddr: "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWGmrZg4iEV8zX3CfiitGakNDKgrDjnphbZSkW2QPW1dbD"
+      multiAddr: "/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWJWvP5JtFawfKENvUybMdM24QrWFVGRkTW2UcwbGwT6h2"
     }
   ],
   storeFolder: '.adm-ipfs',
@@ -36,6 +36,6 @@
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   findFileTimeout: 30000,
   cors: {
-    originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh']
+    originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh', 'localhost:8080']
   }
 }

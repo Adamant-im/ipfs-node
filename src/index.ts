@@ -93,7 +93,7 @@ app.get('/', (req, res) => {
   res.send('IPFS node')
 })
 
-app.get('/routing/findProviders/:cid', async (req, res) => {
+app.get('/api/routing/findProviders/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 
@@ -114,7 +114,7 @@ app.get('/routing/findProviders/:cid', async (req, res) => {
   }
 })
 
-app.get('/cron/autopeering', async (req, res) => {
+app.get('/api/cron/autopeering', async (req, res) => {
   const successPeers = await autoPeeringHandler()
 
   res.send({
@@ -123,7 +123,7 @@ app.get('/cron/autopeering', async (req, res) => {
 })
 
 app.get(
-  '/libp2p/services/ping',
+  '/api/libp2p/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
@@ -142,7 +142,7 @@ app.get(
 )
 
 app.get(
-  '/libp2p/peerStore',
+  '/api/libp2p/peerStore',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     const peerId = req.query.peerId
 
@@ -176,28 +176,31 @@ app.get(
   }
 )
 
-app.get('/libp2p/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-  const peerId = req.query.peerId
+app.get(
+  '/api/libp2p/peerInfo',
+  async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
+    const peerId = req.query.peerId
 
-  try {
-    const peers = await helia.libp2p.peerStore.all({
-      filters: [(peer) => peer.id.toString() === peerId],
-      limit: 10
-    })
+    try {
+      const peers = await helia.libp2p.peerStore.all({
+        filters: [(peer) => peer.id.toString() === peerId],
+        limit: 10
+      })
 
-    res.send({
-      length: peers.length,
-      peer: peers
-    })
-  } catch (err) {
-    res.send({
-      error: err.message
-    })
+      res.send({
+        length: peers.length,
+        peer: peers
+      })
+    } catch (err) {
+      res.send({
+        error: err.message
+      })
+    }
   }
-})
+)
 
 app.get(
-  '/libp2p/dial',
+  '/api/libp2p/dial',
   async (req: Request<never, never, never, PeerIdDto & { multiAddr: string }>, res: Response) => {
     let peerId: PeerId | undefined
     let multiAddr: Multiaddr | undefined
@@ -243,7 +246,7 @@ app.get(
   }
 )
 
-app.get('/libp2p/new-peers/log', async (req, res) => {
+app.get('/api/libp2p/new-peers/log', async (req, res) => {
   logNewPeers = !logNewPeers
 
   res.send({
@@ -252,7 +255,7 @@ app.get('/libp2p/new-peers/log', async (req, res) => {
 })
 
 app.get(
-  '/libp2p/connections',
+  '/api/libp2p/connections',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     const peerId = req.query.peerId?.toString() || ''
     const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
@@ -264,13 +267,13 @@ app.get(
   }
 )
 
-app.get('/libp2p/status', async (req, res) => {
+app.get('/api/libp2p/status', async (req, res) => {
   res.send({
     status: helia.libp2p.status
   })
 })
 
-app.get('/file/:cid', async (req, res) => {
+app.get('/api/file/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
@@ -304,7 +307,7 @@ app.get('/file/:cid', async (req, res) => {
   }
 })
 
-app.get('/pins', async (req, res) => {
+app.get('/api/pins', async (req, res) => {
   const pins: Pin[] = []
 
   for await (const pin of helia.pins.ls()) {
@@ -317,7 +320,7 @@ app.get('/pins', async (req, res) => {
   })
 })
 
-app.post('/pins/pin/:cid', async (req, res) => {
+app.post('/api/pins/pin/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   try {
@@ -338,7 +341,7 @@ app.post('/pins/pin/:cid', async (req, res) => {
   })
 })
 
-app.get('/pins/isPinned/:cid', async (req, res) => {
+app.get('/api/pins/isPinned/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   const isPinned = await helia.pins.isPinned(cid)
@@ -349,7 +352,7 @@ app.get('/pins/isPinned/:cid', async (req, res) => {
   })
 })
 
-app.post('/file/upload', upload.array('files', 5), async (req, res) => {
+app.post('/api/file/upload', upload.array('files', 5), async (req, res) => {
   if (!req.files) {
     res.statusCode = 400
     return res.send({
@@ -398,14 +401,14 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   res.status(500).send({ error: 'Internal Server Error. See logs.' })
 })
 
-app.get('/node/health', async (req, res) => {
+app.get('/api/node/health', async (req, res) => {
   res.send({
     timestamp: Date.now(),
     heliaStatus: helia.libp2p.status
   })
 })
 
-app.get('/node/info', async (req, res) => {
+app.get('/api/node/info', async (req, res) => {
   const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
   res.send({
     version: packageJson.version,
