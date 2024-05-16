@@ -43,25 +43,25 @@ helia.libp2p.getMultiaddrs().forEach((addr) => {
 
 helia.libp2p.addEventListener('peer:discovery', (evt) => {
   const peer = evt.detail
-  if (logNewPeers) {
-    pino.logger.info(`Discovered peer: ${peer.id}`)
-  }
+  // if (logNewPeers) {
+  pino.logger.info(`Discovered peer: ${peer.id}`)
+  // }
 })
 
 helia.libp2p.addEventListener('peer:connect', (evt) => {
   const peerId = evt.detail
 
-  if (logNewPeers) {
-    pino.logger.info(`Peer connected: ${peerId}`)
-  }
+  // if (logNewPeers) {
+  pino.logger.info(`Peer connected: ${peerId}`)
+  // }
 })
 
 helia.libp2p.addEventListener('peer:disconnect', (evt) => {
   const peerId = evt.detail
 
-  if (logNewPeers) {
-    pino.logger.info(`Peer disconnected: ${peerId}`)
-  }
+  // if (logNewPeers) {
+  pino.logger.info(`Peer disconnected: ${peerId}`)
+  // }
 })
 
 helia.libp2p.addEventListener('start', (event) => {
@@ -74,7 +74,8 @@ helia.libp2p.addEventListener('stop', (event) => {
 
 pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
-autoPeering.start()
+// autoPeering.start()
+autoPeeringHandler().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
 diskUsageCron.start()
 
 const PORT = config.serverPort

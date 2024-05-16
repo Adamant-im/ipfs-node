@@ -1,4 +1,4 @@
-import { blockstorePath, datastorePath } from './store.js'
+import { blockstorePath, heliaDatastorePath, libp2pDatastorePath } from './store.js'
 import { dirSize, availableStorageSize } from './utils/utils.js'
 import { CronJob } from 'cron'
 import { config } from './config.js'
@@ -29,9 +29,10 @@ async function scan() {
     blockstoreSizeMb = blockstoreSize / oneMb
   }
 
-  const datastoreSize = await dirSize(datastorePath)
+  const datastoreSize = await dirSize(heliaDatastorePath)
+  const datastoreSizeP2P = await dirSize(libp2pDatastorePath)
   if (datastoreSize > 0) {
-    datastoreSizeMb = datastoreSize / oneMb
+    datastoreSizeMb = (datastoreSize + datastoreSizeP2P) / oneMb
   }
 
   availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
