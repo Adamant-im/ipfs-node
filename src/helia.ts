@@ -49,7 +49,9 @@ export const helia = await createHelia({
        */
       allow: getAllowNodesMultiaddrs(),
 
-      maxParallelDials: 3
+      maxParallelDials: 3,
+
+      dialTimeout: 30000 // 30 seconds
     },
     // transports: [tcp(), webRTC()],
     streamMuxers: [yamux()],
