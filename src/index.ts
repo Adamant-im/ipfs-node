@@ -44,7 +44,7 @@ helia.libp2p.getMultiaddrs().forEach((addr) => {
 helia.libp2p.addEventListener('peer:discovery', (evt) => {
   const peer = evt.detail
   // if (logNewPeers) {
-  pino.logger.info(`Discovered peer: ${peer.id}`)
+  // pino.logger.info(`Discovered peer: ${peer.id}`)
   // }
 })
 
@@ -253,6 +253,12 @@ app.get('/api/libp2p/new-peers/log', async (req, res) => {
   res.send({
     logNewPeers
   })
+})
+
+app.get('/api/peers', (req, res) => {
+  const peers = helia.libp2p.getPeers()
+
+  res.send({ peers })
 })
 
 app.get(

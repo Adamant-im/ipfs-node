@@ -19,11 +19,11 @@ export const helia = await createHelia({
   blockstore,
   libp2p: {
     datastore: libp2pDatastore,
-    peerDiscovery: [
-      bootstrap({
-        list: config.peerDiscovery.bootstrap
-      })
-    ],
+    // peerDiscovery: [
+    //   bootstrap({
+    //     list: config.peerDiscovery.bootstrap
+    //   })
+    // ],
     addresses: {
       listen: config.peerDiscovery.listen
     },
@@ -31,7 +31,7 @@ export const helia = await createHelia({
       /**
        * The total number of connections allowed to be open at one time
        */
-      maxConnections: 100,
+      maxConnections: 10,
 
       /**
        * If the number of open connections goes below this number, the node
@@ -47,24 +47,12 @@ export const helia = await createHelia({
       /**
        * A list of multiaddrs that will always be allowed (except if they are in the deny list) to open connections to this node even if we've reached maxConnections
        */
-      allow: getAllowNodesMultiaddrs()
+      allow: getAllowNodesMultiaddrs(),
+
+      maxParallelDials: 3
     },
-    transports: [tcp(), webRTC()],
-    streamMuxers: [yamux(), mplex()],
-    connectionEncryption: [noise()],
-    transportManager: {
-      faultTolerance: FaultTolerance.NO_FATAL
-    },
-    services: {
-      identify: identify(),
-      pubsub: gossipsub({
-        emitSelf: false, // whether the node should emit to self on publish
-        globalSignaturePolicy: SignaturePolicy.StrictSign // message signing policy
-      }),
-      dht: kadDHT({
-        kBucketSize: 20,
-        clientMode: false // Whether to run the WAN DHT in client or server mode (default: client mode)
-      })
-    }
+    // transports: [tcp(), webRTC()],
+    streamMuxers: [yamux()],
+    connectionEncryption: [noise()]
   }
 })
