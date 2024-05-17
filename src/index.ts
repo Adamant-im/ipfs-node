@@ -287,8 +287,7 @@ app.get('/api/file/:cid', async (req, res) => {
     const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
       setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
     )
-
-    const filePromise = await verifiedFetch(`ipfs://${cid}`, {
+    const filePromise = verifiedFetch(`ipfs://${cid}`, {
       headers: req.headers as Record<string, string>
     })
 
