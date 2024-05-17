@@ -75,7 +75,7 @@ helia.libp2p.addEventListener('stop', (event) => {
 pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
 // autoPeering.start()
-autoPeeringHandler().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
+// autoPeeringHandler().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
 diskUsageCron.start()
 
 const PORT = config.serverPort
