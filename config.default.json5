@@ -38,7 +38,7 @@
   autoPeeringPeriod: '*/10 * * * * *',
   diskUsageScanPeriod: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
-  findFileTimeout: 30000,
+  findFileTimeout: 10000,
   cors: {
     originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh', 'localhost:8080']
   }
