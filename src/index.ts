@@ -76,7 +76,7 @@ pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
 // autoPeering.start()
 // autoPeeringHandler().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
-diskUsageCron.start()
+// diskUsageCron.start()
 
 const PORT = config.serverPort
 const app = express()
