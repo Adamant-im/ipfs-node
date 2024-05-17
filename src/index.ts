@@ -277,11 +277,11 @@ app.get('/api/libp2p/status', async (req, res) => {
 app.get('/api/file/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
-  const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
-    setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
-  )
-
   try {
+    const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
+      setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
+    )
+
     const filePromise = await verifiedFetch(`ipfs://${cid}`, {
       headers: req.headers as Record<string, string>
     })
