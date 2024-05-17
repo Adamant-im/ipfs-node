@@ -382,13 +382,13 @@ app.post('/api/file/upload', upload.array('files', 5), async (req, res) => {
     }
 
     // Tell the network we can provide content for the passed CID
-    const dht = helia.libp2p.services.dht as KadDHT
-    await dht.provide(cid)
-    pino.logger.info(`Provided CID via DHT ${cid}`)
-
-    pino.logger.info(`Routing: Providing ${cid}`)
-    void helia.routing.provide(cid)
-    pino.logger.info('Routing: Provide DONE')
+    // const dht = helia.libp2p.services.dht as KadDHT
+    // await dht.provide(cid)
+    // pino.logger.info(`Provided CID via DHT ${cid}`)
+    //
+    // pino.logger.info(`Routing: Providing ${cid}`)
+    // void helia.routing.provide(cid)
+    // pino.logger.info('Routing: Provide DONE')
   }
 
   res.send({
