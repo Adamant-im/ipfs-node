@@ -19,11 +19,11 @@ export const helia = await createHelia({
   blockstore,
   libp2p: {
     datastore: libp2pDatastore,
-    // peerDiscovery: [
-    //   bootstrap({
-    //     list: config.peerDiscovery.bootstrap
-    //   })
-    // ],
+    peerDiscovery: [
+      bootstrap({
+        list: config.peerDiscovery.bootstrap
+      })
+    ],
     addresses: {
       listen: config.peerDiscovery.listen
     },
