@@ -49,7 +49,7 @@ export const helia = await createHelia({
        */
       allow: getAllowNodesMultiaddrs(),
 
-      maxParallelDials: 3,
+      maxParallelDials: 100,
 
       dialTimeout: 30000 // 30 seconds
     },
