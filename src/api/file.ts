@@ -65,9 +65,9 @@ router.post('/file/upload', multerStorage.array('files', 5), async (req, res) =>
 })
 
 router.get('/file/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
-
   try {
+    const cid = CID.parse(req.params.cid)
+
     let streamStarted = false
 
     const abortController = new AbortController()
