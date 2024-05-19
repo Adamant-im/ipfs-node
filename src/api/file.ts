@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import { CID } from 'multiformats/cid'
+import { Writable } from 'node:stream'
 import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
-import { helia, ifs } from '../helia.js'
+import { helia, verifiedFetch } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
@@ -70,28 +71,18 @@ router.get('/file/:cid', async (req, res) => {
     const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
       setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
     )
-    // const filePromise = verifiedFetch(`ipfs://${cid}`, {
-    //   headers: req.headers as Record<string, string>
-    // })
-
-    const filePromise = (async () => {
-      const file = ifs.cat(cid)
-      const chunks = []
-      for await (const chunk of file) {
-        chunks.push(chunk)
-      }
-      return Buffer.concat(chunks)
-    })()
+    const filePromise = verifiedFetch(`ipfs://${cid}`, {
+      headers: req.headers as Record<string, string>
+    })
 
     const result = await Promise.race([filePromise, timeoutPromise])
-    const data = result
+    const data = result.body
     if (!data) {
       throw new Error('Empty data')
     }
     res.set('Content-Type', 'application/octet-stream')
-    // const responseStream = Writable.toWeb(res)
-
-    res.send(result)
+    const responseStream = Writable.toWeb(res)
+    await data.pipeTo(responseStream)
   } catch (error) {
     pino.logger.error(error)
     if (error.message === 'Operation timed out') {

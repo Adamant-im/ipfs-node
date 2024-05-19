@@ -1,7 +1,6 @@
 import express, { NextFunction } from 'express'
 import { helia } from './helia.js'
 import { Request, Response } from 'express'
-import { createVerifiedFetch } from '@helia/verified-fetch'
 import { pino } from './utils/logger.js'
 import { config, configFileName, packageJson } from './config.js'
 import { getDiskUsageStats, diskUsageCron } from './disk-usage.cron.js'
@@ -9,8 +8,6 @@ import cors from 'cors'
 import * as routers from './api/index.js'
 
 pino.logger.info(`Using config file: ${configFileName}`)
-
-const verifiedFetch = await createVerifiedFetch(helia)
 
 helia.libp2p.getMultiaddrs().forEach((addr) => {
   pino.logger.info(`Listening on ${addr.toString()}`)
