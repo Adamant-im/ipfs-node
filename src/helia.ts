@@ -38,6 +38,10 @@ export const helia = await createHelia({
     ],
     services: {
       identify: identify()
+    },
+    connectionManager: {
+      maxConnections: 100,
+      allow: getAllowNodesMultiaddrs()
     }
   }
 })
