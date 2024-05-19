@@ -1,6 +1,6 @@
 import { bootstrap } from '@libp2p/bootstrap'
 import { createHelia } from 'helia'
-import { blockstore, heliaDatastore, libp2pDatastore } from './store.js'
+import { blockstore, datastore } from './store.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
 import { tcp } from '@libp2p/tcp'
@@ -15,10 +15,10 @@ import { kadDHT } from '@libp2p/kad-dht'
 import { webRTC } from '@libp2p/webrtc'
 
 export const helia = await createHelia({
-  datastore: heliaDatastore,
+  datastore,
   blockstore,
   libp2p: {
-    datastore: libp2pDatastore,
+    datastore,
     peerDiscovery: [
       bootstrap({
         list: config.peerDiscovery.bootstrap
