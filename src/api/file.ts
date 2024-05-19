@@ -91,7 +91,7 @@ router.get('/file/:cid', async (req, res) => {
     stream.on('error', (err) => {
       pino.logger.error(err)
       res.status(408).send({
-        error: 'Can not find requested CID. Operation timed out.'
+        error: 'Cannot find requested CID'
       })
     })
 
@@ -104,15 +104,9 @@ router.get('/file/:cid', async (req, res) => {
     stream.pipe(res)
   } catch (error) {
     pino.logger.error(error)
-    if (error.message === 'Operation timed out') {
-      res.status(408).send({
-        error: 'Can not find requested CID. Operation timed out.'
-      })
-    } else {
-      res.status(500).send({
-        error: 'Internal Server Error. Check the logs for details.'
-      })
-    }
+    res.status(500).send({
+      error: 'Internal Server Error. Check the logs for details.'
+    })
   }
 })
 
