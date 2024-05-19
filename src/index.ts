@@ -281,18 +281,28 @@ app.get('/api/file/:cid', async (req, res) => {
     const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
       setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
     )
-    const filePromise = verifiedFetch(`ipfs://${cid}`, {
-      headers: req.headers as Record<string, string>
-    })
+    // const filePromise = verifiedFetch(`ipfs://${cid}`, {
+    //   headers: req.headers as Record<string, string>
+    // })
+
+    const filePromise = (async () => {
+      const file = ifs.cat(cid)
+      const chunks = []
+      for await (const chunk of file) {
+        chunks.push(chunk)
+      }
+      return Buffer.concat(chunks)
+    })()
 
     const result = await Promise.race([filePromise, timeoutPromise])
-    const data = result.body
+    const data = result
     if (!data) {
       throw new Error('Empty data')
     }
     res.set('Content-Type', 'application/octet-stream')
-    const responseStream = Writable.toWeb(res)
-    await data.pipeTo(responseStream)
+    // const responseStream = Writable.toWeb(res)
+
+    res.send(result)
   } catch (error) {
     pino.logger.error(error)
     if (error.message === 'Operation timed out') {
