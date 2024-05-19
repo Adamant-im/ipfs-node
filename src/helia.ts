@@ -1,19 +1,13 @@
+import { unixfs } from '@helia/unixfs'
 import { bootstrap } from '@libp2p/bootstrap'
 import { createHelia } from 'helia'
-import { createLibp2p } from 'libp2p'
-import { blockstore, datastore } from './store.js'
-import { getAllowNodesMultiaddrs } from './utils/utils.js'
-import { config } from './config.js'
 import { tcp } from '@libp2p/tcp'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { noise } from '@chainsafe/libp2p-noise'
-import { FaultTolerance } from '@libp2p/interface-transport'
-import { mplex } from '@libp2p/mplex'
 import { identify } from '@libp2p/identify'
-import { gossipsub } from '@chainsafe/libp2p-gossipsub'
-import { SignaturePolicy } from '@chainsafe/libp2p-gossipsub/types'
-import { kadDHT } from '@libp2p/kad-dht'
-import { webRTC } from '@libp2p/webrtc'
+import { blockstore, datastore } from './store.js'
+import { getAllowNodesMultiaddrs } from './utils/utils.js'
+import { config } from './config.js'
 
 export const helia = await createHelia({
   datastore,
@@ -40,3 +34,5 @@ export const helia = await createHelia({
     }
   }
 })
+
+export const ifs = unixfs(helia)
