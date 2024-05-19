@@ -1,9 +1,9 @@
 import { Router } from 'express'
 import { CID } from 'multiformats/cid'
-import { Writable } from 'node:stream'
+import { Readable } from 'node:stream'
 import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
-import { helia, verifiedFetch } from '../helia.js'
+import { helia, ifs } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
@@ -68,21 +68,40 @@ router.get('/file/:cid', async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   try {
-    const timeoutPromise = new Promise<globalThis.Response>((_, reject) =>
-      setTimeout(() => reject(new Error('Operation timed out')), config.findFileTimeout)
-    )
-    const filePromise = verifiedFetch(`ipfs://${cid}`, {
-      headers: req.headers as Record<string, string>
+    let streamStarted = false
+
+    const abortController = new AbortController()
+    const stream = new Readable({
+      async read() {
+        try {
+          for await (const chunk of ifs.cat(cid, { signal: abortController.signal })) {
+            this.push(chunk)
+          }
+          this.push(null) // Signal the end of the stream
+        } catch (err) {
+          this.destroy(err)
+        }
+      }
     })
 
-    const result = await Promise.race([filePromise, timeoutPromise])
-    const data = result.body
-    if (!data) {
-      throw new Error('Empty data')
-    }
-    res.set('Content-Type', 'application/octet-stream')
-    const responseStream = Writable.toWeb(res)
-    await data.pipeTo(responseStream)
+    stream.on('data', () => {
+      res.set('Content-Type', 'application/octet-stream')
+      streamStarted = true
+    })
+    stream.on('error', (err) => {
+      pino.logger.error(err)
+      res.status(408).send({
+        error: 'Can not find requested CID. Operation timed out.'
+      })
+    })
+
+    setTimeout(() => {
+      if (!streamStarted) {
+        abortController.abort()
+      }
+    }, config.findFileTimeout)
+
+    stream.pipe(res)
   } catch (error) {
     pino.logger.error(error)
     if (error.message === 'Operation timed out') {
