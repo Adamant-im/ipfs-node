@@ -69,38 +69,34 @@ router.get('/file/:cid', async (req, res) => {
     const cid = CID.parse(req.params.cid)
 
     let streamStarted = false
-
     const abortController = new AbortController()
-    const stream = new Readable({
-      async read() {
-        try {
-          for await (const chunk of ifs.cat(cid, { signal: abortController.signal })) {
-            this.push(chunk)
-          }
-          this.push(null) // Signal the end of the stream
-        } catch (err) {
-          this.destroy(err)
-        }
+    const timeout = setTimeout(() => {
+      if (!streamStarted) {
+        abortController.abort(new Error('Cannot find requested CID. Request timed out.'))
       }
-    })
+    }, config.findFileTimeout)
+
+    const stream = Readable.from(
+      ifs.cat(cid, {
+        signal: abortController.signal
+      })
+    )
 
     stream.on('data', () => {
-      res.set('Content-Type', 'application/octet-stream')
-      streamStarted = true
+      if (!streamStarted) {
+        streamStarted = true
+        res.set('Content-Type', 'application/octet-stream')
+      }
     })
     stream.on('error', (err) => {
       pino.logger.error(err)
       res.status(408).send({
-        error: 'Cannot find requested CID'
+        error: err.message
       })
     })
-
-    setTimeout(() => {
-      if (!streamStarted) {
-        abortController.abort()
-      }
-    }, config.findFileTimeout)
-
+    stream.on('end', () => {
+      clearTimeout(timeout)
+    })
     stream.pipe(res)
   } catch (error) {
     pino.logger.error(error)
