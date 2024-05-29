@@ -24,10 +24,7 @@ export const helia = await createHelia({
     streamMuxers: [yamux()],
     peerDiscovery: [
       bootstrap({
-        list: [
-          ...config.peerDiscovery.bootstrap,
-          ...config.nodes.map((item: ConfigNode) => item.multiAddr)
-        ]
+        list: config.peerDiscovery.bootstrap
       })
     ],
     services: {
