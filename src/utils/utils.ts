@@ -4,9 +4,7 @@ import { config } from '../config.js'
 import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
 import { statfs } from 'node:fs/promises'
 import { pino } from './logger.js'
-import { exec } from 'child_process'
-import { promisify } from 'node:util'
-const execPromise = promisify(exec)
+import { getFolderSizeBin } from 'go-get-folder-size'
 
 /**
  * Get peerId from multiaddr string
@@ -81,16 +79,9 @@ export async function availableStorageSize() {
 
 export async function dirSize(dir: string): Promise<number> {
   try {
-    const { stdout } = await execPromise('du -sb .', { cwd: dir })
-    const match = /^(\d+)/.exec(stdout)
-
-    if (match && match.length >= 2) {
-      return Number(match[1])
-    } else {
-      pino.logger.error('Cant parse cmd output')
-    }
-  } catch (err) {
-    pino.logger.error(`${err.message}\n${err.stack}`)
+    return await getFolderSizeBin(dir, false, { loose: true })
+  } catch (e) {
+    pino.logger.error(e)
   }
   return 0
 }

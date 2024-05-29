@@ -9,6 +9,7 @@ import { identify } from '@libp2p/identify'
 import { blockstore, datastore } from './store.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
+import { ConfigNode } from './utils/types.js'
 
 export const helia = await createHelia({
   datastore,
@@ -16,7 +17,7 @@ export const helia = await createHelia({
   libp2p: {
     datastore,
     addresses: {
-      listen: ['/ip4/0.0.0.0/tcp/4001']
+      listen: config.peerDiscovery.listen
     },
     transports: [tcp()],
     connectionEncryption: [noise()],
