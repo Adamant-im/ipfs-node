@@ -67,7 +67,7 @@ router.post('/file/upload', multerStorage.array('files', 5), async (req, res) =>
 router.get('/file/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
-
+    const fileStats = await ifs.stat(cid)
     let streamStarted = false
     const abortController = new AbortController()
     const timeout = setTimeout(() => {
@@ -86,6 +86,7 @@ router.get('/file/:cid', async (req, res) => {
       if (!streamStarted) {
         streamStarted = true
         res.set('Content-Type', 'application/octet-stream')
+        res.set('Content-Length', fileStats.fileSize.toString())
       }
     })
     stream.on('error', (err) => {
