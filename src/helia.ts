@@ -1,52 +1,42 @@
+import { unixfs } from '@helia/unixfs'
+import { createVerifiedFetch } from '@helia/verified-fetch'
 import { bootstrap } from '@libp2p/bootstrap'
 import { createHelia } from 'helia'
-import { blockstore, datastore } from './store.js'
-import { getAllowNodesMultiaddrs } from './utils/utils.js'
-import { config } from './config.js'
 import { tcp } from '@libp2p/tcp'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { noise } from '@chainsafe/libp2p-noise'
-import { FaultTolerance } from '@libp2p/interface-transport'
+import { identify } from '@libp2p/identify'
+import { blockstore, datastore } from './store.js'
+import { getAllowNodesMultiaddrs } from './utils/utils.js'
+import { config } from './config.js'
+import { ConfigNode } from './utils/types.js'
 
 export const helia = await createHelia({
   datastore,
   blockstore,
   libp2p: {
+    datastore,
+    addresses: {
+      listen: config.peerDiscovery.listen
+    },
+    transports: [tcp()],
+    connectionEncryption: [noise()],
+    streamMuxers: [yamux()],
     peerDiscovery: [
       bootstrap({
         list: config.peerDiscovery.bootstrap
       })
     ],
-    addresses: {
-      listen: config.peerDiscovery.listen
+    services: {
+      identify: identify()
     },
     connectionManager: {
-      /**
-       * The total number of connections allowed to be open at one time
-       */
-      // maxConnections: 10,
-
-      /**
-       * If the number of open connections goes below this number, the node
-       * will try to connect to randomly selected peers from the peer store
-       */
-      // minConnections: 5,
-
-      /**
-       * How many connections can be open but not yet upgraded
-       */
-      // maxIncomingPendingConnections: 10,
-
-      /**
-       * A list of multiaddrs that will always be allowed (except if they are in the deny list) to open connections to this node even if we've reached maxConnections
-       */
+      maxConnections: 100,
       allow: getAllowNodesMultiaddrs()
-    },
-    transports: [tcp()],
-    streamMuxers: [yamux()],
-    connectionEncryption: [noise()],
-    transportManager: {
-      faultTolerance: FaultTolerance.NO_FATAL
     }
   }
 })
+
+export const ifs = unixfs(helia)
+
+export const verifiedFetch = await createVerifiedFetch(helia)
