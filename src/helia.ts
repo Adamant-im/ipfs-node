@@ -1,5 +1,4 @@
 import { unixfs } from '@helia/unixfs'
-import { createVerifiedFetch } from '@helia/verified-fetch'
 import { bootstrap } from '@libp2p/bootstrap'
 import { createHelia } from 'helia'
 import { tcp } from '@libp2p/tcp'
