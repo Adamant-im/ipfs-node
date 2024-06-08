@@ -10,7 +10,7 @@ import { flatFiles } from '../utils/utils.js'
 
 const router = Router()
 
-router.post('/file/upload', multerStorage.array('files', 5), async (req, res) => {
+router.post('/upload', multerStorage.array('files', 5), async (req, res) => {
   if (!req.files) {
     res.statusCode = 400
     return res.send({
@@ -34,20 +34,10 @@ router.post('/file/upload', multerStorage.array('files', 5), async (req, res) =>
       if (isPinned) {
         pino.logger.info(`File already pinned ${cid}`)
       } else {
-        // Pin the file
         for await (const pinned of helia.pins.add(cid)) {
           pino.logger.info(`Filed pinned: ${pinned}`)
         }
       }
-
-      // Tell the network we can provide content for the passed CID
-      // const dht = helia.libp2p.services.dht as KadDHT
-      // await dht.provide(cid)
-      // pino.logger.info(`Provided CID via DHT ${cid}`)
-      //
-      // pino.logger.info(`Routing: Providing ${cid}`)
-      // void helia.routing.provide(cid)
-      // pino.logger.info('Routing: Provide DONE')
     }
 
     res.send({
@@ -64,7 +54,7 @@ router.post('/file/upload', multerStorage.array('files', 5), async (req, res) =>
   }
 })
 
-router.get('/file/:cid', async (req, res) => {
+router.get('/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
     const fileStats = await ifs.stat(cid)

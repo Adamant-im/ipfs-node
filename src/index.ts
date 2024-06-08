@@ -1,45 +1,13 @@
 import express, { NextFunction } from 'express'
-import { helia } from './helia.js'
 import { Request, Response } from 'express'
 import { pino } from './utils/logger.js'
-import { config, configFileName, packageJson } from './config.js'
-import { getDiskUsageStats, diskUsageCron } from './disk-usage.cron.js'
+import { config, configFileName } from './config.js'
+import { diskUsageCron } from './disk-usage.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
 
 pino.logger.info(`Using config file: ${configFileName}`)
 
-helia.libp2p.getMultiaddrs().forEach((addr) => {
-  pino.logger.info(`Listening on ${addr.toString()}`)
-})
-
-helia.libp2p.addEventListener('peer:discovery', (evt) => {
-  const peer = evt.detail
-  pino.logger.info(`Discovered peer: ${peer.id}`)
-})
-
-helia.libp2p.addEventListener('peer:connect', (evt) => {
-  const peerId = evt.detail
-  pino.logger.info(`Peer connected: ${peerId}`)
-})
-
-helia.libp2p.addEventListener('peer:disconnect', (evt) => {
-  const peerId = evt.detail
-  pino.logger.info(`Peer disconnected: ${peerId}`)
-})
-
-helia.libp2p.addEventListener('start', (event) => {
-  pino.logger.info('Libp2p node started')
-})
-
-helia.libp2p.addEventListener('stop', (event) => {
-  pino.logger.info('Libp2p node stopped')
-})
-
-pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
-
-// autoPeering.start()
-// autoPeeringHandler().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
 diskUsageCron.start()
 
 const PORT = config.serverPort
@@ -58,11 +26,11 @@ app.get('/', (req, res) => {
   res.send('IPFS node')
 })
 
-app.use('/api', routers.file)
-app.use('/api', routers.node)
-app.use('/api', routers.helia)
-app.use('/api', routers.libp2p)
-app.use('/api', routers.debug)
+app.use('/api/file', routers.file)
+app.use('/api/node', routers.node)
+app.use('/api/helia', routers.helia)
+app.use('/api/libp2p', routers.libp2p)
+app.use('/api/debug', routers.debug)
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   pino.logger.error(`${err.message}\n${err.stack}`)

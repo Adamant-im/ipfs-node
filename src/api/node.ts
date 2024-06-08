@@ -5,14 +5,14 @@ import { helia } from '../helia.js'
 
 const router = Router()
 
-router.get('/node/health', async (req, res) => {
+router.get('/health', async (req, res) => {
   res.send({
     timestamp: Date.now(),
     heliaStatus: helia.libp2p.status
   })
 })
 
-router.get('/node/info', async (req, res) => {
+router.get('/info', async (req, res) => {
   const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
 
   res.send({

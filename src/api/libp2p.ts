@@ -10,7 +10,7 @@ import { pino } from '../utils/logger.js'
 const router = Router()
 
 router.get(
-  '/libp2p/services/ping',
+  '/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
@@ -28,66 +28,60 @@ router.get(
   }
 )
 
-router.get(
-  '/libp2p/peerStore',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-    const peerId = req.query.peerId
+router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
+  const peerId = req.query.peerId
 
-    try {
-      const peers = await helia.libp2p.peerStore.all({
-        filters: [
-          (peer) => {
-            if (!peerId) {
-              return true
-            }
-
-            return peer.id.toString() === peerId
+  try {
+    const peers = await helia.libp2p.peerStore.all({
+      filters: [
+        (peer) => {
+          if (!peerId) {
+            return true
           }
-        ],
-        limit: 10
-      })
 
-      res.send({
-        length: peers.length,
-        peers: peers.map((peer) => {
-          return {
-            id: peer.id.toString()
-          }
-        })
+          return peer.id.toString() === peerId
+        }
+      ],
+      limit: 10
+    })
+
+    res.send({
+      length: peers.length,
+      peers: peers.map((peer) => {
+        return {
+          id: peer.id.toString()
+        }
       })
-    } catch (err) {
-      res.send({
-        error: err.message
-      })
-    }
+    })
+  } catch (err) {
+    res.send({
+      error: err.message
+    })
   }
-)
+})
+
+router.get('/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
+  const peerId = req.query.peerId
+
+  try {
+    const peers = await helia.libp2p.peerStore.all({
+      filters: [(peer) => peer.id.toString() === peerId],
+      limit: 10
+    })
+
+    res.send({
+      length: peers.length,
+      peer: peers
+    })
+  } catch (err) {
+    res.send({
+      error: err.message
+    })
+  }
+})
 
 router.get(
-  '/libp2p/peerInfo',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-    const peerId = req.query.peerId
-
-    try {
-      const peers = await helia.libp2p.peerStore.all({
-        filters: [(peer) => peer.id.toString() === peerId],
-        limit: 10
-      })
-
-      res.send({
-        length: peers.length,
-        peer: peers
-      })
-    } catch (err) {
-      res.send({
-        error: err.message
-      })
-    }
-  }
-)
-
-router.get(
-  '/libp2p/dial',
+  '/dial',
   async (req: Request<never, never, never, PeerIdDto & { multiAddr: string }>, res: Response) => {
     let peerId: PeerId | undefined
     let multiAddr: Multiaddr | undefined
@@ -133,34 +127,31 @@ router.get(
   }
 )
 
-router.get(
-  '/libp2p/connections',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-    try {
-      const peerId = req.query.peerId?.toString() || ''
-      const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
+router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
+  try {
+    const peerId = req.query.peerId?.toString() || ''
+    const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
 
-      res.send({
-        length: connections.length,
-        connections
-      })
-    } catch (err) {
-      pino.logger.error(err)
-      res.status(400)
-      res.send({
-        error: err.message
-      })
-    }
+    res.send({
+      length: connections.length,
+      connections
+    })
+  } catch (err) {
+    pino.logger.error(err)
+    res.status(400)
+    res.send({
+      error: err.message
+    })
   }
-)
+})
 
-router.get('/libp2p/status', async (req, res) => {
+router.get('/status', async (req, res) => {
   res.send({
     status: helia.libp2p.status
   })
 })
 
-router.get('/libp2p/peers', (req, res) => {
+router.get('/peers', (req, res) => {
   try {
     const peers = helia.libp2p.getPeers()
 
