@@ -10,7 +10,7 @@ import { flatFiles } from '../utils/utils.js'
 
 const router = Router()
 
-router.post('/upload', multerStorage.array('files', 5), async (req, res) => {
+router.post('/upload', multerStorage.array('files', config.maxFileCount), async (req, res) => {
   if (!req.files) {
     res.statusCode = 400
     return res.send({
