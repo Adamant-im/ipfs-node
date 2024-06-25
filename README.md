@@ -1,5 +1,9 @@
 # ipfs-node
-IPFS decentralized file storage and transfers
+ADAMANT ipfs-node. Designed for downloading and exchanging files in the ADAMANT Messenger. 
+
+Unlike the standard libraries (helia or kubo), this ipfs-node is equipped with a web server for performing REST requests for downloading and receiving files.
+
+The plans also include the implementation of the Garbage collector function, which will save disk space by removing unsent files.
 
 ## How to start
 - You will need nodejs v20.11.1 (You can install via nvm: https://github.com/nvm-sh/nvm):
