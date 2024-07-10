@@ -122,16 +122,16 @@ Content-Type: application/json; charset=utf-8
 ...
 
 {
-  "version":"0.0.1",
-  "timestamp":1720614998797,
-  "heliaStatus":"started",
-  "peerId":"12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
-  "multiAddresses":[
+  "version": "0.0.1",
+  "timestamp": 1720614998797,
+  "heliaStatus": "started",
+  "peerId": "12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
+  "multiAddresses": [
     "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
     "/ip4/62.72.43.99/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9"
   ],
-  "blockstoreSizeMb":0.0009489059448242188,
-  "datastoreSizeMb":0.006007194519042969,
-  "availableSizeInMb":2257731
+  "blockstoreSizeMb": 0.0009489059448242188,
+  "datastoreSizeMb": 0.006007194519042969,
+  "availableSizeInMb": 2257731
 }
 ```
