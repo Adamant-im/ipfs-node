@@ -41,7 +41,7 @@ For example:
     },
     ...
   ],
-  storeFolder: '.adm-ipfs', // File storage directory (the directory is set from the user’s root directory)
+  storeFolder: '.adm-ipfs', // File storage directory (the directory is set from the user’s home directory)
   logLevel: 'debug', // Logging level: fatal, error, warn, info, debug, trace
   peerDiscovery: {
     // IPFS network nodes that will be used to search for new nodes
