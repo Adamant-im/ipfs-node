@@ -84,14 +84,8 @@ curl -i --location 'http://localhost:4000/api/file/upload' --form 'files=@"file.
 #### Response
 ```
 HTTP/1.1 200 OK
-X-Powered-By: Express
-Vary: Origin
 Content-Type: application/json; charset=utf-8
-Content-Length: 98
-ETag: W/"62-79lDutTrkZZgROcnYebNgQPnqhQ"
-Date: Wed, 10 Jul 2024 12:18:50 GMT
-Connection: keep-alive
-Keep-Alive: timeout=5
+...
 
 {"filesNames":["file.txt"],"cids":["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"]}
 ```
@@ -107,13 +101,8 @@ curl -i --location 'http://localhost:4000/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpe
 #### Response
 ```
 HTTP/1.1 200 OK
-X-Powered-By: Express
-Vary: Origin
 Content-Type: application/octet-stream
-Content-Length: 17
-Date: Wed, 10 Jul 2024 12:23:39 GMT
-Connection: keep-alive
-Keep-Alive: timeout=5
+...
 
 Hello ipfs-node!
 ```
@@ -129,14 +118,8 @@ curl -i --location 'http://localhost:4000/api/node/info'
 #### Response
 ```
 HTTP/1.1 200 OK
-X-Powered-By: Express
-Vary: Origin
 Content-Type: application/json; charset=utf-8
-Content-Length: 428
-ETag: W/"1ac-gZEDVXGiPiendFaMWoAHkwBk/cY"
-Date: Wed, 10 Jul 2024 12:36:38 GMT
-Connection: keep-alive
-Keep-Alive: timeout=5
+...
 
 {
   "version":"0.0.1",
