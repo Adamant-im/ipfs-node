@@ -22,7 +22,7 @@ export async function getFileStats(cid: CID) {
     console.log(err)
     clearTimeout(timeout)
 
-    throw new Error('Cannot find requested CID. Request timed out.')
+    throw new FileNotFoundError('Cannot find requested CID. Request timed out.')
   }
 }
 
@@ -38,7 +38,7 @@ export function downloadFile(cid: CID) {
     if (aborted) return
 
     aborted = true
-    abortController.abort(new Error('Unable to retrieve the file. Request timed out.'))
+    abortController.abort(new FileNotFoundError('Unable to retrieve the file. Request timed out.'))
   }
   const abortTimer = setTimeout(abort, config.findFileTimeout)
 
@@ -55,4 +55,11 @@ export function downloadFile(cid: CID) {
   })
 
   return stream
+}
+
+export class FileNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FileNotFoundError'
+  }
 }

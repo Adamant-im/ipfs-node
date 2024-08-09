@@ -6,7 +6,7 @@ import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
-import { downloadFile, getFileStats } from '../utils/file.js'
+import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 
 const router = Router()
 
@@ -79,10 +79,16 @@ router.get('/:cid', async (req, res) => {
 
     stream.pipe(res)
   } catch (error) {
-    pino.logger.error(error)
-    res.status(500).send({
-      error: error.message
-    })
+    if (error instanceof FileNotFoundError) {
+      res.status(408).send({
+        error: error.message
+      })
+    } else {
+      pino.logger.error(error)
+      res.status(500).send({
+        error: error.message
+      })
+    }
   }
 })
 
