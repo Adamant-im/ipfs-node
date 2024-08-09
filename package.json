@@ -2,7 +2,7 @@
   "name": "ipfs-node",
   "version": "0.0.1",
   "description": "IPFS decentralized file storage and transfers",
-  "main": "index.js",
+  "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "npx rimraf dist; tsc",
