@@ -1,12 +1,12 @@
 import express, { NextFunction } from 'express'
 import { Request, Response } from 'express'
 import { pino } from './utils/logger.js'
-import { config, configFileName } from './config.js'
+import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
 
-pino.logger.info(`Using config file: ${configFileName}`)
+pino.logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
 diskUsageCron.start()
 

@@ -6,10 +6,9 @@ import JSON5 from 'json5'
 const currDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(currDir, '..')
 
-const configName = process.argv.slice(2)[0] || 'default'
-export const configFileName = `config.${configName}.json5`
+export const CONFIG_FILE_NAME = 'config.json5'
 
-const configPath = join(rootDir, configFileName)
+const configPath = join(rootDir, CONFIG_FILE_NAME)
 
 export const config = JSON5.parse(fs.readFileSync(configPath, 'utf8'))
 
