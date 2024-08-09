@@ -1,12 +1,12 @@
 import { Router } from 'express'
 import { CID } from 'multiformats/cid'
-import { Readable } from 'node:stream'
 import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
-import { helia, ifs } from '../helia.js'
+import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
+import { downloadFile, getFileStats } from '../utils/file.js'
 
 const router = Router()
 
@@ -57,20 +57,10 @@ router.post('/upload', multerStorage.array('files', config.maxFileCount), async 
 router.get('/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
-    const fileStats = await ifs.stat(cid)
-    let streamStarted = false
-    const abortController = new AbortController()
-    const timeout = setTimeout(() => {
-      if (!streamStarted) {
-        abortController.abort(new Error('Cannot find requested CID. Request timed out.'))
-      }
-    }, config.findFileTimeout)
+    const fileStats = await getFileStats(cid)
 
-    const stream = Readable.from(
-      ifs.cat(cid, {
-        signal: abortController.signal
-      })
-    )
+    let streamStarted = false
+    const stream = downloadFile(cid)
 
     stream.on('data', () => {
       if (!streamStarted) {
@@ -79,20 +69,19 @@ router.get('/:cid', async (req, res) => {
         res.set('Content-Length', fileStats.fileSize.toString())
       }
     })
+
     stream.on('error', (err) => {
       pino.logger.error(err)
       res.status(408).send({
         error: err.message
       })
     })
-    stream.on('end', () => {
-      clearTimeout(timeout)
-    })
+
     stream.pipe(res)
   } catch (error) {
     pino.logger.error(error)
     res.status(500).send({
-      error: 'Internal Server Error. Check the logs for details.'
+      error: error.message
     })
   }
 })
