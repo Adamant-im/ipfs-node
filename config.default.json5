@@ -17,10 +17,9 @@
   logLevel: 'debug',
   peerDiscovery: {
     bootstrap: [
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN',
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa',
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb',
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt'
+      '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq', // ipfs1
+      '/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd', // ipfs2
+      '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU' // ipfs3
     ],
     listen: ['/ip4/0.0.0.0/tcp/4001']
   },
