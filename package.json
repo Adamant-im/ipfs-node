@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "IPFS decentralized file storage and transfers",
   "main": "dist/index.js",
+  "private": true,
   "type": "module",
   "scripts": {
     "build": "npx rimraf dist; tsc",
