@@ -10,12 +10,19 @@ import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 
 const router = Router()
 
-router.post('/upload', multerStorage.array('files', config.maxFileCount), async (req, res) => {
+router.post('/upload', multerStorage.array('files'), async (req, res) => {
   if (!req.files) {
     res.statusCode = 400
     return res.send({
       error: 'No file uploaded'
     })
+  }
+
+  if (req.files.length > config.maxFileCount) {
+    res.status(400).send({
+      error: `File limit exceeded. Max ${config.maxFileCount} allowed.`
+    })
+    return
   }
 
   try {
