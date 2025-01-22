@@ -17,7 +17,8 @@ app.use(pino)
 
 app.use(
   cors({
-    origin: config.cors.originRegexps.map((item: string) => new RegExp(`^https?:\\/\\/${item}`)),
+    origin: config.cors.origin,
+    credentials: config.cors.credentials,
     methods: ['GET', 'POST']
   })
 )

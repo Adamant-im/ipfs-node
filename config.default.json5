@@ -30,6 +30,7 @@
   maxFileCount: 10,
   findFileTimeout: 20000,
   cors: {
-    originRegexps: ['.*.adamant.im', 'adm.im', '.*.vercel.app', '.*.surge.sh', 'localhost:8080']
+    origin: '*',
+    credentials: true
   }
 }
