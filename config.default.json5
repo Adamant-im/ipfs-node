@@ -1,0 +1,36 @@
+{
+  nodes: [
+    {
+      name: 'ipfs1',
+      multiAddr: '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
+    },
+    {
+      name: 'ipfs2',
+      multiAddr: '/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd'
+    },
+    {
+      name: 'ipfs3',
+      multiAddr: '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU'
+    }
+  ],
+  storeFolder: '.adm-ipfs',
+  logLevel: 'debug',
+  peerDiscovery: {
+    bootstrap: [
+      '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq', // ipfs1
+      '/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd', // ipfs2
+      '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU' // ipfs3
+    ],
+    listen: ['/ip4/0.0.0.0/tcp/4001']
+  },
+  serverPort: 4000,
+  autoPeeringPeriod: '*/10 * * * * *',
+  diskUsageScanPeriod: '*/30 * * * * *',
+  uploadLimitSizeBytes: 268435456, // 256 Mb.
+  maxFileCount: 10,
+  findFileTimeout: 20000,
+  cors: {
+    origin: '*',
+    credentials: true
+  }
+}
