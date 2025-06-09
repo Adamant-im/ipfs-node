@@ -6,10 +6,10 @@ Unlike the standard libraries (helia or kubo), this ipfs-node is equipped with a
 The plans also include the implementation of the Garbage Collector function, which will save disk space by removing unsent files.
 
 ## How to start
-- You will need Node.js v20.11.1 (You can install via nvm: https://github.com/nvm-sh/nvm):
+- You will need Node.js v22.16.0 (You can install via nvm: https://github.com/nvm-sh/nvm):
 ```bash
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-nvm install 20.11.1
+nvm install v22.16.0
 ```
 - Cloning and building node:
 ```bash
