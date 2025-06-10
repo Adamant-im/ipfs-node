@@ -18,13 +18,10 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error?: Error, info?: Partial<UnixFsMulterFile>) => void
   ): void {
-    const folder = this.options.destination(req, file)
-    const filename = this.options.filename(req, file)
+    // const folder = this.options.destination(req, file)
+    // const filename = this.options.filename(req, file)
     this.options.unixfs
-      .addFile({
-        path: `${folder}/${filename}`,
-        content: file.stream
-      })
+      .addByteStream(file.stream)
       .then((cid) => {
         callback(undefined, { ...file, cid })
       })

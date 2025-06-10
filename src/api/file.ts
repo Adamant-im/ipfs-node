@@ -72,7 +72,7 @@ router.get('/:cid', async (req, res) => {
       if (!streamStarted) {
         streamStarted = true
         res.set('Content-Type', 'application/octet-stream')
-        res.set('Content-Length', fileStats.fileSize.toString())
+        res.set('Content-Length', fileStats.size.toString())
       }
     })
 
