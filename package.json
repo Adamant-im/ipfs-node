@@ -47,7 +47,7 @@
     "cors": "^2.8.5",
     "cron": "^3.1.7",
     "datastore-fs": "^9.1.9",
-    "express": "^4.19.2",
+    "express": "^5.1.0",
     "go-get-folder-size": "^0.5.5",
     "helia": "^4.2.5",
     "json5": "^2.2.3",

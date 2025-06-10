@@ -28,10 +28,10 @@ router.post('/pin/:cid', async (req, res) => {
     }
   } catch (err) {
     pino.logger.error(`Error: ${err.message}`)
-    res.statusCode = 500
-    return res.send({
+    res.status(500).send({
       error: err.message
     })
+    return
   }
 
   res.send({

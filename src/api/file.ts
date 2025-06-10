@@ -12,10 +12,10 @@ const router = Router()
 
 router.post('/upload', multerStorage.array('files'), async (req, res) => {
   if (!req.files) {
-    res.statusCode = 400
-    return res.send({
+    res.status(400).send({
       error: 'No file uploaded'
     })
+    return
   }
 
   if (req.files.length > config.maxFileCount) {
@@ -54,8 +54,7 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
   } catch (err) {
     pino.logger.error(err)
 
-    res.status(400)
-    res.send({
+    res.status(400).send({
       error: err.message
     })
   }
