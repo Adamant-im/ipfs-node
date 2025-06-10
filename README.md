@@ -82,7 +82,7 @@ curl -i --location 'http://localhost:4000/api/file/upload' --form 'files=@"file.
 ```
 
 #### Response
-```
+```text
 HTTP/1.1 200 OK
 Content-Type: application/json; charset=utf-8
 ...
@@ -99,7 +99,7 @@ curl -i --location 'http://localhost:4000/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpe
 ```
 
 #### Response
-```
+```text
 HTTP/1.1 200 OK
 Content-Type: application/octet-stream
 ...
@@ -116,7 +116,7 @@ curl -i --location 'http://localhost:4000/api/node/info'
 ```
 
 #### Response
-```
+```text
 HTTP/1.1 200 OK
 Content-Type: application/json; charset=utf-8
 ...
