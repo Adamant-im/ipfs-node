@@ -13,7 +13,7 @@
       multiAddr: '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU'
     }
   ],
-  storeFolder: '.adm-ipfs',
+  storeFolder: './.adm-ipfs',
   logLevel: 'debug',
   peerDiscovery: {
     bootstrap: [
