@@ -1,10 +1,14 @@
-import express, { NextFunction } from 'express'
+import express from 'express'
 import { Request, Response } from 'express'
 import { pino } from './utils/logger.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
+import { datastore, blockstore } from './store.js'
+
+await datastore.open()
+await blockstore.open()
 
 pino.logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
@@ -33,7 +37,7 @@ app.use('/api/helia', routers.helia)
 app.use('/api/libp2p', routers.libp2p)
 app.use('/api/debug', routers.debug)
 
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+app.use((err: Error, req: Request, res: Response) => {
   pino.logger.error(`${err.message}\n${err.stack}`)
   res.status(500).send({ error: 'Internal Server Error. See logs.' })
 })

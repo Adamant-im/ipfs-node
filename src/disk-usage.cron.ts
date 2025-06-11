@@ -10,18 +10,29 @@ let blockstoreSizeMb = 0
 let datastoreSizeMb = 0
 let availableSizeInMb = 0
 
-let started = false
-export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
-  if (!started) {
-    started = true
-    scan()
-      .catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
-      .finally(() => (started = false))
-  }
+let isRunning = false
+export const diskUsageCron = CronJob.from({
+  cronTime: config.diskUsageScanPeriod,
+  onTick: async () => {
+    try {
+      if (!isRunning) {
+        isRunning = true
+        pino.logger.info('[Cron] Running "diskUsage" cronjob.')
+        const duration = await scan()
+        pino.logger.info(`[Cron] "diskUsage" cronjob took ${duration} ms.`)
+        isRunning = false
+      }
+    } catch (error) {
+      pino.logger.error(`${error.message}\n${error.stack}`)
+    } finally {
+      isRunning = false
+    }
+  },
+  start: false,
+  name: 'diskUsage'
 })
 
 async function scan() {
-  pino.logger.info('[Cron] Running "diskUsage" cronjob.')
   const start = Date.now()
 
   const blockstoreSize = await dirSize(blockstorePath)
@@ -35,10 +46,8 @@ async function scan() {
   }
 
   availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
-  pino.logger.info(`Check folder size took ${Date.now() - start} ms.`)
+  return Date.now() - start
 }
-
-scan().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
 
 export function getDiskUsageStats() {
   return {
