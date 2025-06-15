@@ -1,4 +1,6 @@
 import express from 'express'
+import swaggerUi from 'swagger-ui-express'
+import { swaggerSpec } from './swagger.js'
 import { Request, Response } from 'express'
 import { httpLogger, logger } from './utils/logger.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
@@ -26,6 +28,8 @@ app.use(
     methods: ['GET', 'POST']
   })
 )
+
+app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
 app.get('/', (req, res) => {
   res.send('IPFS node')

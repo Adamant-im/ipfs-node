@@ -10,6 +10,71 @@ import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 
 const router = Router()
 
+/**
+ * @openapi
+ * /api/file/upload:
+ *   post:
+ *     tags: [File]
+ *     summary: Upload files to IPFS
+ *     description: Uploads one or more files, adds them to IPFS, and returns their CIDs. Files are also pinned if not already.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               files:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                   format: binary
+ *                 description: Files to be uploaded.
+ *     responses:
+ *       200:
+ *         description: Files uploaded and pinned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 filesNames:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of uploaded file names.
+ *                 cids:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Corresponding CIDs of the uploaded files.
+ *             example:
+ *               filesNames:
+ *                 - "example.txt"
+ *                 - "image.png"
+ *               cids:
+ *                 - "bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+ *                 - "bafybeia6enmtx4fwdl2whnuyr5gy66jjz5rb2cq6g4r2vsmilxv5gpkh7a"
+ *       400:
+ *         description: Bad request – No files or file count exceeds limit
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   description: Error message describing the issue.
+ *             examples:
+ *               noFile:
+ *                 summary: No files uploaded
+ *                 value:
+ *                   error: "No file uploaded"
+ *               fileLimitExceeded:
+ *                 summary: Too many files uploaded
+ *                 value:
+ *                   error: "File limit exceeded. Max 5 allowed."
+ */
 router.post('/upload', multerStorage.array('files'), async (req, res) => {
   if (!req.files) {
     res.status(400).send({
@@ -60,6 +125,58 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
   }
 })
 
+/**
+ * @openapi
+ * /api/file/{cid}:
+ *   get:
+ *     tags: [File]
+ *     summary: Download file by CID
+ *     description: Streams a file from IPFS corresponding to the given CID. The response is a binary stream with appropriate headers.
+ *     parameters:
+ *       - in: path
+ *         name: cid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Content Identifier (CID) of the file to download.
+ *     responses:
+ *       200:
+ *         description: File stream starts successfully
+ *         content:
+ *           application/octet-stream:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       408:
+ *         description: File not found or failed to stream
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             examples:
+ *               notFound:
+ *                 summary: File not found
+ *                 value:
+ *                   error: "Cannot find requested CID. Request timed out."
+ *               streamError:
+ *                 summary: Stream error
+ *                 value:
+ *                   error: "Failed to stream file"
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             example:
+ *               error: "Internal Server Error. See logs."
+ */
 router.get('/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
@@ -85,6 +202,7 @@ router.get('/:cid', async (req, res) => {
 
     stream.pipe(res)
   } catch (error) {
+    // TODO: Handle invalid CID,  "type": "SyntaxError",
     if (error instanceof FileNotFoundError) {
       res.status(408).send({
         error: error.message

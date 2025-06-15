@@ -5,6 +5,43 @@ import { helia } from '../helia.js'
 
 const router = Router()
 
+/**
+ * @openapi
+ * /api/debug/autopeering:
+ *   get:
+ *     tags: [Debug]
+ *     summary: Attempt to auto-peer with known nodes
+ *     description: Attempts to dial and peer with a list of known nodes. Returns the list of nodes that were successfully peered with.
+ *     responses:
+ *       200:
+ *         description: Auto-peering operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 peeredSuccessfullyTo:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of node names successfully peered with.
+ *             example:
+ *               peeredSuccessfullyTo:
+ *                 - "NodeA"
+ *                 - "NodeB"
+ *       500:
+ *         description: Internal server error during auto-peering
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   description: Error message detailing why the operation failed.
+ *             example:
+ *               error: "Internal Server Error. See logs."
+ */
 router.get('/autopeering', async (req, res) => {
   try {
     const nodes = getNodesList([helia.libp2p.peerId.toString()])

@@ -5,6 +5,7 @@ import { tcp } from '@libp2p/tcp'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { noise } from '@chainsafe/libp2p-noise'
 import { identify } from '@libp2p/identify'
+import { ping } from '@libp2p/ping'
 import { blockstore, datastore } from './store.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
@@ -27,7 +28,8 @@ export const helia = await createHelia({
       })
     ],
     services: {
-      identify: identify()
+      identify: identify(),
+      ping: ping()
     },
     connectionManager: {
       maxConnections: 100,
