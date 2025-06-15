@@ -1,7 +1,7 @@
 import { StorageEngine } from 'multer'
 import * as e from 'express'
 import { UnixFS } from '@helia/unixfs'
-import { pino } from './logger.js'
+import { logger } from './logger.js'
 import { UnixFsMulterFile } from './types.js'
 
 export interface UnixfsStorageOptions {
@@ -33,7 +33,7 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {
-    pino.logger.info(`Need remove file ${file.originalname}`)
+    logger.info(`Need remove file ${file.originalname}`)
     callback(null)
   }
 }

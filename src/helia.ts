@@ -8,7 +8,7 @@ import { identify } from '@libp2p/identify'
 import { blockstore, datastore } from './store.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
-import { pino } from './utils/logger.js'
+import { logger } from './utils/logger.js'
 
 export const helia = await createHelia({
   datastore,
@@ -37,32 +37,32 @@ export const helia = await createHelia({
 })
 
 helia.libp2p.getMultiaddrs().forEach((addr) => {
-  pino.logger.info(`Listening on ${addr.toString()}`)
+  logger.info(`Listening on ${addr.toString()}`)
 })
 
 helia.libp2p.addEventListener('peer:discovery', (evt) => {
   const peer = evt.detail
-  pino.logger.info(`Discovered peer: ${peer.id}`)
+  logger.info(`Discovered peer: ${peer.id}`)
 })
 
 helia.libp2p.addEventListener('peer:connect', (evt) => {
   const peerId = evt.detail
-  pino.logger.info(`Peer connected: ${peerId}`)
+  logger.info(`Peer connected: ${peerId}`)
 })
 
 helia.libp2p.addEventListener('peer:disconnect', (evt) => {
   const peerId = evt.detail
-  pino.logger.info(`Peer disconnected: ${peerId}`)
+  logger.info(`Peer disconnected: ${peerId}`)
 })
 
 helia.libp2p.addEventListener('start', () => {
-  pino.logger.info('Libp2p node started')
+  logger.info('Libp2p node started')
 })
 
 helia.libp2p.addEventListener('stop', () => {
-  pino.logger.info('Libp2p node stopped')
+  logger.info('Libp2p node stopped')
 })
 
-pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
+logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
 export const ifs = unixfs(helia)

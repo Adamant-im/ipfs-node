@@ -3,7 +3,7 @@ import { multiaddr } from '@multiformats/multiaddr'
 import { config } from '../config.js'
 import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
 import { statfs } from 'node:fs/promises'
-import { pino } from './logger.js'
+import { logger } from './logger.js'
 import { getFolderSizeBin } from 'go-get-folder-size'
 
 /**
@@ -81,7 +81,7 @@ export async function dirSize(dir: string): Promise<number> {
   try {
     return await getFolderSizeBin(dir, false, { loose: true })
   } catch (e) {
-    pino.logger.error(e)
+    logger.error(e)
   }
   return 0
 }

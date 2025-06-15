@@ -5,7 +5,7 @@ import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { Request, Response, Router } from 'express'
 import { PeerIdDto } from '../dto/peer-id.dto.js'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 
 const router = Router()
 
@@ -94,7 +94,7 @@ router.get(
         multiAddr = multiaddr(req.query.multiAddr || '')
       }
     } catch (err) {
-      pino.logger.error('Invalid peer ID:' + err.message)
+      logger.error('Invalid peer ID:' + err.message)
       res.send({
         success: false,
         error: 'Invalid peer ID'
@@ -103,9 +103,9 @@ router.get(
     }
 
     if (multiAddr) {
-      pino.logger.info(`Peering by multiAddress: ${multiAddr}`)
+      logger.info(`Peering by multiAddress: ${multiAddr}`)
     } else if (peerId) {
-      pino.logger.info(`Peering by PeerID: ${peerId}`)
+      logger.info(`Peering by PeerID: ${peerId}`)
     }
 
     try {
@@ -116,13 +116,13 @@ router.get(
       const connection = await helia.libp2p.dial(peer)
       res.send({ success: true, connection })
     } catch (err) {
-      pino.logger.warn(`Cannot dial peer: ${err.message}`)
+      logger.warn(`Cannot dial peer: ${err.message}`)
 
       res.send({
         success: false,
         error: err.message
       })
-      pino.logger.error(err)
+      logger.error(err)
     }
   }
 )
@@ -137,7 +137,7 @@ router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, 
       connections
     })
   } catch (err) {
-    pino.logger.error(err)
+    logger.error(err)
     res.status(400)
     res.send({
       error: err.message
@@ -157,7 +157,7 @@ router.get('/peers', (req, res) => {
 
     res.send({ peers })
   } catch (err) {
-    pino.logger.error(err)
+    logger.error(err)
     res.status(400)
     res.send({
       error: err.message

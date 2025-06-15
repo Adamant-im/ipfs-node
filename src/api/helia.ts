@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { Pin } from 'helia'
 import { CID } from 'multiformats/cid'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 
 const router = Router()
 
@@ -10,7 +10,7 @@ router.get('/pins', async (req, res) => {
   const pins: Pin[] = []
 
   for await (const pin of helia.pins.ls()) {
-    pino.logger.info('PIN LS', pin)
+    logger.info('PIN LS', pin)
     pins.push(pin)
   }
 
@@ -24,10 +24,10 @@ router.post('/pin/:cid', async (req, res) => {
 
   try {
     for await (const pin of helia.pins.add(cid)) {
-      pino.logger.info('PINNED', pin)
+      logger.info('PINNED', pin)
     }
   } catch (err) {
-    pino.logger.error(`Error: ${err.message}`)
+    logger.error(`Error: ${err.message}`)
     res.status(500).send({
       error: err.message
     })
@@ -57,7 +57,7 @@ router.get('/routing/findProviders/:cid', async (req, res) => {
 
     const providers: string[] = []
     for await (const provider of helia.routing.findProviders(cid)) {
-      pino.logger.info(`Found provider of CID:${cid.toString()}, PeerId:${provider.id.toString()}`)
+      logger.info(`Found provider of CID:${cid.toString()}, PeerId:${provider.id.toString()}`)
       providers.push(provider.id.toString())
     }
 
@@ -68,7 +68,7 @@ router.get('/routing/findProviders/:cid', async (req, res) => {
     res.send({
       error: err.message
     })
-    pino.logger.error(err)
+    logger.error(err)
   }
 })
 

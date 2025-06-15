@@ -1,7 +1,22 @@
-import { pinoHttp } from 'pino-http'
+import { pino } from 'pino'
 import { config } from '../config.js'
+import { pinoHttp } from 'pino-http'
 
-export const pino = pinoHttp({
+export const logger = pino({
+  // export const pino = pinoHttp({
+  level: config.logLevel || 'info',
+  // useLevel: 'debug',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'dd.mm.yy HH:MM:ss Z',
+      ignore: 'pid,hostname'
+    }
+  }
+})
+
+export const httpLogger = pinoHttp({
   level: config.logLevel || 'info',
   useLevel: 'debug',
   transport: {

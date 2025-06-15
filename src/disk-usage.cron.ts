@@ -2,7 +2,7 @@ import { blockstorePath, datastorePath } from './store.js'
 import { dirSize, availableStorageSize } from './utils/utils.js'
 import { CronJob } from 'cron'
 import { config } from './config.js'
-import { pino } from './utils/logger.js'
+import { logger } from './utils/logger.js'
 
 const oneMb = 1048576
 
@@ -17,13 +17,13 @@ export const diskUsageCron = CronJob.from({
     try {
       if (!isRunning) {
         isRunning = true
-        pino.logger.info('[Cron] Running "diskUsage" cronjob.')
+        logger.info('[Cron] Running "diskUsage" cronjob.')
         const duration = await scan()
-        pino.logger.info(`[Cron] "diskUsage" cronjob took ${duration} ms.`)
+        logger.info(`[Cron] "diskUsage" cronjob took ${duration} ms.`)
         isRunning = false
       }
     } catch (error) {
-      pino.logger.error(`${error.message}\n${error.stack}`)
+      logger.error(`${error.message}\n${error.stack}`)
     } finally {
       isRunning = false
     }
