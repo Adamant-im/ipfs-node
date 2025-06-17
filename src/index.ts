@@ -1,13 +1,14 @@
+import cors from 'cors'
 import express from 'express'
-import swaggerUi from 'swagger-ui-express'
-import { swaggerSpec } from './swagger.js'
 import { Request, Response } from 'express'
-import { httpLogger, logger } from './utils/logger.js'
+import swaggerUi from 'swagger-ui-express'
+
+import * as routers from './api/index.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
-import cors from 'cors'
-import * as routers from './api/index.js'
 import { datastore, blockstore } from './store.js'
+import { swaggerSpec } from './swagger.js'
+import { httpLogger, logger } from './utils/logger.js'
 
 await datastore.open()
 await blockstore.open()

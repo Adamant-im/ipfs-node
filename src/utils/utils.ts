@@ -1,10 +1,13 @@
+import { statfs } from 'node:fs/promises'
+
 import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
-import { config } from '../config.js'
-import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
-import { statfs } from 'node:fs/promises'
-import { logger } from './logger.js'
 import { getFolderSizeBin } from 'go-get-folder-size'
+
+import { config } from '../config.js'
+
+import { logger } from './logger.js'
+import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
 
 /**
  * Get peerId from multiaddr string

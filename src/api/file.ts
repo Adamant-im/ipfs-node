@@ -1,12 +1,13 @@
 import { Router } from 'express'
 import { CID } from 'multiformats/cid'
-import { multerStorage } from '../multer.js'
+
 import { config } from '../config.js'
 import { helia } from '../helia.js'
+import { multerStorage } from '../multer.js'
+import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 import { logger } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
-import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 
 const router = Router()
 

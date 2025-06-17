@@ -3,6 +3,7 @@ import { peerIdFromString } from '@libp2p/peer-id'
 import type { PingService } from '@libp2p/ping'
 import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { Request, Response, Router } from 'express'
+
 import { PeerIdDto } from '../dto/peer-id.dto.js'
 import { helia } from '../helia.js'
 import { logger } from '../utils/logger.js'

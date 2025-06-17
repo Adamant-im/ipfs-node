@@ -29,6 +29,7 @@
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
     "eslint": "^9.28.0",
+    "eslint-plugin-import": "^2.31.0",
     "globals": "^16.2.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.0",

@@ -1,5 +1,5 @@
-import { Multiaddr } from '@multiformats/multiaddr'
 import { PeerId } from '@libp2p/interface'
+import { Multiaddr } from '@multiformats/multiaddr'
 import { CID, Version } from 'multiformats/cid'
 
 export type NodeWithPeerId = {

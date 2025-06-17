@@ -1,8 +1,11 @@
-import { CID } from 'multiformats/cid'
 import { Readable } from 'node:stream'
 import { clearTimeout } from 'node:timers'
+
+import { CID } from 'multiformats/cid'
+
 import { config } from '../config.js'
 import { ifs } from '../helia.js'
+
 import { logger } from './logger.js'
 
 /**
