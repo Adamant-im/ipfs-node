@@ -4,6 +4,7 @@ import globals from 'globals'
 import tseslint from 'typescript-eslint'
 import json from '@eslint/json'
 import markdown from '@eslint/markdown'
+import prettier from 'eslint-config-prettier'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
@@ -23,16 +24,6 @@ export default defineConfig([
     files: ['**/*.ts'],
     plugins: { import: importPlugin },
     rules: {
-      'comma-dangle': ['error', 'never'],
-      'object-curly-spacing': ['error', 'always'],
-      semi: ['error', 'never'],
-      quotes: ['error', 'single'],
-      'array-bracket-spacing': ['error', 'never'],
-      'computed-property-spacing': ['error', 'never'],
-      'template-curly-spacing': ['error', 'never'],
-      'function-paren-newline': ['error', 'multiline'],
-      'array-element-newline': ['error', 'consistent'],
-      'object-property-newline': ['error', { allowAllPropertiesOnSameLine: true }],
       'import/order': [
         'error',
         {
@@ -63,5 +54,6 @@ export default defineConfig([
     plugins: { markdown },
     language: 'markdown/gfm',
     extends: ['markdown/recommended']
-  }
+  },
+  prettier
 ])
