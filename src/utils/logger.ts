@@ -3,9 +3,7 @@ import { config } from '../config.js'
 import { pinoHttp } from 'pino-http'
 
 export const logger = pino({
-  // export const pino = pinoHttp({
   level: config.logLevel || 'info',
-  // useLevel: 'debug',
   transport: {
     target: 'pino-pretty',
     options: {

@@ -17,8 +17,7 @@ export async function getFileStats(cid: CID) {
       abortController.abort(new Error('Cannot find requested CID. Request timed out.'))
     }, config.findFileTimeout)
 
-    const stats = await ifs.stat(cid, { signal: abortController.signal })
-    return stats
+    return await ifs.stat(cid, { signal: abortController.signal })
   } catch (err) {
     logger.error(err)
     clearTimeout(timeout)

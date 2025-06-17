@@ -6,8 +6,8 @@ import { UnixfsMulterStorage } from './utils/unixfs-multer.storage.js'
 export const multerStorage = multer({
   storage: new UnixfsMulterStorage({
     unixfs: ifs,
-    destination: (req, file) => '/',
-    filename: (req, file) => file.originalname
+    destination: () => '/',
+    filename: (_, file) => file.originalname
   }),
   limits: { fileSize: config.uploadLimitSizeBytes }
 })
