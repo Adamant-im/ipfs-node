@@ -10,6 +10,18 @@ const options: swaggerJSDoc.Options = {
     },
     servers: [
       {
+        url: 'https://ipfs1test.adamant.im',
+        description: 'IPFS node ADAMANT test server #1'
+      },
+      {
+        url: 'https://ipfs2test.adamant.im',
+        description: 'IPFS node ADAMANT test server #2'
+      },
+      {
+        url: 'https://ipfs3test.adamant.im',
+        description: 'IPFS node ADAMANT test server #3'
+      },
+      {
         url: 'https://ipfs4.adm.im',
         description: 'IPFS node ADAMANT server #4'
       },
