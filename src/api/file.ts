@@ -123,8 +123,6 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
           logger.info(`Filed pinned: ${pinned}`)
         }
       }
-
-      await helia.routing.provide(cid)
     }
 
     res.send({

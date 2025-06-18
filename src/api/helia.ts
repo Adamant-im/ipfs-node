@@ -83,7 +83,7 @@ router.get('/pins', async (req, res) => {
 
 /**
  * @openapi
- * /api/helia/pin/{cid}:
+ * /api/helia/pins/{cid}/pin:
  *   post:
  *     tags: [Helia]
  *     summary: Pin a CID in Helia
@@ -124,7 +124,7 @@ router.get('/pins', async (req, res) => {
  *             example:
  *               error: "Already pinned"
  */
-router.post('/pin/:cid', async (req, res) => {
+router.post('/pins/:cid/pin', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 
@@ -147,7 +147,7 @@ router.post('/pin/:cid', async (req, res) => {
 
 /**
  * @openapi
- * /api/helia/unpin/{cid}:
+ * /api/helia/pins/{cid}/unpin:
  *   post:
  *     tags: [Helia]
  *     summary: Unpin a CID in Helia
@@ -188,7 +188,7 @@ router.post('/pin/:cid', async (req, res) => {
  *             example:
  *               error: "Error: ENOENT: no such file or directory"
  */
-router.post('/unpin/:cid', async (req, res) => {
+router.post('/pins/:cid/unpin', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 
@@ -211,7 +211,7 @@ router.post('/unpin/:cid', async (req, res) => {
 
 /**
  * @openapi
- * /api/helia/pins/isPinned/{cid}:
+ * /api/helia/pins/{cid}/isPinned:
  *   get:
  *     tags: [Helia]
  *     summary: Check if a CID is pinned in Helia
@@ -253,7 +253,7 @@ router.post('/unpin/:cid', async (req, res) => {
  *             example:
  *               error: "Internal server error. See logs."
  */
-router.get('/pins/isPinned/:cid', async (req, res) => {
+router.get('/pins/:cid/isPinned', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 
@@ -274,7 +274,7 @@ router.get('/pins/isPinned/:cid', async (req, res) => {
 
 /**
  * @openapi
- * /api/helia/routing/findProviders/{cid}:
+ * /api/helia/pins/{cid}/providers:
  *   get:
  *     tags: [Helia]
  *     summary: Find providers for a given CID
@@ -302,7 +302,7 @@ router.get('/pins/isPinned/:cid', async (req, res) => {
  *             example:
  *               error: "Internal server error. See logs."
  */
-router.get('/routing/findProviders/:cid', async (req, res) => {
+router.get('/pins/:cid/providers', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 

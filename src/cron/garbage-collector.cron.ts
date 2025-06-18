@@ -1,8 +1,8 @@
 import { CronJob } from 'cron'
 
-import { config } from './config.js'
-import { helia } from './helia.js'
-import { logger } from './utils/logger.js'
+import { config } from '../config.js'
+import { helia } from '../helia.js'
+import { logger } from '../utils/logger.js'
 
 let isRunning = false
 export const gcCron = CronJob.from({
@@ -11,9 +11,11 @@ export const gcCron = CronJob.from({
     try {
       if (!isRunning) {
         isRunning = true
-        logger.info('[Cron] Running "gcRun" cronjob.')
+        logger.info('[Cron] Running "garbageCollection" cronjob.')
+
         await helia.gc()
-        logger.info('[Cron] "gcRun" cronjob finished successfully.')
+
+        logger.info('[Cron] "garbageCollection" cronjob finished successfully.')
         isRunning = false
       }
     } catch (error) {
@@ -23,5 +25,5 @@ export const gcCron = CronJob.from({
     }
   },
   start: false,
-  name: 'gcRun'
+  name: 'garbageCollection'
 })
