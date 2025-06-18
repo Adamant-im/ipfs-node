@@ -64,10 +64,10 @@ router.get('/autopeering', async (req, res) => {
     res.send({
       peeredSuccessfullyTo: successPeers
     })
-  } catch (err) {
-    logger.error(err)
+  } catch (error) {
+    logger.error(error)
     res.send({
-      error: err.message
+      error: error.message
     })
   }
 })
