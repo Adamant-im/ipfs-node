@@ -2,8 +2,8 @@ import { Router } from 'express'
 import { Pin } from 'helia'
 import { CID } from 'multiformats/cid'
 
-import { helia } from '../helia.js'
-import { logger } from '../utils/logger.js'
+import { helia } from '../../services/helia/helia.js'
+import { logger } from '../../utils/logger.js'
 
 const router = Router()
 

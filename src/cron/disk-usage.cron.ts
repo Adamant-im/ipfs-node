@@ -1,9 +1,9 @@
 import { CronJob } from 'cron'
 
 import { config } from '../config.js'
-import { blockstorePath, datastorePath } from '../store.js'
+import { dirSize, availableStorageSize } from '../services/file/file-stats.js'
+import { blockstorePath, datastorePath } from '../services/helia/store.js'
 import { logger } from '../utils/logger.js'
-import { dirSize, availableStorageSize } from '../utils/utils.js'
 
 const oneMb = 1048576
 

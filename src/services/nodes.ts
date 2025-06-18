@@ -1,13 +1,9 @@
-import { statfs } from 'node:fs/promises'
-
 import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
-import { getFolderSizeBin } from 'go-get-folder-size'
 
 import { config } from '../config.js'
 
-import { logger } from './logger.js'
-import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
+import { ConfigNode, NodeWithPeerId } from './types.js'
 
 /**
  * Get peerId from multiaddr string
@@ -53,38 +49,4 @@ export function getNodeName(multiAddr: string) {
 
 export function getAllowNodesMultiaddrs() {
   return parseNodes().map((node) => node.multiAddr.toString())
-}
-
-export function flatFiles(
-  files:
-    | {
-        [fieldname: string]: UnixFsMulterFile[]
-      }
-    | UnixFsMulterFile[]
-) {
-  let resultFiles: UnixFsMulterFile[] = []
-  if (Array.isArray(files)) {
-    return files
-  } else {
-    for (const filename in files) {
-      if (Object.prototype.hasOwnProperty.call(files, filename)) {
-        resultFiles = [...resultFiles, ...files[filename]]
-      }
-    }
-    return resultFiles
-  }
-}
-
-export async function availableStorageSize() {
-  const statistics = await statfs('/', { bigint: true })
-  return statistics.bsize * statistics.bavail
-}
-
-export async function dirSize(dir: string): Promise<number> {
-  try {
-    return await getFolderSizeBin(dir, false, { loose: true })
-  } catch (e) {
-    logger.error(e)
-  }
-  return 0
 }

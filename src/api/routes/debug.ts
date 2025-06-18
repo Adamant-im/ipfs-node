@@ -1,8 +1,8 @@
 import { Router } from 'express'
 
-import { helia } from '../helia.js'
-import { logger } from '../utils/logger.js'
-import { getNodesList } from '../utils/utils.js'
+import { helia } from '../../services/helia/helia.js'
+import { getNodesList } from '../../services/nodes.js'
+import { logger } from '../../utils/logger.js'
 
 const router = Router()
 

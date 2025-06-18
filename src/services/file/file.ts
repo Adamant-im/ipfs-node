@@ -3,10 +3,9 @@ import { clearTimeout } from 'node:timers'
 
 import { CID } from 'multiformats/cid'
 
-import { config } from '../config.js'
-import { ifs } from '../helia.js'
-
-import { logger } from './logger.js'
+import { config } from '../../config.js'
+import { logger } from '../../utils/logger.js'
+import { ifs } from '../helia/helia.js'
 
 /**
  * Return file statistics by CID.

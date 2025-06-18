@@ -1,11 +1,11 @@
 import { CronJob } from 'cron'
 
 import { config } from '../config.js'
-import { helia } from '../helia.js'
+import { helia } from '../services/helia/helia.js'
 import { logger } from '../utils/logger.js'
 
 let isRunning = false
-export const gcCron = CronJob.from({
+export const garbageCollectionCron = CronJob.from({
   cronTime: config.garbageCollectorRunPeriod,
   onTick: async () => {
     try {

@@ -1,21 +1,21 @@
 import { UnixFS } from '@helia/unixfs'
-import * as e from 'express'
+import { Request } from 'express'
 import { StorageEngine } from 'multer'
 
-import { logger } from './logger.js'
-import { UnixFsMulterFile } from './types.js'
+import { logger } from '../../utils/logger.js'
+import { UnixFsMulterFile } from '../types.js'
 
 export interface UnixfsStorageOptions {
   unixfs: UnixFS
-  destination: (req: e.Request, file: Express.Multer.File) => string
-  filename: (req: e.Request, file: Express.Multer.File) => string
+  destination: (req: Request, file: Express.Multer.File) => string
+  filename: (req: Request, file: Express.Multer.File) => string
 }
 
 export class UnixfsMulterStorage implements StorageEngine {
   constructor(private readonly options: UnixfsStorageOptions) {}
 
   _handleFile(
-    req: e.Request,
+    req: Request,
     file: Express.Multer.File,
     callback: (error?: Error, info?: Partial<UnixFsMulterFile>) => void
   ): void {
@@ -24,13 +24,13 @@ export class UnixfsMulterStorage implements StorageEngine {
       .then((cid) => {
         callback(undefined, { ...file, cid })
       })
-      .catch((err) => {
-        callback(err, undefined)
+      .catch((error) => {
+        callback(error, undefined)
       })
   }
 
   _removeFile(
-    req: e.Request,
+    req: Request,
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {

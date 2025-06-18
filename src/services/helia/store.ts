@@ -3,7 +3,7 @@ import { join } from 'path'
 import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
 
-import { config } from './config.js'
+import { config } from '../../config.js'
 
 export const blockstorePath = join(config.storeFolder, 'blockstore')
 export const datastorePath = join(config.storeFolder, 'datastore')

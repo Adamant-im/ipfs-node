@@ -1,7 +1,7 @@
-import debug from './debug.js'
-import file from './file.js'
-import helia from './helia.js'
-import libp2p from './libp2p.js'
-import node from './node.js'
+import debug from './routes/debug.js'
+import file from './routes/file.js'
+import helia from './routes/helia.js'
+import libp2p from './routes/libp2p.js'
+import node from './routes/node.js'
 
 export { file, node, helia, libp2p, debug }

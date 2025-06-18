@@ -7,10 +7,11 @@ import { ping } from '@libp2p/ping'
 import { tcp } from '@libp2p/tcp'
 import { createHelia } from 'helia'
 
-import { config } from './config.js'
+import { config } from '../../config.js'
+import { logger } from '../../utils/logger.js'
+import { getAllowNodesMultiaddrs } from '../nodes.js'
+
 import { blockstore, datastore } from './store.js'
-import { logger } from './utils/logger.js'
-import { getAllowNodesMultiaddrs } from './utils/utils.js'
 
 const allowedNodes = getAllowNodesMultiaddrs()
 

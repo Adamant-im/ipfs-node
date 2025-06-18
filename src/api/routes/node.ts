@@ -1,8 +1,8 @@
 import { Router } from 'express'
 
-import { packageJson } from '../config.js'
-import { getDiskUsageStats } from '../cron/disk-usage.cron.js'
-import { helia } from '../helia.js'
+import { packageJson } from '../../config.js'
+import { getDiskUsageStats } from '../../cron/disk-usage.cron.js'
+import { helia } from '../../services/helia/helia.js'
 
 const router = Router()
 

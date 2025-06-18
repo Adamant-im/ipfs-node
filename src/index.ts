@@ -6,9 +6,9 @@ import swaggerUi from 'swagger-ui-express'
 import * as routers from './api/index.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './cron/disk-usage.cron.js'
-import { gcCron } from './cron/garbage-collector.cron.js'
-import { datastore, blockstore } from './store.js'
-import { swaggerSpec } from './swagger.js'
+import { garbageCollectionCron } from './cron/garbage-collection.cron.js'
+import { swaggerSpec } from './docs/swagger.js'
+import { datastore, blockstore } from './services/helia/store.js'
 import { httpLogger, logger } from './utils/logger.js'
 
 await datastore.open()
@@ -17,7 +17,7 @@ await blockstore.open()
 logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
 diskUsageCron.start()
-gcCron.start()
+garbageCollectionCron.start()
 
 const PORT = config.serverPort
 const app = express()
