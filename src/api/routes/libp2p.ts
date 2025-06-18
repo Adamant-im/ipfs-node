@@ -54,10 +54,6 @@ router.get(
   '/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     try {
-      /**
-       * TODO: This fails and needs an update
-       * May be better use multiaddress?
-       */
       const peerId = peerIdFromString(req.query.peerId || '')
       const pingService = helia.libp2p.services.ping as Ping
       const pong = await pingService.ping(peerId)
