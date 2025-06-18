@@ -1,6 +1,6 @@
 import { PeerId } from '@libp2p/interface'
 import { peerIdFromString } from '@libp2p/peer-id'
-import type { PingService } from '@libp2p/ping'
+import { Ping } from '@libp2p/ping'
 import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { Request, Response, Router } from 'express'
 
@@ -9,8 +9,6 @@ import { helia } from '../helia.js'
 import { logger } from '../utils/logger.js'
 
 const router = Router()
-
-// TODO: This should be totally updated
 
 /**
  * @openapi
@@ -40,17 +38,6 @@ const router = Router()
  *                   description: Round-trip time in milliseconds.
  *             example:
  *               pong: 57.3
- *       400:
- *         description: Bad request – invalid or missing peer ID
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *             example:
- *               error: "Invalid peer ID"
  *       500:
  *         description: Internal server error
  *         content:
@@ -67,17 +54,23 @@ router.get(
   '/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     try {
+      /**
+       * TODO: This fails and needs an update
+       * May be better use multiaddress?
+       */
       const peerId = peerIdFromString(req.query.peerId || '')
-      const pingService = helia.libp2p.services.ping as PingService
+      const pingService = helia.libp2p.services.ping as Ping
       const pong = await pingService.ping(peerId)
 
       res.send({
         pong
       })
-    } catch (err) {
+    } catch (error) {
       // TODO: process NoValidAddressError
+      logger.error(error)
+      // Unable to determine error
       res.send({
-        error: err.message
+        error: error.message
       })
     }
   }
@@ -195,6 +188,25 @@ router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, re
  *                   items:
  *                     type: object
  *                     properties:
+ *                       addresses:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                           properties:
+ *                             multiaddr:
+ *                               type: string
+ *                             isCertified:
+ *                               type: boolean
+ *                       protocols:
+ *                         type: array
+ *                         items:
+ *                           type: string
+ *                       metadata:
+ *                         type: object
+ *                       tags:
+ *                         type: object
+ *                       peerRecordEnvelope:
+ *                         type: object
  *                       id:
  *                         type: string
  *                         description: The peer ID.
@@ -203,30 +215,21 @@ router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, re
  *                         items:
  *                           type: string
  *                         description: Multiaddresses associated with the peer (if available).
- *                       protocols:
- *                         type: array
- *                         items:
- *                           type: string
- *                         description: Supported protocols by the peer (if available).
  *             example:
  *               length: 1
  *               peer:
- *                 - id: "QmExamplePeerId"
- *                   multiaddrs:
- *                     - "/ip4/127.0.0.1/tcp/4001"
+ *                 - addresses:
+ *                   - multiaddr: "/ip4/127.0.0.1/tcp/4001"
+ *                     isCertified: true
  *                   protocols:
- *                     - "/ipfs/ping/1.0.0"
- *       400:
- *         description: Missing or invalid peer ID
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *             example:
- *               error: "peerId is required"
+ *                   - "//ip4/ping/1.0.0"
+ *                   - "/ipfs/bitswap/1.2.0"
+ *                   - "/ipfs/id/1.0.0"
+ *                   - "/ipfs/ping/1.0.0"
+ *                   metadata: {}
+ *                   tags: {}
+ *                   peerRecordEnvelope: {}
+ *                   id: "12D3KooWGMp6SaKon2UKwJsDEf3chLAGRzsjdAfDGN9zcwt6ydqJ"
  *       500:
  *         description: Failed to retrieve peer info
  *         content:
@@ -237,12 +240,12 @@ router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, re
  *                 error:
  *                   type: string
  *             example:
- *               error: "Unexpected error while retrieving peer info"
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-  const peerId = req.query.peerId
-
   try {
+    const peerId = req.query.peerId
+
     const peers = await helia.libp2p.peerStore.all({
       filters: [(peer) => peer.id.toString() === peerId],
       limit: 10
@@ -252,9 +255,10 @@ router.get('/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res
       length: peers.length,
       peer: peers
     })
-  } catch (err) {
+  } catch (error) {
+    logger.error(error)
     res.send({
-      error: err.message
+      error: error.message
     })
   }
 })
@@ -298,27 +302,31 @@ router.get('/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res
  *                   type: string
  *                   description: Error message if dial failed.
  *                   nullable: true
- *             examples:
- *               success:
- *                 summary: Successful dial
- *                 value:
+ *             example:
  *                   success: true
  *                   connection: {}
- *               failure_invalid_peer:
- *                 summary: Invalid peer ID
- *                 value:
- *                   success: false
- *                   error: "Invalid peer ID"
- *               failure_no_peer:
- *                 summary: No peer ID or multiaddress provided
- *                 value:
- *                   success: false
- *                   error: "Empty peerId and MultiAddr"
- *               failure_dial_error:
- *                 summary: Error dialing peer
- *                 value:
- *                   success: false
- *                   error: "Cannot dial peer: <error message>"
+ *       400:
+ *         description: Invalid peer ID or multiaddress
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             example:
+ *               error: "Invalid peer ID"
+ *       500:
+ *         description: Failed to dial
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             example:
+ *               error: "Internal Server Error. See logs."
  */
 router.get(
   '/dial',
@@ -333,9 +341,9 @@ router.get(
       if (req.query.multiAddr) {
         multiAddr = multiaddr(req.query.multiAddr || '')
       }
-    } catch (err) {
-      logger.error('Invalid peer ID:' + err.message)
-      res.send({
+    } catch (error) {
+      logger.error(error)
+      res.status(400).send({
         success: false,
         error: 'Invalid peer ID'
       })
@@ -355,14 +363,13 @@ router.get(
       }
       const connection = await helia.libp2p.dial(peer)
       res.send({ success: true, connection })
-    } catch (err) {
-      logger.warn(`Cannot dial peer: ${err.message}`)
+    } catch (error) {
+      logger.error(error)
 
       res.send({
         success: false,
-        error: err.message
+        error: error.message
       })
-      logger.error(err)
     }
   }
 )
@@ -396,18 +403,48 @@ router.get(
  *                   type: array
  *                   items:
  *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       remoteAddr:
+ *                         type: string
+ *                       direction:
+ *                         type: string
+ *                       timeline:
+ *                         type: object
+ *                         properties:
+ *                           open:
+ *                             type: number
+ *                           upgraded:
+ *                             type: number
+ *                       multiplexer:
+ *                         type: string
+ *                       encription:
+ *                         type: string
+ *                       status:
+ *                         type: string
+ *                       transient:
+ *                         type: boolean
+ *                       tags:
+ *                         type: array
  *                   description: Array of connection objects.
  *             example:
- *               length: 2
+ *               length: 1
  *               connections:
- *                 - id: "connection1"
+ *                 - id: "b8wzqa1750008314517"
+ *                   remoteAddr: "/ip4/75.119.138.235/tcp/4001/p2p/12D3KooWKavDi49t6qZFuPqMPeehxNqHdDdbqqdvVVv7YasEYppm"
  *                   remotePeer: "12D3KooWKavDi49t6qZFuPqMPeehxNqHdDdbqqdvVVv7YasEYppm"
- *                   direction: "inbound"
- *                 - id: "connection2"
- *                   remotePeer: "12D3KooWXu8TtyGbfC6KSH82VXkEG2UVsy8vcz5Qk5aY8JDbAqfFo"
  *                   direction: "outbound"
- *       400:
- *         description: Invalid request or error retrieving connections
+ *                   timeline:
+ *                     open: 1750008314367
+ *                     upgraded: 1750008314516
+ *                   multiplexer: "/yamux/1.0.0"
+ *                   encryption: "/noise"
+ *                   status: "open"
+ *                   transient: false
+ *                   tags: []
+ *       500:
+ *         description: Failed to retrieve connections
  *         content:
  *           application/json:
  *             schema:
@@ -416,7 +453,7 @@ router.get(
  *                 error:
  *                   type: string
  *             example:
- *               error: "Invalid peer ID"
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
   try {
@@ -427,11 +464,10 @@ router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, 
       length: connections.length,
       connections
     })
-  } catch (err) {
-    logger.error(err)
-    res.status(400)
-    res.send({
-      error: err.message
+  } catch (error) {
+    logger.error(error)
+    res.status(400).send({
+      error: error.message
     })
   }
 })
@@ -456,6 +492,17 @@ router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, 
  *                   description: Current status of the libp2p node.
  *             example:
  *               status: "started"
+ *       500:
+ *         description: Failed to retrieve status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             example:
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/status', async (req, res) => {
   res.send({
@@ -487,8 +534,8 @@ router.get('/status', async (req, res) => {
  *               peers:
  *                 - "12D3KooWKavDi49t6qZFuPqMPeehxNqHdDdbqqdvVVv7YasEYppm"
  *                 - "12D3KooWXu8TtyGbfC6KSH82VXkEG2UVsy8vcz5Qk5aY8JDbAqfFo"
- *       400:
- *         description: Error retrieving peers
+ *       500:
+ *         description: Failed to retrieve peers
  *         content:
  *           application/json:
  *             schema:
@@ -497,18 +544,17 @@ router.get('/status', async (req, res) => {
  *                 error:
  *                   type: string
  *             example:
- *               error: "Failed to get peers"
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/peers', (req, res) => {
   try {
     const peers = helia.libp2p.getPeers()
 
     res.send({ peers })
-  } catch (err) {
-    logger.error(err)
-    res.status(400)
-    res.send({
-      error: err.message
+  } catch (error) {
+    logger.error(error)
+    res.status(400).send({
+      error: error.message
     })
   }
 })

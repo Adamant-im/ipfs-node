@@ -12,6 +12,8 @@ import { blockstore, datastore } from './store.js'
 import { logger } from './utils/logger.js'
 import { getAllowNodesMultiaddrs } from './utils/utils.js'
 
+const allowedNodes = getAllowNodesMultiaddrs()
+
 export const helia = await createHelia({
   datastore,
   blockstore,
@@ -33,8 +35,8 @@ export const helia = await createHelia({
       ping: ping()
     },
     connectionManager: {
-      maxConnections: 100,
-      allow: getAllowNodesMultiaddrs()
+      maxConnections: allowedNodes.length,
+      allow: allowedNodes
     }
   }
 })

@@ -7,8 +7,6 @@ import { logger } from '../utils/logger.js'
 
 const router = Router()
 
-// TODO: This should be totally updated
-
 /**
  * @openapi
  * /api/helia/pins:
@@ -30,29 +28,57 @@ const router = Router()
  *                     type: object
  *                     properties:
  *                       cid:
- *                         type: string
- *                         description: The CID of the pinned content.
- *                       type:
- *                         type: string
- *                         description: The type of pin (e.g., recursive, direct).
+ *                         type: object
+ *                         properties:
+ *                             /:
+ *                               type: string
+ *                               description: The CID of the pinned content.
+ *                       depth:
+ *                         type: number
+ *                         nullable: true
+ *                       metadata:
+ *                         type: object
  *             example:
  *               pins:
- *                 - cid: "QmXf123abc..."
- *                   type: "recursive"
- *                 - cid: "QmYz456def..."
- *                   type: "direct"
+ *                 - cid:
+ *                     /: "bafkreihn5kx7h4lxjljirbtto4gg2zajpy4rxq3c27lpwneyfxpq57iyzm"
+ *                   depth: null
+ *                   metadata: {}
+ *                 - cid:
+ *                     /: "bafkreiapwelzbhrvqfpqqczq2z3qmk3dhpbvrar3jsxzqh6fw3gfczyvru"
+ *                   depth: null
+ *                   metadata: {}
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: error message describing the issue.
+ *             example:
+ *               error: "Internal server error. See logs."
  */
 router.get('/pins', async (req, res) => {
-  const pins: Pin[] = []
+  try {
+    const pins: Pin[] = []
 
-  for await (const pin of helia.pins.ls()) {
-    logger.info('PIN LS', pin)
-    pins.push(pin)
+    for await (const pin of helia.pins.ls()) {
+      pins.push(pin)
+    }
+
+    res.send({
+      pins
+    })
+  } catch (error) {
+    logger.error(error)
+    // Unable to determine error
+    res.status(500).send({
+      error: error.message
+    })
   }
-
-  res.send({
-    pins
-  })
 })
 
 /**
@@ -85,7 +111,7 @@ router.get('/pins', async (req, res) => {
  *                   description: The pinned CID.
  *             example:
  *               pinned: true
- *               cid: "QmXf123abc..."
+ *               cid: "bafkreiapwelzbhrvqfpqqczq2z3qmk3dhpbvrar3jsxzqh6fw3gfczyvru"
  *       500:
  *         description: Error pinning the CID
  *         content:
@@ -96,27 +122,27 @@ router.get('/pins', async (req, res) => {
  *                 error:
  *                   type: string
  *             example:
- *               error: "Failed to pin CID due to internal error"
+ *               error: "Already pinned"
  */
 router.post('/pin/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
-
   try {
-    for await (const pin of helia.pins.add(cid)) {
-      logger.info('PINNED', pin)
-    }
-  } catch (err) {
-    logger.error(`Error: ${err.message}`)
-    res.status(500).send({
-      error: err.message
-    })
-    return
-  }
+    const cid = CID.parse(req.params.cid)
 
-  res.send({
-    pinned: true,
-    cid: cid.toString()
-  })
+    for await (const pin of helia.pins.add(cid)) {
+      logger.info(`Pinned ${cid.toString()} block: ${pin}`)
+    }
+
+    res.send({
+      pinned: true,
+      cid: cid.toString()
+    })
+  } catch (error) {
+    logger.error(error)
+    // Unable to determine error
+    res.status(500).send({
+      error: error.message
+    })
+  }
 })
 
 /**
@@ -148,18 +174,38 @@ router.post('/pin/:cid', async (req, res) => {
  *                   type: boolean
  *                   description: True if the CID is pinned, false otherwise.
  *             example:
- *               cid: "QmXf123abc..."
+ *               cid: "bafkreiapwelzbhrvqfpqqczq2z3qmk3dhpbvrar3jsxzqh6fw3gfczyvru"
  *               isPinned: true
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: error message describing the issue.
+ *             example:
+ *               error: "Internal server error. See logs."
  */
 router.get('/pins/isPinned/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
+  try {
+    const cid = CID.parse(req.params.cid)
 
-  const isPinned = await helia.pins.isPinned(cid)
+    const isPinned = await helia.pins.isPinned(cid)
 
-  res.send({
-    cid: cid.toString(),
-    isPinned
-  })
+    res.send({
+      cid: cid.toString(),
+      isPinned
+    })
+  } catch (error) {
+    logger.error(error)
+    // Unable to determine error
+    res.status(500).send({
+      error: error.message
+    })
+  }
 })
 
 /**
@@ -179,37 +225,28 @@ router.get('/pins/isPinned/:cid', async (req, res) => {
  *     responses:
  *       200:
  *         description: List of providers retrieved successfully
+ *       500:
+ *         description: Internal server error
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 providers:
- *                   type: array
- *                   items:
- *                     type: string
- *                   description: Array of peer IDs that provide the CID.
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: error message describing the issue.
  *             example:
- *               providers:
- *                 - "12D3KooWKavDi49t6qZFuPqMPeehxNqHdDdbqqdvVVv7YasEYppm"
- *                 - "12D3KooWXu8TtyGbfC6KSH82VXkEG2UVsy8vcz5Qk5aY8JDbAqfFo"
- *       400:
- *         description: Error finding providers for the CID
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *             example:
- *               error: "Invalid CID format"
+ *               error: "Internal server error. See logs."
  */
 router.get('/routing/findProviders/:cid', async (req, res) => {
   try {
     const cid = CID.parse(req.params.cid)
 
     const providers: string[] = []
+    /**
+     * TODO: This fails and need to be fixed
+     * Requires to add some providers?
+     */
     for await (const provider of helia.routing.findProviders(cid)) {
       logger.info(`Found provider of CID:${cid.toString()}, PeerId:${provider.id.toString()}`)
       providers.push(provider.id.toString())
@@ -218,11 +255,12 @@ router.get('/routing/findProviders/:cid', async (req, res) => {
     res.send({
       providers
     })
-  } catch (err) {
+  } catch (error) {
+    logger.error(error)
+    // Unable to determine error
     res.send({
-      error: err.message
+      error: error.message
     })
-    logger.error(err)
   }
 })
 

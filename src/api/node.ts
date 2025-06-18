@@ -31,6 +31,18 @@ const router = Router()
  *             example:
  *               timestamp: 1718467200000
  *               heliaStatus: "started"
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: Error message describing the issue.
+ *             example:
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/health', async (req, res) => {
   res.send({
@@ -95,6 +107,18 @@ router.get('/health', async (req, res) => {
  *               blockstoreSizeMb: 120.5
  *               datastoreSizeMb: 35.2
  *               availableSizeInMb: 5024.8
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: Error message describing the issue.
+ *             example:
+ *               error: "Internal Server Error. See logs."
  */
 router.get('/info', async (req, res) => {
   const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()

@@ -33,7 +33,7 @@ app.use(
 app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
 
 app.get('/', (req, res) => {
-  res.send('IPFS node')
+  res.send('IPFS node').end()
 })
 
 app.use('/api/file', routers.file)

@@ -75,6 +75,18 @@ const router = Router()
  *                 summary: Too many files uploaded
  *                 value:
  *                   error: "File limit exceeded. Max 5 allowed."
+ *       500:
+ *         description: internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *              type: object
+ *              properties:
+ *                error:
+ *                  type: string
+ *                  description: error message describing the issue.
+ *             example:
+ *               error: "internal server error. see logs."
  */
 router.post('/upload', multerStorage.array('files'), async (req, res) => {
   if (!req.files) {
@@ -105,23 +117,25 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
 
       const isPinned = await helia.pins.isPinned(cid)
       if (isPinned) {
-        logger.info(`File already pinned ${cid}`)
+        logger.info(`File already pinned: ${cid}`)
       } else {
         for await (const pinned of helia.pins.add(cid)) {
           logger.info(`Filed pinned: ${pinned}`)
         }
       }
+
+      await helia.routing.provide(cid)
     }
 
     res.send({
       filesNames: files.map((file) => file.originalname),
       cids: cids.map((cid) => cid.toString())
     })
-  } catch (err) {
-    logger.error(err)
+  } catch (error) {
+    logger.error(error)
 
     res.status(400).send({
-      error: err.message
+      error: error.message
     })
   }
 })
@@ -203,7 +217,6 @@ router.get('/:cid', async (req, res) => {
 
     stream.pipe(res)
   } catch (error) {
-    // TODO: Handle invalid CID,  "type": "SyntaxError",
     if (error instanceof FileNotFoundError) {
       res.status(408).send({
         error: error.message
