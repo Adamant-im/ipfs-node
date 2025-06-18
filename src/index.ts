@@ -1,11 +1,12 @@
 import cors from 'cors'
-import express from 'express'
+import express, { NextFunction } from 'express'
 import { Request, Response } from 'express'
 import swaggerUi from 'swagger-ui-express'
 
 import * as routers from './api/index.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
+import { gcCron } from './garbage-collector.cron.js'
 import { datastore, blockstore } from './store.js'
 import { swaggerSpec } from './swagger.js'
 import { httpLogger, logger } from './utils/logger.js'
@@ -16,6 +17,7 @@ await blockstore.open()
 logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
 diskUsageCron.start()
+gcCron.start()
 
 const PORT = config.serverPort
 const app = express()
@@ -42,7 +44,8 @@ app.use('/api/helia', routers.helia)
 app.use('/api/libp2p', routers.libp2p)
 app.use('/api/debug', routers.debug)
 
-app.use((err: Error, req: Request, res: Response) => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   logger.error(`${err.message}\n${err.stack}`)
   res.status(500).send({ error: 'Internal Server Error. See logs.' })
 })

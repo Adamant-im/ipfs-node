@@ -147,6 +147,70 @@ router.post('/pin/:cid', async (req, res) => {
 
 /**
  * @openapi
+ * /api/helia/unpin/{cid}:
+ *   post:
+ *     tags: [Helia]
+ *     summary: Unpin a CID in Helia
+ *     description: Unpins the block that corresponds to the passed CID. The block will be deleted when garbage collection is run.
+ *     parameters:
+ *       - in: path
+ *         name: cid
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The CID to pin.
+ *     responses:
+ *       200:
+ *         description: CID unpinned successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 pinned:
+ *                   type: boolean
+ *                   description: Indicates if the CID was unpinned.
+ *                 cid:
+ *                   type: string
+ *                   description: The unpinned CID.
+ *             example:
+ *               unpinned: true
+ *               cid: "bafkreiapwelzbhrvqfpqqczq2z3qmk3dhpbvrar3jsxzqh6fw3gfczyvru"
+ *       500:
+ *         description: Error unpinning the CID
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *             example:
+ *               error: "Error: ENOENT: no such file or directory"
+ */
+router.post('/unpin/:cid', async (req, res) => {
+  try {
+    const cid = CID.parse(req.params.cid)
+
+    for await (const pin of helia.pins.rm(cid)) {
+      logger.info(`Unpinned ${cid.toString()} block: ${pin}`)
+    }
+
+    res.send({
+      unpinned: true,
+      cid: cid.toString()
+    })
+  } catch (error) {
+    logger.error(error)
+    // Unable to determine error
+    res.status(500).send({
+      error: error.message
+    })
+  }
+})
+
+/**
+ * @openapi
  * /api/helia/pins/isPinned/{cid}:
  *   get:
  *     tags: [Helia]
