@@ -20,8 +20,8 @@ export async function getFileStats(cid: CID) {
     }, config.findFileTimeout)
 
     return await ifs.stat(cid, { signal: abortController.signal })
-  } catch (err) {
-    logger.error(err)
+  } catch (error) {
+    logger.error(error)
     clearTimeout(timeout)
 
     throw new FileNotFoundError('Cannot find requested CID. Request timed out.')

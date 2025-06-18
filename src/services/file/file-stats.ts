@@ -33,8 +33,8 @@ export async function availableStorageSize() {
 export async function dirSize(dir: string): Promise<number> {
   try {
     return await getFolderSizeBin(dir, false, { loose: true })
-  } catch (e) {
-    logger.error(e)
+  } catch (error) {
+    logger.error(error)
   }
   return 0
 }

@@ -151,9 +151,9 @@ router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, re
         }
       })
     })
-  } catch (err) {
+  } catch (error) {
     res.send({
-      error: err.message
+      error: error.message
     })
   }
 })
