@@ -26,6 +26,7 @@
   serverPort: 4000,
   autoPeeringPeriod: '*/10 * * * * *',
   diskUsageScanPeriod: '*/30 * * * * *',
+  garbageCollectorRunPeriod: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,
   findFileTimeout: 20000,

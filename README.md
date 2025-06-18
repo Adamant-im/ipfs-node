@@ -1,137 +1,37 @@
-# ipfs-node
-ADAMANT ipfs-node. Designed for downloading and exchanging files in the ADAMANT Messenger. 
+# ADAMANT IPFS node
+A specialized IPFS node designed for the ADAMANT Messenger ecosystem, providing decentralized file storage and transfer capabilities with a REST API interface.
 
-Unlike the standard libraries (helia or kubo), this ipfs-node is equipped with a web server for performing REST requests for downloading and receiving files.
+## What It Is
+This is a custom IPFS node built on top of Helia that serves as a private file storage and sharing system for the ADAMANT network.
+Unlike standard IPFS implementations, it includes a built-in web server for HTTP-based file operations.
 
-The plans also include the implementation of the Garbage Collector function, which will save disk space by removing unsent files.
+Visit [Wiki: Todo](https://github.com/Adamant-im/ipfs-node/wiki/Todo) to see the future
+
+## Prerequisites
+- Node.js v22.16.0 or higher
+- npm package manager
+- Sufficient disk space for file storage
 
 ## How to start
-- You will need Node.js v22.16.0 (You can install via nvm: https://github.com/nvm-sh/nvm):
-```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-nvm install v22.16.0
-```
-- Cloning and building node:
-```bash
-git clone https://github.com/Adamant-im/ipfs-node.git
-cd ipfs-node 
-npm i
-npm run build
-```
-- Running node with [pm2](https://github.com/Unitech/pm2):
-```bash
-npm i -g pm2
-pm2 start dist/index.js --name="IPFS node"
-```
-
-
-## How to configure
-Using `config.default.json5` as a template, you can create various configuration files. 
-
-For example:
-`node dist/index.js test1` — this command will launch the server with the configuration from the file config.test1.json5
-
-```jsonc
-{
-  // List of IPFS ADAMANT nodes interacting between each other
-  nodes: [
-    {
-      name: "ipfs1",
-      multiAddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq"
-    },
-    ...
-  ],
-  storeFolder: '.adm-ipfs', // File storage directory (the directory is set from the user’s home directory)
-  logLevel: 'debug', // Logging level: fatal, error, warn, info, debug, trace
-  peerDiscovery: {
-    // IPFS network nodes that will be used to search for new nodes
-    // Details: https://github.com/libp2p/js-libp2p/tree/main/packages/peer-discovery-bootstrap
-    bootstrap: [
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN',
-      ...
-    ],
-    // Addresses that helia will listen to
-    listen: [
-      '/ip4/0.0.0.0/tcp/4001',
-    ]
-  },
-  serverPort: 4000, // API server deployment port
-  autoPeeringPeriod: '*/10 * * * * *', 
-  diskUsageScanPeriod: '*/30 * * * * *', // Disk space scanning period. Set in cron format: '* * * * * *'
-  uploadLimitSizeBytes: 268435456, // Maximum upload file size (in bytes)
-  maxFileCount: 5, // Maximum upload count of files per request
-  findFileTimeout: 20000, // Time limit for searching for a file on the IPFS network 
-  cors: {
-    // Allowed URLs to make request to node. Set using regular expressions 
-    originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh', 'localhost:8080']
-  }
-}
-```
+For installation and configuration instructions, please refer to the following wiki pages:
+- [Wiki: Installation](https://github.com/Adamant-im/ipfs-node/wiki/Installation)
+- [Wiki: Configuration](https://github.com/Adamant-im/ipfs-node/wiki/Configuration)
+ 
+These guides will help you to set up the node, configuring it, and preparing your environment for production use.
 
 ## How to use
+To learn how to interact with the node, including available API endpoints and example requests, see:
+- [Wiki: Usage examples](https://github.com/Adamant-im/ipfs-node/wiki/Usage-examples)
+- [Wiki: API Specification](https://github.com/Adamant-im/ipfs-node/wiki/API-Specification)
 
-### Upload file
-Request body type: `form-data`
+This documentation covers file upload/download, node status checks, and other REST API features.
 
-It should contain a "files" field, which can accept an array of files up to 5 pieces at a time.
+## License
 
-#### Request
-```POST /api/file/upload```
-```bash
-curl -i --location 'http://localhost:4000/api/file/upload' --form 'files=@"file.txt"'
-```
+Copyright © 2025 ADAMANT community developers
 
-#### Response
-```text
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=utf-8
-...
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-{"filesNames":["file.txt"],"cids":["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"]}
-```
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-### Get file
-
-#### Request
-```GET /api/file/:cid```
-```bash
-curl -i --location 'http://localhost:4000/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm'
-```
-
-#### Response
-```text
-HTTP/1.1 200 OK
-Content-Type: application/octet-stream
-...
-
-Hello ipfs-node!
-```
-
-### Get node info
-
-#### Request
-```GET /api/node/info```
-```bash
-curl -i --location 'http://localhost:4000/api/node/info'
-```
-
-#### Response
-```text
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=utf-8
-...
-
-{
-  "version": "0.0.1",
-  "timestamp": 1720614998797,
-  "heliaStatus": "started",
-  "peerId": "12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
-  "multiAddresses": [
-    "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
-    "/ip4/62.72.43.99/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9"
-  ],
-  "blockstoreSizeMb": 0.0009489059448242188,
-  "datastoreSizeMb": 0.006007194519042969,
-  "availableSizeInMb": 2257731
-}
-```
+You should have received a copy of the [GNU General Public License](https://github.com/Adamant-im/ipfs-node/blob/master/LICENSE) along with this program. If not, see <http://www.gnu.org/licenses/>.
