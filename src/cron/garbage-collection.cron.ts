@@ -16,7 +16,6 @@ export const garbageCollectionCron = CronJob.from({
         await helia.gc()
 
         logger.info('[Cron] "garbageCollection" cronjob finished successfully.')
-        isRunning = false
       }
     } catch (error) {
       logger.error(error)

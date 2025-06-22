@@ -21,7 +21,6 @@ export const diskUsageCron = CronJob.from({
         logger.info('[Cron] Running "diskUsage" cronjob.')
         const duration = await scan()
         logger.info(`[Cron] "diskUsage" cronjob took ${duration} ms.`)
-        isRunning = false
       }
     } catch (error) {
       logger.error(`${error.message}\n${error.stack}`)
