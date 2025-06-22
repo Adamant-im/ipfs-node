@@ -333,7 +333,7 @@ router.get(
       logger.error(error)
       res.status(400).send({
         success: false,
-        error: 'Invalid peer ID'
+        error: 'Invalid peer ID or MultiAddr'
       })
       return
     }

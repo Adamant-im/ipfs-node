@@ -76,7 +76,7 @@ router.get('/pins', async (req, res) => {
     logger.error(error)
     // Unable to determine error
     res.status(500).send({
-      error: error.message
+      error: 'Internal server error. See logs.'
     })
   }
 })
