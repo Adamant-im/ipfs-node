@@ -5,11 +5,11 @@ import { dirSize, availableStorageSize } from '../services/file/file-stats.js'
 import { blockstorePath, datastorePath } from '../services/helia/store.js'
 import { logger } from '../utils/logger.js'
 
-const oneMb = 1048576
+const oneMB = 1048576
 
-let blockstoreSizeMb = 0
-let datastoreSizeMb = 0
-let availableSizeInMb = 0
+let blockstoreSizeMB = 0
+let datastoreSizeMB = 0
+let availableSizeInMB = 0
 
 let isRunning = false
 export const diskUsageCron = CronJob.from({
@@ -38,22 +38,22 @@ async function scan() {
 
   const blockstoreSize = await dirSize(blockstorePath)
   if (blockstoreSize > 0) {
-    blockstoreSizeMb = blockstoreSize / oneMb
+    blockstoreSizeMB = blockstoreSize / oneMB
   }
 
   const datastoreSize = await dirSize(datastorePath)
   if (datastoreSize > 0) {
-    datastoreSizeMb = datastoreSize / oneMb
+    datastoreSizeMB = datastoreSize / oneMB
   }
 
-  availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
+  availableSizeInMB = Number((await availableStorageSize()) / BigInt(oneMB))
   return Date.now() - start
 }
 
 export function getDiskUsageStats() {
   return {
-    blockstoreSizeMb,
-    datastoreSizeMb,
-    availableSizeInMb
+    blockstoreSizeMB,
+    datastoreSizeMB,
+    availableSizeInMB
   }
 }

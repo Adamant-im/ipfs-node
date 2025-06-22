@@ -84,15 +84,15 @@ router.get('/health', async (req, res) => {
  *                   items:
  *                     type: string
  *                   description: List of multiaddresses the node is listening on.
- *                 blockstoreSizeMb:
+ *                 blockstoreSizeMB:
  *                   type: number
  *                   format: float
  *                   description: Size of the blockstore in megabytes.
- *                 datastoreSizeMb:
+ *                 datastoreSizeMB:
  *                   type: number
  *                   format: float
  *                   description: Size of the datastore in megabytes.
- *                 availableSizeInMb:
+ *                 availableSizeInMB:
  *                   type: number
  *                   format: float
  *                   description: Available disk space in megabytes.
@@ -104,9 +104,9 @@ router.get('/health', async (req, res) => {
  *               multiAddresses:
  *                 - "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq"
  *                 - "/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd"
- *               blockstoreSizeMb: 120.5
- *               datastoreSizeMb: 35.2
- *               availableSizeInMb: 5024.8
+ *               blockstoreSizeMB: 120.5
+ *               datastoreSizeMB: 35.2
+ *               availableSizeInMB: 5024.8
  *       500:
  *         description: Internal server error
  *         content:
@@ -121,7 +121,7 @@ router.get('/health', async (req, res) => {
  *               error: "Internal Server Error. See logs."
  */
 router.get('/info', async (req, res) => {
-  const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
+  const { blockstoreSizeMB, datastoreSizeMB, availableSizeInMB } = getDiskUsageStats()
 
   res.send({
     version: packageJson.version,
@@ -129,9 +129,9 @@ router.get('/info', async (req, res) => {
     heliaStatus: helia.libp2p.status,
     peerId: helia.libp2p.peerId,
     multiAddresses: helia.libp2p.getMultiaddrs(),
-    blockstoreSizeMb,
-    datastoreSizeMb,
-    availableSizeInMb
+    blockstoreSizeMB,
+    datastoreSizeMB,
+    availableSizeInMB
   })
 })
 
