@@ -12,13 +12,13 @@ export function flatFiles(
       }
     | UnixFsMulterFile[]
 ) {
-  let resultFiles: UnixFsMulterFile[] = []
   if (Array.isArray(files)) {
     return files
   } else {
+    const resultFiles: UnixFsMulterFile[] = []
     for (const filename in files) {
       if (Object.prototype.hasOwnProperty.call(files, filename)) {
-        resultFiles = [...resultFiles, ...files[filename]]
+        resultFiles.push(...files[filename])
       }
     }
     return resultFiles
