@@ -127,15 +127,7 @@ router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, re
 
   try {
     const peers = await helia.libp2p.peerStore.all({
-      filters: [
-        (peer) => {
-          if (!peerId) {
-            return true
-          }
-
-          return peer.id.toString() === peerId
-        }
-      ],
+      filters: [(peer) => (peerId ? peer.id.toString() === peerId : true)],
       limit: 10
     })
 
