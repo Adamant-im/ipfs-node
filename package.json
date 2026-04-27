@@ -12,7 +12,10 @@
     "prepare": "husky",
     "bump-patch": "npm version patch",
     "bump-minor": "npm version minor",
-    "bump-major": "npm version major"
+    "bump-major": "npm version major",
+    "security:audit": "npm audit --audit-level=high",
+    "security:audit:full": "npm audit --json > npm-audit-report.json",
+    "security:semgrep": "semgrep --config p/owasp-top-ten --config p/nodejs --config p/expressjs --config p/typescript --config .semgrep/rules.yml --no-strict src/"
   },
   "author": "ADAMANT Foundation <devs@adamant.im>",
   "license": "GPLv3",

@@ -2,3 +2,5 @@ node_modules
 .idea
 dist/
 config.json5
+semgrep-results.sarif
+npm-audit-report.json

@@ -1,0 +1,98 @@
+rules:
+  # -----------------------------------------------------------------------
+  # Rule: express-error-message-leak
+  #
+  # Detects Express response handlers that pass err.message directly into
+  # the response body. Error messages from third-party libraries often
+  # contain internal file paths, stack frames, or database schema details
+  # that should never be exposed to API consumers.
+  #
+  # Safe pattern: return a static string and log the full error server-side.
+  # -----------------------------------------------------------------------
+  - id: express-error-message-leak
+    patterns:
+      - pattern: "res.$METHOD(..., { ..., error: $ERR.message, ... })"
+      - pattern-not: "res.$METHOD(..., { ..., error: \"...\", ... })"
+    message: >
+      Potential internal error details exposed to the client via err.message.
+      Return a safe static message (e.g. "Internal Server Error") and log the
+      full error server-side with a correlation ID.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A09:2021"
+      cwe: "CWE-209"
+      references:
+        - https://cwe.mitre.org/data/definitions/209.html
+
+  # -----------------------------------------------------------------------
+  # Rule: express-500-error-message-leak
+  #
+  # Stricter variant of express-error-message-leak. Targets the specific
+  # pattern of res.status(500).send({ error: err.message }) which is an
+  # unambiguous information leak — a 500 always means an unhandled
+  # exception whose message is internal by definition.
+  # -----------------------------------------------------------------------
+  - id: express-500-error-message-leak
+    patterns:
+      - pattern: |
+          res.status(500).send({ error: $ERR.message })
+    message: >
+      res.status(500) with err.message leaks internal exception details
+      (file paths, stack frames, library internals) to the client.
+      Replace with a safe static message.
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      category: security
+      owasp: "A09:2021"
+      cwe: "CWE-209"
+
+  # -----------------------------------------------------------------------
+  # Rule: multer-unsafe-originalname
+  #
+  # Flags every use of file.originalname from a Multer-parsed request.
+  # This value is taken verbatim from the Content-Disposition header and
+  # is fully attacker-controlled. Common attacks include path traversal
+  # (../../etc/passwd), null-byte injection, and Unicode homoglyph abuse.
+  #
+  # Safe pattern: sanitize before any use — strip path separators,
+  # enforce a maximum length, normalize Unicode (NFKC).
+  # -----------------------------------------------------------------------
+  - id: multer-unsafe-originalname
+    pattern: $FILE.originalname
+    message: >
+      file.originalname is attacker-controlled (from the Content-Disposition
+      header). Sanitize before use: strip path separators, enforce max length,
+      normalize Unicode.
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      category: security
+      owasp: "A03:2021"
+      cwe: "CWE-22"
+      references:
+        - https://cwe.mitre.org/data/definitions/22.html
+
+  # -----------------------------------------------------------------------
+  # Rule: no-console-log
+  #
+  # Enforces use of a structured logger (pino, winston, etc.) instead of
+  # console.log. console.log has no severity level, no structured fields,
+  # and no output filtering — making it easy to inadvertently log sensitive
+  # values (tokens, CIDs, PII) in a format that cannot be suppressed
+  # in production without code changes.
+  # -----------------------------------------------------------------------
+  - id: no-console-log
+    pattern: console.log(...)
+    message: >
+      Avoid console.log in production code. Use a structured logger with
+      severity levels (e.g. pino, winston) so sensitive data can be filtered
+      and log verbosity can be controlled without code changes.
+    languages: [typescript, javascript]
+    severity: INFO
+    metadata:
+      category: best-practice
+      references:
+        - https://getpino.io

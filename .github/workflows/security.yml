@@ -1,0 +1,76 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+  schedule:
+    # Weekly full scan every Sunday at 02:00 UTC
+    - cron: '0 2 * * 0'
+
+jobs:
+  # -----------------------------------------------------------------------
+  # 1. Semgrep SAST — static application security testing
+  # -----------------------------------------------------------------------
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep — OWASP Top 10
+        run: |
+          semgrep \
+            --config p/owasp-top-ten \
+            --config p/nodejs \
+            --config p/expressjs \
+            --config p/typescript \
+            --config .semgrep/rules.yml \
+            --no-strict \
+            --sarif \
+            --output semgrep-results.sarif \
+            --error \
+            src/
+
+      - name: Upload Semgrep SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+  # -----------------------------------------------------------------------
+  # 2. npm audit — vulnerable dependency check (SCA)
+  # -----------------------------------------------------------------------
+  npm-audit:
+    name: npm Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (fail on critical)
+        run: npm audit --audit-level=critical
+
+      - name: Generate full audit report (artifact)
+        if: always()
+        run: npm audit --json > npm-audit-report.json || true
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
+          retention-days: 30
