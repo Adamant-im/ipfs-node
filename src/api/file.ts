@@ -10,7 +10,7 @@ import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
 
 const router = Router()
 
-router.post('/upload', multerStorage.array('files'), async (req, res) => {
+router.post('/upload', multerStorage.array('files'), async (req, res, next) => {
   if (!req.files) {
     res.statusCode = 400
     return res.send({
@@ -54,14 +54,11 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
   } catch (err) {
     pino.logger.error(err)
 
-    res.status(400)
-    res.send({
-      error: err.message
-    })
+    next(err)
   }
 })
 
-router.get('/:cid', async (req, res) => {
+router.get('/:cid', async (req, res, next) => {
   try {
     const cid = CID.parse(req.params.cid)
     const fileStats = await getFileStats(cid)
@@ -79,22 +76,16 @@ router.get('/:cid', async (req, res) => {
 
     stream.on('error', (err) => {
       pino.logger.error(err)
-      res.status(408).send({
-        error: err.message
-      })
+      next(err)
     })
 
     stream.pipe(res)
   } catch (error) {
     if (error instanceof FileNotFoundError) {
-      res.status(408).send({
-        error: error.message
-      })
+      res.status(404).send({ error: 'File not found' })
+      return
     } else {
-      pino.logger.error(error)
-      res.status(500).send({
-        error: error.message
-      })
+      next(error)
     }
   }
 })

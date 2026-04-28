@@ -11,7 +11,7 @@ const router = Router()
 
 router.get(
   '/services/ping',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
       const pingService = helia.libp2p.services.ping as PingService
@@ -21,68 +21,72 @@ router.get(
         pong
       })
     } catch (err) {
-      res.send({
-        error: err.message
-      })
+      next(err)
     }
   }
 )
 
-router.get('/peerStore', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-  const peerId = req.query.peerId
+router.get(
+  '/peerStore',
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+    const peerId = req.query.peerId
 
-  try {
-    const peers = await helia.libp2p.peerStore.all({
-      filters: [
-        (peer) => {
-          if (!peerId) {
-            return true
+    try {
+      const peers = await helia.libp2p.peerStore.all({
+        filters: [
+          (peer) => {
+            if (!peerId) {
+              return true
+            }
+
+            return peer.id.toString() === peerId
           }
-
-          return peer.id.toString() === peerId
-        }
-      ],
-      limit: 10
-    })
-
-    res.send({
-      length: peers.length,
-      peers: peers.map((peer) => {
-        return {
-          id: peer.id.toString()
-        }
+        ],
+        limit: 10
       })
-    })
-  } catch (err) {
-    res.send({
-      error: err.message
-    })
+
+      res.send({
+        length: peers.length,
+        peers: peers.map((peer) => {
+          return {
+            id: peer.id.toString()
+          }
+        })
+      })
+    } catch (err) {
+      next(err)
+    }
   }
-})
+)
 
-router.get('/peerInfo', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-  const peerId = req.query.peerId
+router.get(
+  '/peerInfo',
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+    const peerId = req.query.peerId
 
-  try {
-    const peers = await helia.libp2p.peerStore.all({
-      filters: [(peer) => peer.id.toString() === peerId],
-      limit: 10
-    })
+    try {
+      const peers = await helia.libp2p.peerStore.all({
+        filters: [(peer) => peer.id.toString() === peerId],
+        limit: 10
+      })
 
-    res.send({
-      length: peers.length,
-      peer: peers
-    })
-  } catch (err) {
-    res.send({
-      error: err.message
-    })
+      res.send({
+        length: peers.length,
+        peer: peers
+      })
+    } catch (err) {
+      next(err)
+    }
   }
-})
+)
 
 router.get(
   '/dial',
-  async (req: Request<never, never, never, PeerIdDto & { multiAddr: string }>, res: Response) => {
+  async (
+    req: Request<never, never, never, PeerIdDto & { multiAddr: string }>,
+    res: Response,
+    next: Function
+  ) => {
     let peerId: PeerId | undefined
     let multiAddr: Multiaddr | undefined
     try {
@@ -118,50 +122,46 @@ router.get(
     } catch (err) {
       pino.logger.warn(`Cannot dial peer: ${err.message}`)
 
-      res.send({
-        success: false,
-        error: err.message
-      })
       pino.logger.error(err)
+      next(err)
     }
   }
 )
 
-router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
-  try {
-    const peerId = req.query.peerId?.toString() || ''
-    const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
+router.get(
+  '/connections',
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+    try {
+      const peerId = req.query.peerId?.toString() || ''
+      const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
 
-    res.send({
-      length: connections.length,
-      connections
-    })
+      res.send({
+        length: connections.length,
+        connections
+      })
+    } catch (err) {
+      pino.logger.error(err)
+      next(err)
+    }
+  }
+)
+
+router.get('/status', async (req, res, next) => {
+  try {
+    res.send({ status: helia.libp2p.status })
   } catch (err) {
-    pino.logger.error(err)
-    res.status(400)
-    res.send({
-      error: err.message
-    })
+    next(err)
   }
 })
 
-router.get('/status', async (req, res) => {
-  res.send({
-    status: helia.libp2p.status
-  })
-})
-
-router.get('/peers', (req, res) => {
+router.get('/peers', (req, res, next) => {
   try {
     const peers = helia.libp2p.getPeers()
 
     res.send({ peers })
   } catch (err) {
     pino.logger.error(err)
-    res.status(400)
-    res.send({
-      error: err.message
-    })
+    next(err)
   }
 })
 

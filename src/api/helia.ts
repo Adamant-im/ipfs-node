@@ -19,25 +19,16 @@ router.get('/pins', async (req, res) => {
   })
 })
 
-router.post('/pin/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
-
+router.post('/pin/:cid', async (req, res, next) => {
   try {
+    const cid = CID.parse(req.params.cid)
     for await (const pin of helia.pins.add(cid)) {
       pino.logger.info('PINNED', pin)
     }
+    res.send({ pinned: true, cid: cid.toString() })
   } catch (err) {
-    pino.logger.error(`Error: ${err.message}`)
-    res.statusCode = 500
-    return res.send({
-      error: err.message
-    })
+    next(err)
   }
-
-  res.send({
-    pinned: true,
-    cid: cid.toString()
-  })
 })
 
 router.get('/pins/isPinned/:cid', async (req, res) => {
@@ -51,7 +42,7 @@ router.get('/pins/isPinned/:cid', async (req, res) => {
   })
 })
 
-router.get('/routing/findProviders/:cid', async (req, res) => {
+router.get('/routing/findProviders/:cid', async (req, res, next) => {
   try {
     const cid = CID.parse(req.params.cid)
 
@@ -65,10 +56,8 @@ router.get('/routing/findProviders/:cid', async (req, res) => {
       providers
     })
   } catch (err) {
-    res.send({
-      error: err.message
-    })
     pino.logger.error(err)
+    next(err)
   }
 })
 
