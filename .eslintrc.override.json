@@ -1,0 +1,6 @@
+{
+  "rules": {
+    "n/no-extraneous-import": "off",
+    "@typescript-eslint/no-unsafe-function-type": "off"
+  }
+}
