@@ -15,10 +15,14 @@ const app = express()
 
 app.use(pino)
 
+const allowedOrigins: RegExp[] = (config.cors?.originRegexps ?? []).map(
+  (pattern: string) => new RegExp(pattern)
+)
+
 app.use(
   cors({
-    origin: config.cors.origin,
-    credentials: config.cors.credentials,
+    origin: allowedOrigins,
+    credentials: true,
     methods: ['GET', 'POST']
   })
 )
