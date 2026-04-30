@@ -3,6 +3,7 @@ import * as e from 'express'
 import { UnixFS } from '@helia/unixfs'
 import { pino } from './logger.js'
 import { UnixFsMulterFile } from './types.js'
+import { sanitizeFilename } from './sanitizeFilename.js'
 
 export interface UnixfsStorageOptions {
   unixfs: UnixFS
@@ -18,6 +19,7 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error?: Error, info?: Partial<UnixFsMulterFile>) => void
   ): void {
+    file.originalname = sanitizeFilename(file.originalname)
     const folder = this.options.destination(req, file)
     const filename = this.options.filename(req, file)
     this.options.unixfs
