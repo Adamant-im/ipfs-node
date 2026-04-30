@@ -7,15 +7,14 @@ import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
+import { writeLimiter, readLimiter } from '../middleware/rateLimiter.js'
 
 const router = Router()
 
-router.post('/upload', multerStorage.array('files'), async (req, res, next) => {
+router.post('/upload', writeLimiter, multerStorage.array('files'), async (req, res, next) => {
   if (!req.files) {
     res.statusCode = 400
-    return res.send({
-      error: 'No file uploaded'
-    })
+    return res.send({ error: 'No file uploaded' })
   }
 
   if (req.files.length > config.maxFileCount) {
@@ -27,7 +26,7 @@ router.post('/upload', multerStorage.array('files'), async (req, res, next) => {
 
   try {
     const files = flatFiles(req.files as UnixFsMulterFile[])
-    pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
+    pino.logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
     const cids: CID[] = []
     for (const file of files) {
@@ -58,7 +57,7 @@ router.post('/upload', multerStorage.array('files'), async (req, res, next) => {
   }
 })
 
-router.get('/:cid', async (req, res, next) => {
+router.get('/:cid', readLimiter, async (req, res, next) => {
   try {
     const cid = CID.parse(req.params.cid)
     const fileStats = await getFileStats(cid)
@@ -84,9 +83,8 @@ router.get('/:cid', async (req, res, next) => {
     if (error instanceof FileNotFoundError) {
       res.status(404).send({ error: 'File not found' })
       return
-    } else {
-      next(error)
     }
+    next(error)
   }
 })
 

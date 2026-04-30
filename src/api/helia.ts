@@ -3,10 +3,11 @@ import { Pin } from 'helia'
 import { CID } from 'multiformats/cid'
 import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
+import { writeLimiter, readLimiter } from '../middleware/rateLimiter.js'
 
 const router = Router()
 
-router.get('/pins', async (req, res) => {
+router.get('/pins', readLimiter, async (req, res) => {
   const pins: Pin[] = []
 
   for await (const pin of helia.pins.ls()) {
@@ -19,7 +20,7 @@ router.get('/pins', async (req, res) => {
   })
 })
 
-router.post('/pin/:cid', async (req, res, next) => {
+router.post('/pin/:cid', writeLimiter, async (req, res, next) => {
   try {
     const cid = CID.parse(req.params.cid)
     for await (const pin of helia.pins.add(cid)) {
@@ -31,7 +32,7 @@ router.post('/pin/:cid', async (req, res, next) => {
   }
 })
 
-router.get('/pins/isPinned/:cid', async (req, res) => {
+router.get('/pins/isPinned/:cid', readLimiter, async (req, res) => {
   const cid = CID.parse(req.params.cid)
 
   const isPinned = await helia.pins.isPinned(cid)
@@ -42,7 +43,7 @@ router.get('/pins/isPinned/:cid', async (req, res) => {
   })
 })
 
-router.get('/routing/findProviders/:cid', async (req, res, next) => {
+router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) => {
   try {
     const cid = CID.parse(req.params.cid)
 
