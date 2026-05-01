@@ -50,18 +50,30 @@ rules:
       cwe: "CWE-209"
 
   # -----------------------------------------------------------------------
+  # -----------------------------------------------------------------------
   # Rule: multer-unsafe-originalname
   #
-  # Flags every use of file.originalname from a Multer-parsed request.
-  # This value is taken verbatim from the Content-Disposition header and
-  # is fully attacker-controlled. Common attacks include path traversal
-  # (../../etc/passwd), null-byte injection, and Unicode homoglyph abuse.
+  # Flags uses of file.originalname in DANGEROUS contexts only:
+  # filesystem paths (path.join/resolve/dirname/basename), direct fs calls,
+  # and HTTP response bodies. Logging and sanitization calls are excluded.
   #
-  # Safe pattern: sanitize before any use — strip path separators,
-  # enforce a maximum length, normalize Unicode (NFKC).
+  # Why dangerous contexts only: Semgrep OSS cannot do cross-function
+  # data-flow analysis. A catch-all pattern on every .originalname read
+  # produces too many false positives (post-sanitization uses, log calls)
+  # and gets suppressed with nosemgrep, which defeats the purpose.
+  # Targeting dangerous sinks gives actionable findings with low FP rate.
   # -----------------------------------------------------------------------
   - id: multer-unsafe-originalname
-    pattern: $FILE.originalname
+    patterns:
+      - pattern-either:
+          - pattern: path.join(..., $FILE.originalname, ...)
+          - pattern: path.resolve(..., $FILE.originalname, ...)
+          - pattern: path.basename($FILE.originalname, ...)
+          - pattern: path.dirname($FILE.originalname, ...)
+          - pattern: fs.$METHOD($FILE.originalname, ...)
+          - pattern: fsPromises.$METHOD($FILE.originalname, ...)
+          - pattern: "res.send({..., $KEY: $FILE.originalname, ...})"
+          - pattern: "res.json({..., $KEY: $FILE.originalname, ...})"
     message: >
       file.originalname is attacker-controlled (from the Content-Disposition
       header). Sanitize before use: strip path separators, enforce max length,
