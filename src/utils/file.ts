@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import { clearTimeout } from 'node:timers'
 import { config } from '../config.js'
 import { ifs } from '../helia.js'
+import { pino } from './logger.js'
 
 /**
  * Return file statistics by CID.
@@ -19,7 +20,7 @@ export async function getFileStats(cid: CID) {
     const stats = await ifs.stat(cid, { signal: abortController.signal })
     return stats
   } catch (err) {
-    console.log(err)
+    pino.logger.error(err)
     clearTimeout(timeout)
 
     throw new FileNotFoundError('Cannot find requested CID. Request timed out.')
