@@ -25,6 +25,8 @@ pm2 start dist/index.js --name="IPFS node"
 ```
 
 
+> **Security notice:** `ipfs-node` does not handle TLS itself. Always deploy it behind a TLS-terminating reverse proxy (nginx, Caddy, etc.). Never expose port 4000 directly to the internet without HTTPS.
+
 ## How to configure
 Using `config.default.json5` as a template, you can create various configuration files. 
 

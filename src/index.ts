@@ -44,4 +44,8 @@ app.use((err: Error, req: Request, res: Response) => {
 
 app.listen(PORT, () => {
   pino.logger.info(`Server is running on http://localhost:${PORT}`)
+  pino.logger.warn(
+    'TLS is not handled at the application level. ' +
+      'Ensure this service is deployed behind a TLS-terminating reverse proxy (e.g. nginx, Caddy).'
+  )
 })
