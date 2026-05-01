@@ -12,6 +12,7 @@ diskUsageCron.start()
 
 const PORT = config.serverPort
 const app = express()
+app.disable('x-powered-by')
 
 app.use(pino)
 
