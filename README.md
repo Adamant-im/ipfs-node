@@ -62,11 +62,62 @@ For example:
   maxFileCount: 5, // Maximum upload count of files per request
   findFileTimeout: 20000, // Time limit for searching for a file on the IPFS network 
   cors: {
-    // Allowed URLs to make request to node. Set using regular expressions 
-    originRegexps: ['.*\.adamant\.im', 'adm.im', '.*\.vercel\.app', '.*\.surge\.sh', 'localhost:8080']
-  }
+    // Allowed URLs to make requests to node. Set using properly anchored regular expressions.
+    // Dots in domain names must be escaped (\\.),  and patterns must be anchored (^ and $)
+    // to prevent unintended matches (e.g. 'adm.im' without anchors would also match 'admXim').
+    originRegexps: [
+      '^https://.*\\.adamant\\.im$',
+      '^https://adm\\.im$',
+      '^https://.*\\.vercel\\.app$',
+      '^https://.*\\.surge\\.sh$',
+      '^http://localhost:8080$'
+    ]
+  },
+
+  // API key for the protected admin endpoint GET /api/node/info.
+  // This endpoint exposes sensitive node topology data (peerId, IP addresses, disk usage)
+  // and must not be publicly accessible.
+  //
+  // Generate a strong random key before starting the node:
+  //   openssl rand -hex 32
+  //
+  // If this field is missing or empty, GET /api/node/info returns 503.
+  // GET /api/node/health remains public and does not require this key.
+  adminApiKey: 'replace-with-output-of-openssl-rand-hex-32'
 }
 ```
+
+## Security
+
+### Protected endpoints
+
+`GET /api/node/info` requires authentication via the `x-api-key` HTTP header. This endpoint exposes sensitive node topology data — `peerId`, `multiAddresses`, disk usage statistics — which could be used to enumerate and map ADAMANT IPFS infrastructure.
+
+Before starting the node, generate a strong API key and add it to your config:
+
+```bash
+openssl rand -hex 32
+```
+
+Then set it in `config.json5`:
+
+```jsonc
+adminApiKey: 'your-generated-key-here'
+```
+
+To call the protected endpoint:
+
+```bash
+curl -H "x-api-key: your-generated-key-here" http://localhost:4000/api/node/info
+```
+
+If `adminApiKey` is not set in config, the endpoint returns `503 Service not configured`.
+
+`GET /api/node/health` is **public** and does not require authentication. It is safe to use for uptime monitoring and client availability checks.
+
+### CORS
+
+Allowed browser origins are configured via `cors.originRegexps` in your config file. Patterns must be properly anchored and use escaped dots to avoid unintended matches. See `config.default.json5` for examples.
 
 ## How to use
 
@@ -107,12 +158,35 @@ Content-Type: application/octet-stream
 Hello ipfs-node!
 ```
 
-### Get node info
+### Get node health
+
+#### Request
+```GET /api/node/health```
+```bash
+curl -i --location 'http://localhost:4000/api/node/health'
+```
+
+#### Response
+```
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+...
+
+{
+  "timestamp": 1720614998797,
+  "heliaStatus": "started"
+}
+```
+
+### Get node info (protected)
+
+Requires `x-api-key` header matching `adminApiKey` from config.
 
 #### Request
 ```GET /api/node/info```
 ```bash
-curl -i --location 'http://localhost:4000/api/node/info'
+curl -i --location 'http://localhost:4000/api/node/info' \
+  --header 'x-api-key: your-generated-key-here'
 ```
 
 #### Response
