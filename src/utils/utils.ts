@@ -72,8 +72,8 @@ export function flatFiles(
   }
 }
 
-export async function availableStorageSize() {
-  const statistics = await statfs('/', { bigint: true })
+export async function availableStorageSize(path: string) {
+  const statistics = await statfs(path, { bigint: true })
   return statistics.bsize * statistics.bavail
 }
 

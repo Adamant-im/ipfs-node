@@ -34,7 +34,7 @@ async function scan() {
     datastoreSizeMb = datastoreSize / oneMb
   }
 
-  availableSizeInMb = Number((await availableStorageSize()) / BigInt(oneMb))
+  availableSizeInMb = Number((await availableStorageSize(blockstorePath)) / BigInt(oneMb))
   pino.logger.info(`Check folder size took ${Date.now() - start} ms.`)
 }
 
