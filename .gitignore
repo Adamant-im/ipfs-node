@@ -1,4 +1,15 @@
 node_modules
 .idea
+.vscode
+.DS_Store
+
+logs
 dist/
 config.json5
+
+.playwright-cli/
+
+# ai
+.ai-ignored/
+.ai-tasks/
+.claude/
