@@ -1,0 +1,21 @@
+// Configuration used by `npm test`. Selected through IPFS_NODE_CONFIG=test.
+// It must not reach the network: no bootstrap peers and no known nodes.
+{
+  nodes: [],
+  storeFolder: '.adm-ipfs-test',
+  logLevel: 'silent',
+  peerDiscovery: {
+    bootstrap: [],
+    // Port 0 lets the OS pick a free port so tests never clash with a running node
+    listen: ['/ip4/127.0.0.1/tcp/0']
+  },
+  serverPort: 4000,
+  diskUsageScanPeriod: '*/30 * * * * *',
+  uploadLimitSizeBytes: 268435456, // 256 Mb.
+  maxFileCount: 10,
+  findFileTimeout: 20000,
+  cors: {
+    origin: '*',
+    credentials: true
+  }
+}
