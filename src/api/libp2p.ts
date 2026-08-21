@@ -1,21 +1,41 @@
-import { PeerId } from '@libp2p/interface'
+import { Connection, PeerId } from '@libp2p/interface'
 import { peerIdFromString } from '@libp2p/peer-id'
-import type { PingService } from '@libp2p/ping'
 import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { Request, Response, Router } from 'express'
 import { PeerIdDto } from '../dto/peer-id.dto.js'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 
 const router = Router()
+
+/**
+ * Reduce a libp2p connection to a JSON-serialisable summary.
+ *
+ * libp2p `Connection` objects hold streams, loggers and multiaddr instances and
+ * cannot be passed to `res.send()` directly — serialising one throws
+ * "toJSON not set".
+ */
+function serializeConnection(connection: Connection) {
+  return {
+    id: connection.id,
+    remotePeer: connection.remotePeer.toString(),
+    remoteAddr: connection.remoteAddr.toString(),
+    direction: connection.direction,
+    status: connection.status,
+    multiplexer: connection.multiplexer,
+    encryption: connection.encryption,
+    streams: connection.streams.length,
+    timeline: connection.timeline
+  }
+}
 
 router.get(
   '/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
-      const pingService = helia.libp2p.services.ping as PingService
-      const pong = await pingService.ping(peerId)
+      // Round-trip time in milliseconds; the `ping` service is registered in `createIpfsNode`
+      const pong = await helia.libp2p.services.ping.ping(peerId)
 
       res.send({
         pong
@@ -94,7 +114,7 @@ router.get(
         multiAddr = multiaddr(req.query.multiAddr || '')
       }
     } catch (err) {
-      pino.logger.error('Invalid peer ID:' + err.message)
+      logger.error('Invalid peer ID:' + err.message)
       res.send({
         success: false,
         error: 'Invalid peer ID'
@@ -103,9 +123,9 @@ router.get(
     }
 
     if (multiAddr) {
-      pino.logger.info(`Peering by multiAddress: ${multiAddr}`)
+      logger.info(`Peering by multiAddress: ${multiAddr}`)
     } else if (peerId) {
-      pino.logger.info(`Peering by PeerID: ${peerId}`)
+      logger.info(`Peering by PeerID: ${peerId}`)
     }
 
     try {
@@ -114,15 +134,15 @@ router.get(
         throw new Error('Empty peerId and MultiAddr')
       }
       const connection = await helia.libp2p.dial(peer)
-      res.send({ success: true, connection })
+      res.send({ success: true, connection: serializeConnection(connection) })
     } catch (err) {
-      pino.logger.warn(`Cannot dial peer: ${err.message}`)
+      logger.warn(`Cannot dial peer: ${err.message}`)
 
       res.send({
         success: false,
         error: err.message
       })
-      pino.logger.error(err)
+      logger.error(err)
     }
   }
 )
@@ -134,10 +154,10 @@ router.get('/connections', async (req: Request<never, never, never, PeerIdDto>, 
 
     res.send({
       length: connections.length,
-      connections
+      connections: connections.map(serializeConnection)
     })
   } catch (err) {
-    pino.logger.error(err)
+    logger.error(err)
     res.status(400)
     res.send({
       error: err.message
@@ -157,7 +177,7 @@ router.get('/peers', (req, res) => {
 
     res.send({ peers })
   } catch (err) {
-    pino.logger.error(err)
+    logger.error(err)
     res.status(400)
     res.send({
       error: err.message

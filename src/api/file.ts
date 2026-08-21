@@ -3,7 +3,7 @@ import { CID } from 'multiformats/cid'
 import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
@@ -18,7 +18,13 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
     })
   }
 
-  if (req.files.length > config.maxFileCount) {
+  // `req.files` is an array for `.array()` uploads, but multer types it as a
+  // union with the fieldname map used by `.fields()`, so flatten before counting
+  const files = flatFiles(
+    req.files as UnixFsMulterFile[] | { [fieldname: string]: UnixFsMulterFile[] }
+  )
+
+  if (files.length > config.maxFileCount) {
     res.status(400).send({
       error: `File limit exceeded. Max ${config.maxFileCount} allowed.`
     })
@@ -26,23 +32,22 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
   }
 
   try {
-    const files = flatFiles(req.files as UnixFsMulterFile[])
-    pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
+    logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
 
     const cids: CID[] = []
     for (const file of files) {
-      pino.logger.info(`Adding ${file.originalname} to IPFS`)
+      logger.info(`Adding ${file.originalname} to IPFS`)
 
       const { cid } = file
-      pino.logger.info(`Successfully added file ${cid}`)
+      logger.info(`Successfully added file ${cid}`)
       cids.push(cid)
 
       const isPinned = await helia.pins.isPinned(cid)
       if (isPinned) {
-        pino.logger.info(`File already pinned ${cid}`)
+        logger.info(`File already pinned ${cid}`)
       } else {
         for await (const pinned of helia.pins.add(cid)) {
-          pino.logger.info(`Filed pinned: ${pinned}`)
+          logger.info(`Filed pinned: ${pinned}`)
         }
       }
     }
@@ -52,7 +57,7 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
       cids: cids.map((cid) => cid.toString())
     })
   } catch (err) {
-    pino.logger.error(err)
+    logger.error(err)
 
     res.status(400)
     res.send({
@@ -73,12 +78,12 @@ router.get('/:cid', async (req, res) => {
       if (!streamStarted) {
         streamStarted = true
         res.set('Content-Type', 'application/octet-stream')
-        res.set('Content-Length', fileStats.fileSize.toString())
+        res.set('Content-Length', fileStats.size.toString())
       }
     })
 
     stream.on('error', (err) => {
-      pino.logger.error(err)
+      logger.error(err)
       res.status(408).send({
         error: err.message
       })
@@ -91,7 +96,7 @@ router.get('/:cid', async (req, res) => {
         error: error.message
       })
     } else {
-      pino.logger.error(error)
+      logger.error(error)
       res.status(500).send({
         error: error.message
       })

@@ -6,10 +6,209 @@ import JSON5 from 'json5'
 const currDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(currDir, '..')
 
-export const CONFIG_FILE_NAME = 'config.json5'
+/** Log levels accepted by `pino`, ordered from least to most verbose. */
+const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
 
-const configPath = join(rootDir, CONFIG_FILE_NAME)
+export type LogLevel = (typeof LOG_LEVELS)[number]
 
-export const config = JSON5.parse(fs.readFileSync(configPath, 'utf8'))
+/** A known ADAMANT IPFS node this node peers with. */
+export interface ConfigNode {
+  name: string
+  multiAddr: string
+}
 
-export const packageJson = JSON5.parse(fs.readFileSync(join(rootDir, 'package.json'), 'utf8'))
+export interface Config {
+  /** Known ADAMANT IPFS nodes. Their multiaddrs are also the connection manager allow list. */
+  nodes: ConfigNode[]
+  /** File storage directory, resolved from the user's home directory. */
+  storeFolder: string
+  logLevel: LogLevel
+  peerDiscovery: {
+    /** Multiaddrs dialled on startup to join the ADAMANT peer set. */
+    bootstrap: string[]
+    /** Multiaddrs libp2p listens on. */
+    listen: string[]
+  }
+  /** API server port. */
+  serverPort: number
+  /** Disk space scanning period in cron format. */
+  diskUsageScanPeriod: string
+  /** Maximum size of a single uploaded file, in bytes. */
+  uploadLimitSizeBytes: number
+  /** Maximum number of files accepted per upload request. */
+  maxFileCount: number
+  /** Time limit, in milliseconds, for locating a file on the IPFS network. */
+  findFileTimeout: number
+  cors: {
+    origin: string | string[] | boolean
+    credentials: boolean
+  }
+}
+
+/**
+ * Build the config file name for an optional config suffix.
+ *
+ * Passing `test1` selects `config.test1.json5`; passing nothing selects `config.json5`.
+ * This mirrors the documented `node dist/index.js <name>` invocation.
+ *
+ * @param name Config suffix taken from the first CLI argument
+ */
+export function configFileName(name?: string): string {
+  return name != null && name !== '' ? `config.${name}.json5` : 'config.json5'
+}
+
+/** Thrown when the config file is missing, unparseable, or fails validation. */
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfigError'
+  }
+}
+
+function fail(path: string, expectation: string): never {
+  throw new ConfigError(`Invalid config: "${path}" ${expectation}`)
+}
+
+function requireObject(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail(path, 'must be an object')
+  }
+  return value as Record<string, unknown>
+}
+
+function requireString(value: unknown, path: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    fail(path, 'must be a non-empty string')
+  }
+  return value
+}
+
+function requireStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) {
+    fail(path, 'must be an array of strings')
+  }
+  return value.map((item, index) => requireString(item, `${path}[${index}]`))
+}
+
+/**
+ * Validate a positive integer.
+ *
+ * @param min Smallest accepted value; used to reject zero or negative limits
+ */
+function requireInteger(value: unknown, path: string, min: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+    fail(path, `must be an integer >= ${min}`)
+  }
+  return value
+}
+
+function requireBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    fail(path, 'must be a boolean')
+  }
+  return value
+}
+
+/**
+ * Validate an untrusted parsed config object and return it as a typed `Config`.
+ *
+ * Unknown keys are ignored so that config files can carry deployment-specific
+ * extras without breaking startup.
+ *
+ * @param raw Value parsed from a JSON5 config file
+ */
+export function validateConfig(raw: unknown): Config {
+  const root = requireObject(raw, 'config')
+
+  if (!Array.isArray(root.nodes)) {
+    fail('nodes', 'must be an array')
+  }
+  const nodes = root.nodes.map((node, index) => {
+    const entry = requireObject(node, `nodes[${index}]`)
+    return {
+      name: requireString(entry.name, `nodes[${index}].name`),
+      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+    }
+  })
+
+  const logLevel = requireString(root.logLevel, 'logLevel')
+  if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
+    fail('logLevel', `must be one of: ${LOG_LEVELS.join(', ')}`)
+  }
+
+  const peerDiscovery = requireObject(root.peerDiscovery, 'peerDiscovery')
+  const listen = requireStringArray(peerDiscovery.listen, 'peerDiscovery.listen')
+  if (listen.length === 0) {
+    fail('peerDiscovery.listen', 'must contain at least one multiaddr')
+  }
+
+  const cors = requireObject(root.cors, 'cors')
+  const origin = cors.origin
+  if (typeof origin !== 'string' && typeof origin !== 'boolean' && !Array.isArray(origin)) {
+    fail('cors.origin', 'must be a string, a boolean, or an array of strings')
+  }
+
+  const maxFileCount = requireInteger(root.maxFileCount, 'maxFileCount', 1)
+
+  return {
+    nodes,
+    storeFolder: requireString(root.storeFolder, 'storeFolder'),
+    logLevel: logLevel as LogLevel,
+    peerDiscovery: {
+      bootstrap: requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap'),
+      listen
+    },
+    serverPort: requireInteger(root.serverPort, 'serverPort', 1),
+    diskUsageScanPeriod: requireString(root.diskUsageScanPeriod, 'diskUsageScanPeriod'),
+    uploadLimitSizeBytes: requireInteger(root.uploadLimitSizeBytes, 'uploadLimitSizeBytes', 1),
+    maxFileCount,
+    findFileTimeout: requireInteger(root.findFileTimeout, 'findFileTimeout', 1),
+    cors: {
+      origin: Array.isArray(origin)
+        ? requireStringArray(origin, 'cors.origin')
+        : (origin as string | boolean),
+      credentials: requireBoolean(cors.credentials, 'cors.credentials')
+    }
+  }
+}
+
+/**
+ * Read and validate a config file from the repository root.
+ *
+ * @param fileName Config file name, see {@link configFileName}
+ */
+export function loadConfig(fileName: string): Config {
+  const configPath = join(rootDir, fileName)
+
+  let contents: string
+  try {
+    contents = fs.readFileSync(configPath, 'utf8')
+  } catch (err) {
+    throw new ConfigError(`Cannot read config file ${configPath}: ${(err as Error).message}`)
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON5.parse(contents)
+  } catch (err) {
+    throw new ConfigError(`Cannot parse config file ${configPath}: ${(err as Error).message}`)
+  }
+
+  return validateConfig(parsed)
+}
+
+/**
+ * Config file used by the running node.
+ *
+ * The name comes from `IPFS_NODE_CONFIG` when set, otherwise from the first CLI
+ * argument as documented in `README.md`. The environment variable takes
+ * priority so that the config can be selected when the process is started by a
+ * tool that owns the argument list, such as the test runner.
+ */
+export const CONFIG_FILE_NAME = configFileName(process.env.IPFS_NODE_CONFIG ?? process.argv[2])
+
+export const config = loadConfig(CONFIG_FILE_NAME)
+
+export const packageJson = JSON.parse(
+  fs.readFileSync(join(rootDir, 'package.json'), 'utf8')
+) as Record<string, unknown> & { version: string }

@@ -24,7 +24,6 @@
     listen: ['/ip4/0.0.0.0/tcp/4001']
   },
   serverPort: 4000,
-  autoPeeringPeriod: '*/10 * * * * *',
   diskUsageScanPeriod: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,

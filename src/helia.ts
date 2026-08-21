@@ -1,68 +1,45 @@
-import { unixfs } from '@helia/unixfs'
-import { bootstrap } from '@libp2p/bootstrap'
-import { createHelia } from 'helia'
-import { tcp } from '@libp2p/tcp'
-import { yamux } from '@chainsafe/libp2p-yamux'
-import { noise } from '@chainsafe/libp2p-noise'
-import { identify } from '@libp2p/identify'
-import { blockstore, datastore } from './store.js'
-import { getAllowNodesMultiaddrs } from './utils/utils.js'
 import { config } from './config.js'
-import { pino } from './utils/logger.js'
+import { createIpfsNode, createUnixFs } from './ipfs-node.js'
+import { blockstore, datastore, openStores } from './store.js'
+import { logger } from './utils/logger.js'
+import { getAllowNodesMultiaddrs } from './utils/utils.js'
 
-export const helia = await createHelia({
-  datastore,
+await openStores()
+
+/**
+ * The Helia node backing the HTTP API.
+ *
+ * Created at import time so that the API routers can share a single node. See
+ * `createIpfsNode` for the composition and why the Helia defaults are avoided.
+ */
+export const helia = await createIpfsNode({
   blockstore,
-  libp2p: {
-    datastore,
-    addresses: {
-      listen: config.peerDiscovery.listen
-    },
-    transports: [tcp()],
-    connectionEncryption: [noise()],
-    streamMuxers: [yamux()],
-    peerDiscovery: [
-      bootstrap({
-        list: config.peerDiscovery.bootstrap
-      })
-    ],
-    services: {
-      identify: identify()
-    },
-    connectionManager: {
-      maxConnections: 100,
-      allow: getAllowNodesMultiaddrs()
-    }
-  }
+  datastore,
+  listen: config.peerDiscovery.listen,
+  bootstrap: config.peerDiscovery.bootstrap,
+  allow: getAllowNodesMultiaddrs()
 })
 
 helia.libp2p.getMultiaddrs().forEach((addr) => {
-  pino.logger.info(`Listening on ${addr.toString()}`)
+  logger.info(`Listening on ${addr.toString()}`)
 })
 
 helia.libp2p.addEventListener('peer:discovery', (evt) => {
-  const peer = evt.detail
-  pino.logger.info(`Discovered peer: ${peer.id}`)
+  logger.info(`Discovered peer: ${evt.detail.id.toString()}`)
 })
 
 helia.libp2p.addEventListener('peer:connect', (evt) => {
-  const peerId = evt.detail
-  pino.logger.info(`Peer connected: ${peerId}`)
+  logger.info(`Peer connected: ${evt.detail.toString()}`)
 })
 
 helia.libp2p.addEventListener('peer:disconnect', (evt) => {
-  const peerId = evt.detail
-  pino.logger.info(`Peer disconnected: ${peerId}`)
+  logger.info(`Peer disconnected: ${evt.detail.toString()}`)
 })
 
-helia.libp2p.addEventListener('start', (event) => {
-  pino.logger.info('Libp2p node started')
+helia.events.addEventListener('stop', () => {
+  logger.info('Helia node stopped')
 })
 
-helia.libp2p.addEventListener('stop', (event) => {
-  pino.logger.info('Libp2p node stopped')
-})
+logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
 
-pino.logger.info(`Helia is running! PeerID: ${helia.libp2p.peerId.toString()}`)
-
-export const ifs = unixfs(helia)
+export const ifs = createUnixFs(helia)

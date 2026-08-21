@@ -2,9 +2,9 @@ import { peerIdFromString } from '@libp2p/peer-id'
 import { multiaddr } from '@multiformats/multiaddr'
 import { config } from '../config.js'
 import { ConfigNode, NodeWithPeerId, UnixFsMulterFile } from './types.js'
-import { statfs } from 'node:fs/promises'
-import { pino } from './logger.js'
-import { getFolderSizeBin } from 'go-get-folder-size'
+import { lstat, opendir, statfs } from 'node:fs/promises'
+import { join } from 'node:path'
+import { logger } from './logger.js'
 
 /**
  * Get peerId from multiaddr string
@@ -77,11 +77,41 @@ export async function availableStorageSize() {
   return statistics.bsize * statistics.bavail
 }
 
+/**
+ * Sum the apparent size, in bytes, of every regular file under `dir`.
+ *
+ * Symlinks are measured but not followed, so a link pointing outside the tree
+ * cannot inflate the total or cause an infinite walk.
+ *
+ * @param dir Directory to walk; a missing or unreadable directory yields 0
+ */
 export async function dirSize(dir: string): Promise<number> {
+  let total = 0
+
   try {
-    return await getFolderSizeBin(dir, false, { loose: true })
-  } catch (e) {
-    pino.logger.error(e)
+    const entries = await opendir(dir, { recursive: true })
+
+    for await (const entry of entries) {
+      if (entry.isDirectory()) {
+        continue
+      }
+
+      try {
+        const stats = await lstat(join(entry.parentPath, entry.name))
+        total += stats.size
+      } catch {
+        // The store is written concurrently, so entries can disappear mid-walk
+      }
+    }
+  } catch (err) {
+    // A store directory that does not exist yet simply holds nothing. This is
+    // the normal state on a first run, when the scan can start before the
+    // stores are created, so it is not worth logging as an error.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.error(err)
+    }
+    return 0
   }
-  return 0
+
+  return total
 }
