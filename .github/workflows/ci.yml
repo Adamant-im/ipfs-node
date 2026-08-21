@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      # Helia pulls @libp2p/webrtc, which drags react-native and its Metro
+      # bundler into the runtime tree. The advisories reported against Metro are
+      # not reachable from this service, so the gate is set above them. See the
+      # dependency notes in README.md.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=critical
