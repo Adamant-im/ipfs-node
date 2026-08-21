@@ -30,13 +30,26 @@
   maxFileCount: 10,
   findFileTimeout: 20000,
   cors: {
-    originRegexps: [
-      '^https://.*\\.adamant\\.im$',
-      '^https://adm\\.im$',
-      '^https://.*\\.vercel\\.app$',
-      '^https://.*\\.surge\\.sh$',
-      '^http://localhost:8080$'
+    // Exact origins and left-most subdomain wildcards are supported.
+    allowedOrigins: [
+      'https://*.adamant.im',
+      'https://adm.im',
+      'https://*.vercel.app',
+      'https://*.surge.sh',
+      'http://localhost:8080'
     ]
   },
-  adminApiKey: 'change-me-use-openssl-rand-hex-32'
+  // Keep false when clients connect directly. Prefer exact proxy IP/CIDR values
+  // when a reverse proxy forwards requests to this process.
+  trustProxy: false,
+  rateLimits: {
+    upload: { windowMs: 900000, limit: 10 },
+    pin: { windowMs: 900000, limit: 10 },
+    read: { windowMs: 60000, limit: 100 }
+  },
+  // Generate with: openssl rand -hex 32
+  // Admin routes return 503 while this value is empty.
+  adminApiKey: '',
+  // The debug API is absent unless explicitly enabled; it still requires the admin key.
+  enableDebugApi: false
 }

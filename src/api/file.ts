@@ -7,12 +7,13 @@ import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
-import { writeLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { uploadLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { InvalidRequestError } from '../security/errors.js'
 
 const router = Router()
 
-router.post('/upload', writeLimiter, multerStorage.array('files'), async (req, res, next) => {
-  if (!req.files) {
+router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, res, next) => {
+  if (!Array.isArray(req.files) || req.files.length === 0) {
     res.statusCode = 400
     return res.send({ error: 'No file uploaded' })
   }
@@ -59,19 +60,14 @@ router.post('/upload', writeLimiter, multerStorage.array('files'), async (req, r
 
 router.get('/:cid', readLimiter, async (req, res, next) => {
   try {
-    const cid = CID.parse(req.params.cid)
+    const cid = parseCid(req.params.cid)
     const fileStats = await getFileStats(cid)
-
-    let streamStarted = false
     const stream = downloadFile(cid)
 
-    stream.on('data', () => {
-      if (!streamStarted) {
-        streamStarted = true
-        res.set('Content-Type', 'application/octet-stream')
-        res.set('Content-Length', fileStats.fileSize.toString())
-      }
-    })
+    res.set('Content-Type', 'application/octet-stream')
+    res.set('Content-Length', fileStats.fileSize.toString())
+    res.set('Content-Disposition', `attachment; filename="${cid.toString()}"`)
+    res.set('X-Content-Type-Options', 'nosniff')
 
     stream.on('error', (err) => {
       pino.logger.error(err)
@@ -87,5 +83,14 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
     next(error)
   }
 })
+
+/** Parse a route CID without exposing parser internals to the client. */
+function parseCid(value: string): CID {
+  try {
+    return CID.parse(value)
+  } catch {
+    throw new InvalidRequestError('Invalid CID')
+  }
+}
 
 export default router

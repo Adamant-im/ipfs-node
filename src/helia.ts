@@ -55,11 +55,11 @@ helia.libp2p.addEventListener('peer:disconnect', (evt) => {
   pino.logger.info(`Peer disconnected: ${peerId}`)
 })
 
-helia.libp2p.addEventListener('start', (event) => {
+helia.libp2p.addEventListener('start', () => {
   pino.logger.info('Libp2p node started')
 })
 
-helia.libp2p.addEventListener('stop', (event) => {
+helia.libp2p.addEventListener('stop', () => {
   pino.logger.info('Libp2p node stopped')
 })
 

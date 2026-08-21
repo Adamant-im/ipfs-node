@@ -5,6 +5,7 @@ node_modules
 
 logs
 dist/
+dist-test/
 config.json5
 semgrep-results.sarif
 npm-audit-report.json

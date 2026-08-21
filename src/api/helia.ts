@@ -3,26 +3,29 @@ import { Pin } from 'helia'
 import { CID } from 'multiformats/cid'
 import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
-import { writeLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { pinLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { InvalidRequestError } from '../security/errors.js'
 
 const router = Router()
 
-router.get('/pins', readLimiter, async (req, res) => {
-  const pins: Pin[] = []
+router.get('/pins', readLimiter, async (req, res, next) => {
+  try {
+    const pins: Pin[] = []
 
-  for await (const pin of helia.pins.ls()) {
-    pino.logger.info('PIN LS', pin)
-    pins.push(pin)
+    for await (const pin of helia.pins.ls()) {
+      pino.logger.info('PIN LS', pin)
+      pins.push(pin)
+    }
+
+    res.send({ pins })
+  } catch (err) {
+    next(err)
   }
-
-  res.send({
-    pins
-  })
 })
 
-router.post('/pin/:cid', writeLimiter, async (req, res, next) => {
+router.post('/pin/:cid', pinLimiter, async (req, res, next) => {
   try {
-    const cid = CID.parse(req.params.cid)
+    const cid = parseCid(req.params.cid)
     for await (const pin of helia.pins.add(cid)) {
       pino.logger.info('PINNED', pin)
     }
@@ -32,20 +35,24 @@ router.post('/pin/:cid', writeLimiter, async (req, res, next) => {
   }
 })
 
-router.get('/pins/isPinned/:cid', readLimiter, async (req, res) => {
-  const cid = CID.parse(req.params.cid)
+router.get('/pins/isPinned/:cid', readLimiter, async (req, res, next) => {
+  try {
+    const cid = parseCid(req.params.cid)
 
-  const isPinned = await helia.pins.isPinned(cid)
+    const isPinned = await helia.pins.isPinned(cid)
 
-  res.send({
-    cid: cid.toString(),
-    isPinned
-  })
+    res.send({
+      cid: cid.toString(),
+      isPinned
+    })
+  } catch (err) {
+    next(err)
+  }
 })
 
 router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) => {
   try {
-    const cid = CID.parse(req.params.cid)
+    const cid = parseCid(req.params.cid)
 
     const providers: string[] = []
     for await (const provider of helia.routing.findProviders(cid)) {
@@ -61,5 +68,14 @@ router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) =>
     next(err)
   }
 })
+
+/** Parse a route CID without exposing parser internals to the client. */
+function parseCid(value: string): CID {
+  try {
+    return CID.parse(value)
+  } catch {
+    throw new InvalidRequestError('Invalid CID')
+  }
+}
 
 export default router

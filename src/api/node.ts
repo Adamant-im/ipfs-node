@@ -2,7 +2,6 @@ import { Router } from 'express'
 import { packageJson } from '../config.js'
 import { getDiskUsageStats } from '../disk-usage.cron.js'
 import { helia } from '../helia.js'
-import { apiKeyAuth } from '../middleware/apiKeyAuth.js'
 
 const router = Router()
 
@@ -17,9 +16,7 @@ router.get('/health', async (req, res, next) => {
   }
 })
 
-// Protected — full node topology for operators only
-// Requires x-api-key header matching config.adminApiKey
-router.get('/info', apiKeyAuth, async (req, res, next) => {
+router.get('/info', async (req, res, next) => {
   try {
     const { blockstoreSizeMb, datastoreSizeMb, availableSizeInMb } = getDiskUsageStats()
     res.send({

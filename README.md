@@ -1,213 +1,189 @@
-# ipfs-node
-ADAMANT ipfs-node. Designed for downloading and exchanging files in the ADAMANT Messenger. 
+# ADAMANT IPFS node
 
-Unlike the standard libraries (helia or kubo), this ipfs-node is equipped with a web server for performing REST requests for downloading and receiving files.
+This service embeds a Helia/libp2p node and exposes the file-transfer API used by ADAMANT Messenger. It stores uploaded files in an on-disk IPFS blockstore, pins them, retrieves content by CID, and maintains connections to configured peers.
 
-The plans also include the implementation of the Garbage Collector function, which will save disk space by removing unsent files.
+The application is not a Kubo wrapper. It is a Node.js service with an Express REST API around an in-process Helia node.
 
-## How to start
-- You will need Node.js v20.11.1 (You can install via nvm: https://github.com/nvm-sh/nvm):
-```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-nvm install 20.11.1
-```
-- Cloning and building node:
+## Requirements
+
+- Node.js 20 or later
+- A TLS-terminating reverse proxy for every public deployment
+- A unique administrative API key for operator endpoints
+
+## Install and run
+
 ```bash
 git clone https://github.com/Adamant-im/ipfs-node.git
-cd ipfs-node 
-npm i
+cd ipfs-node
+npm ci
 npm run build
+node dist/index.js
 ```
-- Running node with [pm2](https://github.com/Unitech/pm2):
+
+The process can also be managed with PM2:
+
 ```bash
-npm i -g pm2
+npm install --global pm2
 pm2 start dist/index.js --name="IPFS node"
 ```
 
+## Configuration
 
-> **Security notice:** `ipfs-node` does not handle TLS itself. Always deploy it behind a TLS-terminating reverse proxy (nginx, Caddy, etc.). Never expose port 4000 directly to the internet without HTTPS.
-
-## How to configure
-Using `config.default.json5` as a template, you can create various configuration files. 
-
-For example:
-`node dist/index.js test1` — this command will launch the server with the configuration from the file config.test1.json5
+Copy `config.default.json5` to `config.json5` and replace all deployment-specific values. The security-relevant fields are shown below:
 
 ```jsonc
 {
-  // List of IPFS ADAMANT nodes interacting between each other
-  nodes: [
-    {
-      name: "ipfs1",
-      multiAddr: "/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq"
-    },
-    ...
-  ],
-  storeFolder: '.adm-ipfs', // File storage directory (the directory is set from the user’s home directory)
-  logLevel: 'debug', // Logging level: fatal, error, warn, info, debug, trace
-  peerDiscovery: {
-    // IPFS network nodes that will be used to search for new nodes
-    // Details: https://github.com/libp2p/js-libp2p/tree/main/packages/peer-discovery-bootstrap
-    bootstrap: [
-      '/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN',
-      ...
-    ],
-    // Addresses that helia will listen to
-    listen: [
-      '/ip4/0.0.0.0/tcp/4001',
-    ]
+  "serverPort": 4000,
+  "uploadLimitSizeBytes": 268435456,
+  "maxFileCount": 10,
+  "cors": {
+    "allowedOrigins": ["https://adm.im", "https://*.adamant.im", "http://localhost:8080"]
   },
-  serverPort: 4000, // API server deployment port
-  autoPeeringPeriod: '*/10 * * * * *', 
-  diskUsageScanPeriod: '*/30 * * * * *', // Disk space scanning period. Set in cron format: '* * * * * *'
-  uploadLimitSizeBytes: 268435456, // Maximum upload file size (in bytes)
-  maxFileCount: 5, // Maximum upload count of files per request
-  findFileTimeout: 20000, // Time limit for searching for a file on the IPFS network 
-  cors: {
-    // Allowed URLs to make requests to node. Set using properly anchored regular expressions.
-    // Dots in domain names must be escaped (\\.),  and patterns must be anchored (^ and $)
-    // to prevent unintended matches (e.g. 'adm.im' without anchors would also match 'admXim').
-    originRegexps: [
-      '^https://.*\\.adamant\\.im$',
-      '^https://adm\\.im$',
-      '^https://.*\\.vercel\\.app$',
-      '^https://.*\\.surge\\.sh$',
-      '^http://localhost:8080$'
-    ]
+  "trustProxy": false,
+  "rateLimits": {
+    "upload": { "windowMs": 900000, "limit": 10 },
+    "pin": { "windowMs": 900000, "limit": 10 },
+    "read": { "windowMs": 60000, "limit": 100 }
   },
-
-  // API key for the protected admin endpoint GET /api/node/info.
-  // This endpoint exposes sensitive node topology data (peerId, IP addresses, disk usage)
-  // and must not be publicly accessible.
-  //
-  // Generate a strong random key before starting the node:
-  //   openssl rand -hex 32
-  //
-  // If this field is missing or empty, GET /api/node/info returns 503.
-  // GET /api/node/health remains public and does not require this key.
-  adminApiKey: 'replace-with-output-of-openssl-rand-hex-32'
+  "adminApiKey": "",
+  "enableDebugApi": false
 }
 ```
 
-## Security
-
-### Protected endpoints
-
-`GET /api/node/info` requires authentication via the `x-api-key` HTTP header. This endpoint exposes sensitive node topology data — `peerId`, `multiAddresses`, disk usage statistics — which could be used to enumerate and map ADAMANT IPFS infrastructure.
-
-Before starting the node, generate a strong API key and add it to your config:
+Generate the administrative secret before enabling operator endpoints:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Then set it in `config.json5`:
+Set the generated value as `adminApiKey`. A missing or empty key fails closed: administrative routes return `503 Service not configured`. Known placeholder values and secrets shorter than 32 characters prevent startup.
 
-```jsonc
-adminApiKey: 'your-generated-key-here'
-```
+### Configuration migration
 
-To call the protected endpoint:
+- Replace `cors.origin` or `cors.originRegexps` with `cors.allowedOrigins`
+- Use exact origins such as `https://adm.im` or left-most subdomain wildcards such as `https://*.adamant.im`
+- Set `adminApiKey` before using any administrative API
+- Leave `trustProxy` as `false` for direct connections; configure exact proxy addresses, CIDR ranges, or a verified hop count behind a proxy
+- Set `enableDebugApi: true` only when the authenticated debug route is operationally required
+- Tune the endpoint-specific `rateLimits` for the deployment perimeter
 
-```bash
-curl -H "x-api-key: your-generated-key-here" http://localhost:4000/api/node/info
-```
+Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 
-If `adminApiKey` is not set in config, the endpoint returns `503 Service not configured`.
+## HTTP access policy
 
-`GET /api/node/health` is **public** and does not require authentication. It is safe to use for uptime monitoring and client availability checks.
+| Class                | Routes                                                        | Policy                                                                    |
+| -------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`                               | No authentication                                                         |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                 | No authentication; endpoint-specific rate limits and upload limits apply  |
+| Administrative       | `GET /api/node/info`, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                 |
+| Disabled by default  | all `/api/debug/*`                                            | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key` |
+| Authenticated user   | None                                                          | The service has no end-user identity or session layer                     |
+
+Administrative coverage includes pin operations, provider queries, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
+
+### Public upload decision
+
+Upload remains public for compatibility with direct Messenger clients. The service has no safe channel for distributing an upload secret and does not implement a short-lived signing protocol. Public upload is constrained by per-client request limits, per-file size, per-request file count, filename sanitization, and the deployment proxy.
+
+This is an explicit compatibility decision, not an authorization guarantee. A deployment that requires signed upload authorization must enforce it at a trusted gateway until a client-compatible signing protocol is designed. Files of any content type are accepted, but downloads are served as `application/octet-stream` attachments with content sniffing disabled.
 
 ### CORS
 
-Allowed browser origins are configured via `cors.originRegexps` in your config file. Patterns must be properly anchored and use escaped dots to avoid unintended matches. See `config.default.json5` for examples.
+`cors.allowedOrigins` accepts canonical HTTP(S) origins only. It does not accept paths, credentials, query strings, fragments, or unrestricted `*`. Wildcards are limited to a left-most subdomain. For example, `https://*.adamant.im` matches `https://chat.adamant.im` but not `https://adamant.im` or `https://adamant.im.example.org`.
 
-## How to use
+Requests without an `Origin` header, such as server-to-server calls and `curl`, are not blocked by CORS. Unauthorized administrative requests are still rejected by API-key middleware.
 
-### Upload file
-Request body type: `form-data`
+### Trusted proxy and rate limits
 
-It should contain a "files" field, which can accept an array of files up to 5 pieces at a time.
+Express uses the socket address as the client IP while `trustProxy` is `false`. Behind a reverse proxy, set `trustProxy` to the exact proxy address or CIDR when possible:
 
-#### Request
-```POST /api/file/upload```
+```jsonc
+trustProxy: ['127.0.0.1/8', '::1/128']
+```
+
+A numeric hop count is supported only for a fixed topology in which every path to the application has exactly that number of trusted hops. The blanket value `true` is rejected because a client could spoof `X-Forwarded-For` when the last proxy does not overwrite it.
+
+Application limiters use in-memory counters per process. The TLS proxy must also enforce request rates, connection limits, header limits, and a body-size limit no larger than `uploadLimitSizeBytes` for multi-process or distributed deployments.
+
+### TLS boundary
+
+The Node.js process serves HTTP and does not terminate TLS. Bind it to a private interface or firewall it so clients can reach it only through a correctly configured HTTPS reverse proxy. The proxy must replace untrusted forwarding headers and forward requests to the configured `serverPort`.
+
+Never expose the application port directly to the internet.
+
+### Dependency audit policy
+
+Run the production policy and static checks with:
+
 ```bash
-curl -i --location 'http://localhost:4000/api/file/upload' --form 'files=@"file.txt"'
+npm run security:audit
+npm run security:semgrep
 ```
 
-#### Response
-```
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=utf-8
-...
+The audit fails on every unaccepted high or critical production advisory. One exact advisory, `GHSA-32mq-hpph-xfvr`, is temporarily accepted until [#21](https://github.com/Adamant-im/ipfs-node/issues/21) upgrades Helia: Helia 4 installs the affected Kademlia DHT package, but `src/helia.ts` replaces the default service map and does not instantiate the vulnerable DHT service. The audit script validates the exact package and advisory relationship so unrelated future findings still fail.
 
-{"filesNames":["file.txt"],"cids":["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"]}
-```
+Use `npm run security:audit:raw` to inspect the unfiltered npm result.
 
-### Get file
+## API usage
 
-#### Request
-```GET /api/file/:cid```
+### Upload files
+
+Send one or more `files` parts as multipart form data:
+
 ```bash
-curl -i --location 'http://localhost:4000/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm'
+curl --fail-with-body \
+  --form 'files=@file.txt' \
+  https://ipfs.example.org/api/file/upload
 ```
 
-#### Response
+Example response:
+
+```json
+{
+  "filesNames": ["file.txt"],
+  "cids": ["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"]
+}
 ```
-HTTP/1.1 200 OK
-Content-Type: application/octet-stream
-...
 
-Hello ipfs-node!
-```
+### Download a file
 
-### Get node health
-
-#### Request
-```GET /api/node/health```
 ```bash
-curl -i --location 'http://localhost:4000/api/node/health'
+curl --fail-with-body \
+  --output file.bin \
+  https://ipfs.example.org/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm
 ```
 
-#### Response
-```
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=utf-8
-...
+### Check public health
 
+```bash
+curl --fail-with-body https://ipfs.example.org/api/node/health
+```
+
+Example response:
+
+```json
 {
   "timestamp": 1720614998797,
   "heliaStatus": "started"
 }
 ```
 
-### Get node info (protected)
+### Get administrative node information
 
-Requires `x-api-key` header matching `adminApiKey` from config.
-
-#### Request
-```GET /api/node/info```
 ```bash
-curl -i --location 'http://localhost:4000/api/node/info' \
-  --header 'x-api-key: your-generated-key-here'
+curl --fail-with-body \
+  --header 'x-api-key: your-generated-key' \
+  https://ipfs.example.org/api/node/info
 ```
 
-#### Response
-```
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=utf-8
-...
+## Validation
 
-{
-  "version": "0.0.1",
-  "timestamp": 1720614998797,
-  "heliaStatus": "started",
-  "peerId": "12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
-  "multiAddresses": [
-    "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9",
-    "/ip4/62.72.43.99/tcp/4001/p2p/12D3KooWJSiMDfyDLK3EMe2567sSM1VKQVnUn2getimGqVTWqKX9"
-  ],
-  "blockstoreSizeMb": 0.0009489059448242188,
-  "datastoreSizeMb": 0.006007194519042969,
-  "availableSizeInMb": 2257731
-}
+```bash
+npm ci --ignore-scripts
+npm run build
+npm test
+npm run lint
+npm run security:audit
+npm run security:semgrep
+git diff --check
 ```
