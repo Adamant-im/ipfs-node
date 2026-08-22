@@ -179,6 +179,24 @@ npm test
 
 The unit suites cover the HTTP security boundary, configuration validation, filename sanitization, disk measurement, and the file CIDs issued before the Helia migration. The integration suite starts two isolated nodes with temporary stores, transfers a file between them over bitswap, and verifies that a peer identity survives a restart.
 
+### TypeScript project layout
+
+Three configurations share one set of compiler options:
+
+| File                  | Purpose                                                               |
+| --------------------- | --------------------------------------------------------------------- |
+| `tsconfig.json`       | Type-checks `src` and `test`. Emits nothing; this is what editors use |
+| `tsconfig.build.json` | Builds `src` into `dist` for `npm run build`                          |
+| `tsconfig.test.json`  | Builds `src` and `test` into `dist-test` for `npm test`               |
+
+Type-check everything without emitting:
+
+```bash
+npx tsc --noEmit
+```
+
+Pass no file arguments to `tsc`. Naming a file on the command line makes TypeScript ignore `tsconfig.json` entirely, so `outDir` is not applied — the `.js` file is written next to its source — and the project's `lib`, `module`, and `moduleResolution` settings are replaced by defaults, which reports module-resolution and missing-`@types/node` errors that the project itself does not have.
+
 ## API usage
 
 ### Upload files

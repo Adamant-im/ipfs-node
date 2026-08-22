@@ -1,4 +1,9 @@
 {
+  // Project-wide configuration. Editors resolve a file to the nearest
+  // tsconfig.json, so this one must cover every type-checked file; anything it
+  // misses is type-checked by the editor under default compiler options, which
+  // report spurious errors about module resolution and missing Node typings.
+  // It never emits: `tsconfig.build.json` and `tsconfig.test.json` do that.
   "compilerOptions": {
     "allowJs": false,
     "checkJs": false,
@@ -11,8 +16,8 @@
     "noImplicitAny": true,
     "useUnknownInCatchVariables": false,
     "skipLibCheck": true,
-    "outDir": "./dist"
+    "noEmit": true
   },
-  "exclude": ["node_modules"],
-  "include": ["src/index.ts", "src/**/*.ts"]
+  "exclude": ["node_modules", "dist", "dist-test"],
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }
