@@ -166,8 +166,14 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     errors
   }
 
-  // Guard rail: durable content must be pinned before anything is deleted.
-  for (const record of plan.retained.filter((item) => item.state === 'confirmed')) {
+  // Guard rail: durable content this node holds must be pinned before anything
+  // is deleted. A file handed over to its designated holders is deliberately
+  // unpinned here, so restoring its pin would undo the handover.
+  const heldConfirmed = plan.retained.filter(
+    (item) => item.state === 'confirmed' && item.heldLocally
+  )
+
+  for (const record of heldConfirmed) {
     try {
       const cid = CID.parse(record.cid)
       if (await isProtected(options.node, cid)) {

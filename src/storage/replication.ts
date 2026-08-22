@@ -1,74 +1,74 @@
+import type { Multiaddr } from '@multiformats/multiaddr'
 import type { ReplicationConfig } from './config.js'
+import { placeFile, storageTargets, type Placement } from './placement.js'
 
-export type ReplicationTarget = {
+/** Another ADAMANT node this one can reach over libp2p. */
+export interface ReplicationPeer {
   name: string
-  apiUrl: string
+  peerId: string
+  multiAddr: Multiaddr
 }
 
-export type ReplicationAck = {
+export interface ReplicationAck {
   node: string
   ok: boolean
   error?: string
 }
 
-export type ReplicationReport = {
+export interface ReplicationReport {
   /**
-   * `quorum` when the node actively pushes copies to its peers,
+   * `quorum` when the node actively places copies on its peers,
    * `best-effort` when replication is disabled and durability is local only.
    */
   mode: 'quorum' | 'best-effort'
-  /** Copies the policy requires, including the copy on this node */
-  factor: number
-  /** Acknowledgements the policy requires before an upload is durable */
+  /** Copies the age policy asks for, including this node. */
+  desiredCopies: number
+  /** Copies that can exist given how many nodes are known. */
+  copies: number
+  /** Acknowledgements needed for this upload to count as durable. */
   required: number
-  /** Copies confirmed right now, including the copy on this node */
+  /** Copies confirmed right now, including the one on this node. */
   acknowledged: number
-  /** Peer nodes that acknowledged holding a copy */
+  /** Peer nodes that acknowledged holding a copy. */
   replicas: string[]
   satisfied: boolean
+  /**
+   * True when the network is no larger than the desired copy count, so every
+   * node already holds what it can and there is nowhere else to place a copy.
+   */
+  networkTooSmall: boolean
   attempts: ReplicationAck[]
 }
 
-export type ReplicateOptions = {
+export interface ReplicateOptions {
   cid: string
-  targets: ReplicationTarget[]
+  /** Age of the file, which decides how many copies it deserves. */
+  ageMs: number
+  selfPeerId: string
+  peers: ReplicationPeer[]
   config: ReplicationConfig
-  token: string
-  /** Injected for tests; defaults to the global fetch */
-  request?: (target: ReplicationTarget, cid: string) => Promise<void>
+  /** Asks one peer to store and pin the file. */
+  store: (peer: ReplicationPeer, cid: string) => Promise<void>
 }
 
 /**
- * Ask a peer node to store a copy of the content.
+ * Acknowledgements this upload must collect.
  *
- * The peer pulls the DAG over libp2p and pins it, so a successful response
- * means the copy exists and is protected, not merely that the request arrived.
+ * Bounded by the copies that can actually exist: a three-node network can never
+ * satisfy a quorum of four, and reporting a permanent shortfall would be noise
+ * rather than information.
  */
-async function pushToPeer(
-  target: ReplicationTarget,
-  cid: string,
-  config: ReplicationConfig,
-  token: string
-): Promise<void> {
-  const url = `${target.apiUrl.replace(/\/+$/, '')}/api/replication/${cid}`
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'x-replication-token': token,
-      'content-type': 'application/json'
-    },
-    signal: AbortSignal.timeout(config.requestTimeoutMs)
-  })
-
-  if (!response.ok) {
-    throw new Error(`${target.name} responded with HTTP ${response.status}`)
-  }
+export function requiredAcks(config: ReplicationConfig, placement: Placement): number {
+  return Math.max(1, Math.min(config.ackQuorum, placement.copies))
 }
 
 /**
- * Replicate content across the configured ADAMANT nodes and report whether the
- * acknowledgement quorum was reached.
+ * Place copies of a file on the nodes that should hold it.
+ *
+ * Copies go to a deterministic subset rather than to every peer: with a large
+ * node set, copying everywhere costs bandwidth and disk on every node for no
+ * added durability. Every node derives the same subset from the CID, so no
+ * coordination is needed to agree on who is responsible.
  *
  * When replication is disabled the node reports `best-effort`: the content is
  * stored and pinned locally, and no durability claim is made beyond that.
@@ -79,55 +79,66 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
   if (!config.enabled) {
     return {
       mode: 'best-effort',
-      factor: 1,
+      desiredCopies: 1,
+      copies: 1,
       required: 1,
       acknowledged: 1,
       replicas: [],
       satisfied: true,
+      networkTooSmall: true,
       attempts: []
     }
   }
 
-  const request = options.request ?? ((target) => pushToPeer(target, cid, config, options.token))
+  const placement = placeFile({
+    cid,
+    ageMs: options.ageMs,
+    tiers: config.placement,
+    selfPeerId: options.selfPeerId,
+    peerIds: options.peers.map((peer) => peer.peerId)
+  })
+
+  const targetIds = new Set(storageTargets(placement, options.selfPeerId))
+  const targets = options.peers.filter((peer) => targetIds.has(peer.peerId))
 
   const attempts = await Promise.all(
-    options.targets.map(async (target): Promise<ReplicationAck> => {
+    targets.map(async (peer): Promise<ReplicationAck> => {
       try {
-        await request(target, cid)
-        return { node: target.name, ok: true }
+        await options.store(peer, cid)
+        return { node: peer.name, ok: true }
       } catch (err) {
-        return { node: target.name, ok: false, error: (err as Error).message }
+        return { node: peer.name, ok: false, error: (err as Error).message }
       }
     })
   )
 
   const replicas = attempts.filter((attempt) => attempt.ok).map((attempt) => attempt.node)
-  // The local copy counts towards the quorum: it is pinned before peers are asked.
+  // The local copy counts: it is pinned before any peer is asked.
   const acknowledged = replicas.length + 1
+  const required = requiredAcks(config, placement)
 
   return {
     mode: 'quorum',
-    factor: config.factor,
-    required: config.ackQuorum,
+    desiredCopies: placement.desiredCopies,
+    copies: placement.copies,
+    required,
     acknowledged,
     replicas,
-    satisfied: acknowledged >= config.ackQuorum,
+    satisfied: acknowledged >= required,
+    networkTooSmall: placement.networkTooSmall,
     attempts
   }
 }
 
 /**
- * Copies still missing for a file, given the peers that already acknowledged.
- * The local copy is always counted, so the result is what repair must create.
+ * Whether a file holds fewer copies than its placement asks for.
+ *
+ * @param acknowledgedPeers Peer nodes known to hold a copy, excluding this one
  */
-export function missingReplicas(config: ReplicationConfig, replicas: string[]): number {
-  return Math.max(0, config.factor - (replicas.length + 1))
-}
-
-/** Files that hold fewer copies than the replication factor requires. */
-export function selectUnderReplicated<T extends { cid: string; replicas: string[] }>(
-  records: T[],
-  config: ReplicationConfig
-): T[] {
-  return records.filter((record) => missingReplicas(config, record.replicas) > 0)
+export function isUnderReplicated(
+  acknowledgedPeers: number,
+  placement: Placement,
+  selfPeerId: string
+): boolean {
+  return acknowledgedPeers < storageTargets(placement, selfPeerId).length
 }

@@ -3,11 +3,18 @@ import { config } from './config.js'
 import { helia } from './helia.js'
 import { runGarbageCollection, type GcReport } from './storage/gc.js'
 import { refreshStorageMetrics } from './storage/metrics.js'
+import { demoteReleasableCopies } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
 import { logger } from './utils/logger.js'
 
+/** A collection pass, plus the copies it handed over to other nodes first. */
+export interface CollectionReport extends GcReport {
+  /** Files whose local copy was released because peers hold enough copies. */
+  demoted: string[]
+}
+
 let running = false
-let lastReport: GcReport | null = null
+let lastReport: CollectionReport | null = null
 
 export class GarbageCollectionBusyError extends Error {
   constructor() {
@@ -27,13 +34,17 @@ export class GarbageCollectionBusyError extends Error {
  */
 export async function collectGarbage(
   options: { dryRun?: boolean; force?: boolean } = {}
-): Promise<GcReport> {
+): Promise<CollectionReport> {
   if (running) {
     throw new GarbageCollectionBusyError()
   }
 
   running = true
   try {
+    // Hand copies over before collecting, so the blocks they free are reclaimed
+    // by the same pass instead of waiting for the next one.
+    const demoted = options.dryRun === true ? [] : (await demoteReleasableCopies()).demoted
+
     const metrics = await refreshStorageMetrics()
 
     const report = await runGarbageCollection({
@@ -47,12 +58,14 @@ export async function collectGarbage(
       log: (message) => logger.info(message)
     })
 
-    if (!report.dryRun) {
-      lastReport = report
+    const collection: CollectionReport = { ...report, demoted }
+
+    if (!collection.dryRun) {
+      lastReport = collection
       await refreshStorageMetrics()
     }
 
-    return report
+    return collection
   } finally {
     running = false
   }
@@ -80,6 +93,7 @@ export function getGarbageCollectionState() {
           durationMs: lastReport.durationMs,
           collected: lastReport.collected,
           releasedFiles: lastReport.releasedCids.length,
+          demotedFiles: lastReport.demoted.length,
           removedBlocks: lastReport.removedBlocks,
           repairedPins: lastReport.repairedPins.length,
           errors: lastReport.errors.length

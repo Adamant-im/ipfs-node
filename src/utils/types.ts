@@ -6,14 +6,11 @@ export type NodeWithPeerId = {
   name: string
   multiAddr: Multiaddr
   peerId: PeerId
-  /** Base URL of the node REST API; only replication peers need one. */
-  apiUrl?: string
 }
 
 export type ConfigNode = {
   name: string
   multiAddr: string
-  apiUrl?: string
 }
 
 export type UnixFsMulterFile = Express.Multer.File & {

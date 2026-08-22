@@ -46,11 +46,6 @@ export type LogLevel = (typeof LOG_LEVELS)[number]
 export interface ConfigNode {
   name: string
   multiAddr: string
-  /**
-   * Base URL of the node REST API, for example `https://ipfs1.adamant.im`.
-   * Only nodes that take part in replication need one.
-   */
-  apiUrl?: string
 }
 
 export interface Config {
@@ -139,28 +134,6 @@ function requireStringArray(value: unknown, path: string): string[] {
 }
 
 /**
- * Validate an HTTP(S) base URL used to reach another node's REST API.
- *
- * Only the scheme and syntax are checked; reachability is a runtime concern.
- */
-function requireHttpUrl(value: unknown, path: string): string {
-  const raw = requireString(value, path)
-
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    fail(path, 'must be an absolute http(s) URL')
-  }
-
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    fail(path, 'must use the http or https scheme')
-  }
-
-  return raw
-}
-
-/**
  * Validate a positive integer.
  *
  * @param min Smallest accepted value; used to reject zero or negative limits
@@ -195,11 +168,7 @@ export function validateConfig(raw: unknown): Config {
     const entry = requireObject(node, `nodes[${index}]`)
     return {
       name: requireString(entry.name, `nodes[${index}].name`),
-      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`),
-      apiUrl:
-        entry.apiUrl === undefined
-          ? undefined
-          : requireHttpUrl(entry.apiUrl, `nodes[${index}].apiUrl`)
+      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
     }
   })
 

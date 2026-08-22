@@ -3,7 +3,6 @@ import node, { publicNodeRouter } from './node.js'
 import helia from './helia.js'
 import libp2p from './libp2p.js'
 import debug from './debug.js'
-import replication from './replication.js'
 import storage, { storageAdminRouter } from './storage.js'
 
 export {
@@ -14,7 +13,6 @@ export {
   helia,
   libp2p,
   debug,
-  replication,
   storage,
   storageAdminRouter
 }

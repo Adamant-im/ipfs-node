@@ -51,7 +51,7 @@ export const replicationRepairCron = new CronJob(config.replication.repairSchedu
 export function getReplicationState() {
   return {
     enabled: config.replication.enabled,
-    factor: config.replication.factor,
+    placement: config.replication.placement,
     ackQuorum: config.replication.ackQuorum,
     requireQuorumOnUpload: config.replication.requireQuorumOnUpload,
     repairEnabled: config.replication.repairEnabled,

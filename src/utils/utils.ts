@@ -30,8 +30,7 @@ export function parseNodes(): NodeWithPeerId[] {
   return config.nodes.map((node: ConfigNode) => ({
     name: node.name,
     multiAddr: multiaddr(node.multiAddr),
-    peerId: peerIdFromMultiaddr(node.multiAddr),
-    apiUrl: node.apiUrl
+    peerId: peerIdFromMultiaddr(node.multiAddr)
   }))
 }
 

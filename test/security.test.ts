@@ -10,7 +10,6 @@ import { validateSecurityConfig } from '../src/security/config.js'
 import { createCorsOriginDelegate, createOriginMatcher } from '../src/security/cors.js'
 import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
-import { createReplicationAuth } from '../src/security/replicationToken.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
 import { createMultipartLimits } from '../src/security/uploadLimits.js'
 import { FileNotFoundError } from '../src/utils/fileErrors.js'
@@ -201,7 +200,6 @@ describe('administrative API key', () => {
 
 describe('route access policy', () => {
   const key = 'b'.repeat(64)
-  const replicationToken = 'c'.repeat(64)
   const app = express()
   let serverUrl = ''
   let closeServer: (() => Promise<void>) | undefined
@@ -218,7 +216,6 @@ describe('route access policy', () => {
     const debug = Router().get('/test', (req, res) => res.send({ admin: true }))
     const storage = Router().get('/metrics', (req, res) => res.send({ public: true }))
     const storageAdminRouter = Router().post('/gc', (req, res) => res.send({ admin: true }))
-    const replication = Router().post('/test', (req, res) => res.send({ peer: true }))
 
     mountApiRoutes(
       app,
@@ -231,12 +228,10 @@ describe('route access policy', () => {
         libp2p,
         debug,
         storage,
-        storageAdminRouter,
-        replication
+        storageAdminRouter
       },
       createApiKeyAuth(key),
-      false,
-      createReplicationAuth(replicationToken)
+      false
     )
 
     const server = await startServer(app)
@@ -263,37 +258,6 @@ describe('route access policy', () => {
     }
   })
 
-  it('accepts replication only with the peer token, not with the admin key', async () => {
-    const path = `${serverUrl}/api/replication/test`
-
-    assert.equal((await fetch(path, { method: 'POST' })).status, 401)
-    assert.equal((await fetch(path, { method: 'POST', headers: { 'x-api-key': key } })).status, 401)
-    assert.equal(
-      (
-        await fetch(path, {
-          method: 'POST',
-          headers: { 'x-replication-token': replicationToken }
-        })
-      ).status,
-      200
-    )
-  })
-
-  it('protects node information, Helia, and libp2p routes', async () => {
-    for (const path of [
-      '/api/node/info',
-      '/api/node/future',
-      '/api/helia/test',
-      '/api/libp2p/test'
-    ]) {
-      assert.equal((await fetch(`${serverUrl}${path}`)).status, 401)
-      assert.equal(
-        (await fetch(`${serverUrl}${path}`, { headers: { 'x-api-key': key } })).status,
-        200
-      )
-    }
-  })
-
   it('does not mount the debug API by default', async () => {
     assert.equal((await fetch(`${serverUrl}/api/debug/test`)).status, 404)
   })
@@ -313,12 +277,10 @@ describe('route access policy', () => {
         libp2p: emptyRouter,
         debug,
         storage: emptyRouter,
-        storageAdminRouter: emptyRouter,
-        replication: emptyRouter
+        storageAdminRouter: emptyRouter
       },
       createApiKeyAuth(key),
-      true,
-      createReplicationAuth('')
+      true
     )
     const server = await startServer(debugApp)
 

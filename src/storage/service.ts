@@ -3,41 +3,76 @@ import { config } from '../config.js'
 import { helia, ifs } from '../helia.js'
 import { logger } from '../utils/logger.js'
 import { getNodesList } from '../utils/utils.js'
-import { pinFile, unpinFile } from './pinning.js'
-import {
-  replicate,
-  selectUnderReplicated,
-  type ReplicationReport,
-  type ReplicationTarget
-} from './replication.js'
+import { mayDemote, placeFile, storageTargets, type Placement } from './placement.js'
+import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
 import type { FileRecord } from './registry.js'
+import {
+  isUnderReplicated,
+  replicate,
+  type ReplicationPeer,
+  type ReplicationReport
+} from './replication.js'
+import {
+  probeHave,
+  requestStore,
+  type ReplicationHandlers,
+  type ReplicationCallOptions
+} from './replicationProtocol.js'
 import { fileRegistry } from './state.js'
 
-/**
- * Peer nodes that can accept a copy.
- *
- * A node without `apiUrl` cannot be reached by the replication control plane
- * and is skipped, which keeps mixed configurations usable during a rollout.
- */
-export function getReplicationTargets(): ReplicationTarget[] {
-  return getNodesList([helia.libp2p.peerId.toString()])
-    .filter((node): node is typeof node & { apiUrl: string } => typeof node.apiUrl === 'string')
-    .map((node) => ({ name: node.name, apiUrl: node.apiUrl }))
+const callOptions = (): ReplicationCallOptions => ({
+  timeoutMs: config.replication.requestTimeoutMs
+})
+
+function selfPeerId(): string {
+  return helia.libp2p.peerId.toString()
 }
 
 /**
- * Push a copy of `cid` to the peer nodes and store the acknowledgements.
+ * The other ADAMANT nodes this one can place copies on.
+ *
+ * They come from the same `nodes` list that already seeds peer discovery, so a
+ * replication peer needs no extra address: the multiaddr identifies it and the
+ * libp2p handshake proves the peer id.
+ */
+export function getReplicationPeers(): ReplicationPeer[] {
+  return getNodesList([selfPeerId()]).map((node) => ({
+    name: node.name,
+    peerId: node.peerId.toString(),
+    multiAddr: node.multiAddr
+  }))
+}
+
+function placementFor(cid: string, createdAt: number, peers: ReplicationPeer[]): Placement {
+  return placeFile({
+    cid,
+    ageMs: Math.max(0, Date.now() - createdAt),
+    tiers: config.replication.placement,
+    selfPeerId: selfPeerId(),
+    peerIds: peers.map((peer) => peer.peerId)
+  })
+}
+
+/**
+ * Place copies of a file on the nodes that should hold it, and record which of
+ * them acknowledged.
  *
  * Failures are reported, never thrown: an upload that is already stored and
  * pinned locally stays valid when a peer is unavailable, and the repair job
  * retries later.
  */
 export async function replicateFile(cid: string): Promise<ReplicationReport> {
+  const record = await fileRegistry.get(cid)
+
   const report = await replicate({
     cid,
-    targets: getReplicationTargets(),
+    ageMs: Math.max(0, Date.now() - (record?.createdAt ?? Date.now())),
+    selfPeerId: selfPeerId(),
+    peers: getReplicationPeers(),
     config: config.replication,
-    token: config.replication.token
+    store: async (peer) => {
+      await requestStore(helia, peer.multiAddr, cid, callOptions())
+    }
   })
 
   if (report.mode === 'quorum') {
@@ -83,7 +118,7 @@ async function registerPinned(cid: CID, name: string): Promise<FileRecord> {
 }
 
 /**
- * Make a file durable and replicate it.
+ * Make a file durable and place its copies.
  *
  * @param options `registerUnknown` decides what happens for a CID the node
  *   never accepted through an upload: the confirmation endpoint reports it as
@@ -121,14 +156,26 @@ export async function releaseFile(cid: string): Promise<FileRecord | undefined> 
   return fileRegistry.release(cid)
 }
 
-/**
- * Store a copy requested by another ADAMANT node.
- *
- * The DAG is pulled over libp2p and pinned before the response is sent, so an
- * acknowledgement means the copy is durable on this node.
- */
+/** Store a copy requested by another ADAMANT node. */
 export async function acceptReplica(cid: string): Promise<FileRecord> {
   return registerPinned(CID.parse(cid), cid)
+}
+
+/**
+ * Behaviour this node exposes on the replication protocol.
+ *
+ * Until file ownership is signed by the uploader, only the configured ADAMANT
+ * nodes may ask this one to spend disk. That keeps the current deployment
+ * closed, and is the piece an ownership signature replaces so that anyone can
+ * run a node without being handed a shared secret.
+ */
+export function createReplicationHandlers(): ReplicationHandlers {
+  return {
+    isAuthorized: (peerId) => getReplicationPeers().some((peer) => peer.peerId === peerId),
+    store: async (cid) => (await acceptReplica(cid)).storedBytes,
+    have: async (cid) => isDirectlyPinned(helia, CID.parse(cid)),
+    onError: (message) => logger.warn(message)
+  }
 }
 
 export interface RepairReport {
@@ -141,8 +188,9 @@ export interface RepairReport {
 /**
  * Detect and repair under-replicated durable content.
  *
- * Only confirmed files are considered: temporary uploads may still disappear by
- * policy, so spending peer bandwidth on them is not worthwhile.
+ * Only confirmed files this node still holds are considered: a temporary upload
+ * may disappear by policy, and a file this node released is another node's
+ * responsibility.
  */
 export async function repairReplication(): Promise<RepairReport> {
   const report: RepairReport = { checked: 0, underReplicated: 0, repaired: [], stillMissing: [] }
@@ -151,20 +199,107 @@ export async function repairReplication(): Promise<RepairReport> {
     return report
   }
 
-  const confirmed = (await fileRegistry.all()).filter((record) => record.state === 'confirmed')
+  const peers = getReplicationPeers()
+  const self = selfPeerId()
+  const candidates = (await fileRegistry.all()).filter(
+    (record) => record.state === 'confirmed' && record.heldLocally
+  )
 
-  report.checked = confirmed.length
-  const candidates = selectUnderReplicated(confirmed, config.replication)
-  report.underReplicated = candidates.length
+  report.checked = candidates.length
 
   for (const record of candidates) {
+    const placement = placementFor(record.cid, record.createdAt, peers)
+
+    if (!isUnderReplicated(record.replicas.length, placement, self)) {
+      continue
+    }
+
+    report.underReplicated += 1
     const result = await replicateFile(record.cid)
 
-    if (result.satisfied && result.acknowledged >= config.replication.factor) {
-      report.repaired.push(record.cid)
-    } else {
+    if (isUnderReplicated(result.replicas.length, placement, self)) {
       report.stillMissing.push(record.cid)
+    } else {
+      report.repaired.push(record.cid)
     }
+  }
+
+  return report
+}
+
+export interface DemotionReport {
+  checked: number
+  /** Files whose local copy was released because other nodes hold them. */
+  demoted: string[]
+  /** Files this node kept because the designated holders did not all confirm. */
+  kept: string[]
+}
+
+/**
+ * Release local copies of files that belong on other nodes.
+ *
+ * A copy is dropped only when this node is outside the file's designated
+ * holders and every one of those holders confirms it has the file. The
+ * designated set is derived from the CID and is the same on every node, so the
+ * nodes that must keep a file never consider dropping it, and a file cannot
+ * lose all of its copies to simultaneous decisions.
+ *
+ * Nothing is dropped while the network is no larger than the desired copy
+ * count: there is nowhere for the copy to go, and every node is expected to
+ * hold it.
+ */
+export async function demoteReleasableCopies(): Promise<DemotionReport> {
+  const report: DemotionReport = { checked: 0, demoted: [], kept: [] }
+
+  if (!config.replication.enabled) {
+    return report
+  }
+
+  const peers = getReplicationPeers()
+  const self = selfPeerId()
+  const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
+
+  const candidates = (await fileRegistry.all()).filter(
+    (record) => record.state === 'confirmed' && record.heldLocally
+  )
+
+  report.checked = candidates.length
+
+  for (const record of candidates) {
+    const placement = placementFor(record.cid, record.createdAt, peers)
+
+    if (!mayDemote(placement)) {
+      continue
+    }
+
+    const holders = storageTargets(placement, self)
+      .map((peerId) => byPeerId.get(peerId))
+      .filter((peer): peer is ReplicationPeer => peer !== undefined)
+
+    if (holders.length < placement.copies) {
+      report.kept.push(record.cid)
+      continue
+    }
+
+    const confirmations = await Promise.all(
+      holders.map(async (peer) => {
+        try {
+          return await probeHave(helia, peer.multiAddr, record.cid, callOptions())
+        } catch {
+          return false
+        }
+      })
+    )
+
+    if (!confirmations.every(Boolean)) {
+      report.kept.push(record.cid)
+      continue
+    }
+
+    await unpinFile(helia, CID.parse(record.cid))
+    await fileRegistry.releaseLocalCopy(record.cid)
+    report.demoted.push(record.cid)
+    logger.info(`Released the local copy of ${record.cid}; ${holders.length} peers hold it`)
   }
 
   return report

@@ -1,5 +1,8 @@
+import type { PlacementTier } from './placement.js'
+
 const MiB = 1024 * 1024
 const GiB = 1024 * MiB
+const DAY = 24 * 60 * 60 * 1000
 
 /**
  * Garbage collection thresholds, expressed in blockstore bytes.
@@ -34,8 +37,13 @@ export interface StorageConfig {
 export interface ReplicationConfig {
   /** When false the node stores content best effort and never contacts peers. */
   enabled: boolean
-  /** Number of ADAMANT nodes that must hold a copy, including this node. */
-  factor: number
+  /**
+   * How many nodes should hold a file, including this one, by file age.
+   *
+   * Copies are reduced as content ages instead of being tracked by access time,
+   * which would record when users fetch their files.
+   */
+  placement: PlacementTier[]
   /** Acknowledgements required before an upload is reported as durable. */
   ackQuorum: number
   /** When true an upload fails unless the acknowledgement quorum is reached. */
@@ -44,17 +52,6 @@ export interface ReplicationConfig {
   requestTimeoutMs: number
   repairEnabled: boolean
   repairSchedule: string
-  /**
-   * Secret shared by the ADAMANT nodes, sent as `x-replication-token`.
-   *
-   * It is deliberately separate from `adminApiKey`: a peer only needs to ask
-   * this node to store a copy, so distributing the administrative key across
-   * the node set would grant far more than replication requires.
-   *
-   * Setting it opens the replication intake route, independently of `enabled`,
-   * so a node can accept copies without pushing any of its own.
-   */
-  token: string
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
@@ -73,13 +70,16 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
 
 export const DEFAULT_REPLICATION_CONFIG: ReplicationConfig = {
   enabled: false,
-  factor: 2,
+  placement: [
+    { minAgeMs: 0, copies: 4 },
+    { minAgeMs: 180 * DAY, copies: 3 },
+    { minAgeMs: 365 * DAY, copies: 2 }
+  ],
   ackQuorum: 1,
   requireQuorumOnUpload: false,
   requestTimeoutMs: 30000,
   repairEnabled: true,
-  repairSchedule: '0 */30 * * * *',
-  token: ''
+  repairSchedule: '0 */30 * * * *'
 }
 
 function fail(path: string, expectation: string): never {
@@ -212,13 +212,52 @@ export function resolveStorageConfig(raw: unknown, uploadLimitSizeBytes: number)
  *
  * @param raw Value of the `replication` key from a parsed config file
  */
+/**
+ * Validate the placement tiers.
+ *
+ * The tiers must start at age zero and never go backwards, so that exactly one
+ * of them applies to any file and every node reaches the same answer.
+ */
+function resolvePlacement(raw: unknown, defaults: PlacementTier[]): PlacementTier[] {
+  if (raw === undefined) {
+    return defaults.map((tier) => ({ ...tier }))
+  }
+
+  if (!Array.isArray(raw) || raw.length === 0) {
+    fail('replication.placement', 'must be a non-empty array of tiers')
+  }
+
+  const tiers = raw.map((entry, index) => {
+    const path = `replication.placement[${index}]`
+    const tier = section(entry, path)
+
+    return {
+      minAgeMs: optionalInteger(tier.minAgeMs, `${path}.minAgeMs`, 0, 0),
+      copies: optionalInteger(tier.copies, `${path}.copies`, 1, 1)
+    }
+  })
+
+  if (tiers[0].minAgeMs !== 0) {
+    fail('replication.placement[0].minAgeMs', 'must be 0 so that every file matches a tier')
+  }
+
+  for (let index = 1; index < tiers.length; index += 1) {
+    if (tiers[index].minAgeMs <= tiers[index - 1].minAgeMs) {
+      fail(`replication.placement[${index}].minAgeMs`, 'must be greater than the previous tier')
+    }
+  }
+
+  return tiers
+}
+
 export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
   const input = section(raw, 'replication')
   const defaults = DEFAULT_REPLICATION_CONFIG
+  const placement = resolvePlacement(input.placement, defaults.placement)
 
   const replication: ReplicationConfig = {
     enabled: optionalBoolean(input.enabled, 'replication.enabled', defaults.enabled),
-    factor: optionalInteger(input.factor, 'replication.factor', defaults.factor, 1),
+    placement,
     ackQuorum: optionalInteger(input.ackQuorum, 'replication.ackQuorum', defaults.ackQuorum, 1),
     requireQuorumOnUpload: optionalBoolean(
       input.requireQuorumOnUpload,
@@ -240,22 +279,12 @@ export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
       input.repairSchedule,
       'replication.repairSchedule',
       defaults.repairSchedule
-    ),
-    token: optionalString(input.token, 'replication.token', defaults.token)
+    )
   }
 
-  if (replication.ackQuorum > replication.factor) {
-    fail('replication.ackQuorum', 'must not exceed replication.factor')
-  }
-
-  if (replication.enabled && replication.token === '') {
-    fail('replication.token', 'must be set when replication is enabled')
-  }
-
-  // A node that only accepts copies leaves `enabled` false but still needs the
-  // token, so the strength requirement applies whenever one is configured.
-  if (replication.token !== '' && replication.token.length < 32) {
-    fail('replication.token', 'must be a secret of at least 32 characters')
+  const mostCopies = Math.max(...placement.map((tier) => tier.copies))
+  if (replication.ackQuorum > mostCopies) {
+    fail('replication.ackQuorum', 'must not exceed the largest copy count in replication.placement')
   }
 
   return replication

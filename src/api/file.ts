@@ -133,7 +133,7 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
       replication: {
         acknowledged: record.replicas.length + 1,
         required: config.replication.enabled ? config.replication.ackQuorum : 1,
-        factor: config.replication.enabled ? config.replication.factor : 1
+        heldLocally: record.heldLocally
       }
     })
   } catch (err) {

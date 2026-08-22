@@ -50,6 +50,7 @@ function record(overrides: Pick<FileRecord, 'cid' | 'state'> & Partial<FileRecor
     fileSize: 0,
     storedBytes: 100,
     pinned: true,
+    heldLocally: true,
     replicas: [],
     ...overrides
   }

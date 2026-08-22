@@ -57,38 +57,68 @@ describe('resolveStorageConfig', () => {
 })
 
 describe('resolveReplicationConfig', () => {
-  const token = 'r'.repeat(64)
-
   it('defaults to disabled best-effort storage', () => {
     assert.deepEqual(resolveReplicationConfig(undefined), DEFAULT_REPLICATION_CONFIG)
     assert.equal(DEFAULT_REPLICATION_CONFIG.enabled, false)
   })
 
-  it('rejects a quorum larger than the replication factor', () => {
+  it('reduces copies as files age', () => {
+    const tiers = DEFAULT_REPLICATION_CONFIG.placement
+
+    assert.equal(tiers[0].minAgeMs, 0)
+    for (let index = 1; index < tiers.length; index += 1) {
+      assert.ok(tiers[index].minAgeMs > tiers[index - 1].minAgeMs)
+      assert.ok(tiers[index].copies <= tiers[index - 1].copies)
+    }
+  })
+
+  it('rejects tiers that do not start at age zero', () => {
     assert.throws(
-      () => resolveReplicationConfig({ enabled: true, factor: 2, ackQuorum: 3, token }),
-      /ackQuorum/
+      () => resolveReplicationConfig({ placement: [{ minAgeMs: 1, copies: 2 }] }),
+      /placement\[0\].minAgeMs/
     )
   })
 
-  it('rejects enabling replication without a peer token', () => {
-    assert.throws(() => resolveReplicationConfig({ enabled: true }), /replication.token/)
+  it('rejects tiers that go backwards', () => {
     assert.throws(
-      () => resolveReplicationConfig({ enabled: true, token: 'short' }),
-      /replication.token/
+      () =>
+        resolveReplicationConfig({
+          placement: [
+            { minAgeMs: 0, copies: 3 },
+            { minAgeMs: 0, copies: 2 }
+          ]
+        }),
+      /placement\[1\].minAgeMs/
+    )
+  })
+
+  it('rejects an empty placement policy', () => {
+    assert.throws(() => resolveReplicationConfig({ placement: [] }), /replication.placement/)
+  })
+
+  it('rejects a quorum larger than any tier can provide', () => {
+    assert.throws(
+      () =>
+        resolveReplicationConfig({
+          placement: [{ minAgeMs: 0, copies: 2 }],
+          ackQuorum: 3
+        }),
+      /ackQuorum/
     )
   })
 
   it('accepts a complete policy', () => {
     const replication = resolveReplicationConfig({
       enabled: true,
-      factor: 3,
+      placement: [
+        { minAgeMs: 0, copies: 4 },
+        { minAgeMs: 1000, copies: 2 }
+      ],
       ackQuorum: 2,
-      requireQuorumOnUpload: true,
-      token
+      requireQuorumOnUpload: true
     })
 
-    assert.equal(replication.factor, 3)
+    assert.equal(replication.placement.length, 2)
     assert.equal(replication.ackQuorum, 2)
     assert.equal(replication.requireQuorumOnUpload, true)
   })

@@ -152,6 +152,7 @@ describe('expiry rules', () => {
     createdAt: 1000,
     confirmedAt: null,
     pinned: true,
+    heldLocally: true,
     replicas: []
   }
 

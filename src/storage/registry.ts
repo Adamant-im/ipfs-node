@@ -28,6 +28,14 @@ export interface FileRecord {
   storedBytes: number
   /** True while the root CID is pinned and therefore protected from collection. */
   pinned: boolean
+  /**
+   * Whether this node is still one of the file's holders.
+   *
+   * A confirmed file whose copies live on other nodes is released here and
+   * `heldLocally` becomes false. The record stays so the node can still answer
+   * for the file and repair it, but its blocks are no longer protected.
+   */
+  heldLocally: boolean
   /** Names of peer nodes that acknowledged holding a copy. */
   replicas: string[]
 }
@@ -156,11 +164,14 @@ export class FileRegistry {
     const existing = await this.get(file.cid)
 
     if (existing?.state === 'confirmed') {
-      // Re-uploading already durable content must not weaken its state.
+      // Re-uploading already durable content must not weaken its state, and it
+      // puts the blocks back on this node whether or not they were released.
       return this.save({
         ...existing,
         storedBytes: Math.max(existing.storedBytes, file.storedBytes),
-        fileSize: file.fileSize > 0 ? file.fileSize : existing.fileSize
+        fileSize: file.fileSize > 0 ? file.fileSize : existing.fileSize,
+        pinned: true,
+        heldLocally: true
       })
     }
 
@@ -176,6 +187,7 @@ export class FileRegistry {
       fileSize: file.fileSize,
       storedBytes: file.storedBytes,
       pinned: true,
+      heldLocally: true,
       replicas: existing?.replicas ?? []
     })
   }
@@ -196,7 +208,8 @@ export class FileRegistry {
       state: 'confirmed',
       expiresAt: null,
       confirmedAt: now,
-      pinned: true
+      pinned: true,
+      heldLocally: true
     })
   }
 
@@ -210,7 +223,18 @@ export class FileRegistry {
       return undefined
     }
 
-    return this.save({ ...record, state: 'expired', pinned: false })
+    return this.save({ ...record, state: 'expired', pinned: false, heldLocally: false })
+  }
+
+  /**
+   * Record that the file now lives on other nodes only.
+   *
+   * The file stays `confirmed` because it is still durable in the network; this
+   * node simply stopped being one of its holders.
+   */
+  async releaseLocalCopy(cid: string): Promise<FileRecord | undefined> {
+    const record = await this.get(cid)
+    return record ? this.save({ ...record, pinned: false, heldLocally: false }) : undefined
   }
 
   async setPinned(cid: string, pinned: boolean): Promise<FileRecord | undefined> {

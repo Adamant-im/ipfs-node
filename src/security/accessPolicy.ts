@@ -13,8 +13,6 @@ export type ApiRouters = {
   storage: Router
   /** Storage routes that reclaim space or move copies between nodes. */
   storageAdminRouter: Router
-  /** Peer-to-peer replication intake. */
-  replication: Router
 }
 
 /**
@@ -25,14 +23,12 @@ export type ApiRouters = {
  * @param routers API routers without cross-cutting access middleware
  * @param adminAuth fail-closed administrative authentication middleware
  * @param enableDebugApi whether the authenticated debug API is mounted
- * @param replicationAuth fail-closed peer authentication for replication intake
  */
 export function mountApiRoutes(
   app: Application,
   routers: ApiRouters,
   adminAuth: RequestHandler,
-  enableDebugApi: boolean,
-  replicationAuth: RequestHandler
+  enableDebugApi: boolean
 ): void {
   app.use('/api/file', routers.file)
   app.use('/api/file', adminAuth, routers.fileAdminRouter)
@@ -43,9 +39,9 @@ export function mountApiRoutes(
   app.use('/api/storage', routers.storage)
   app.use('/api/storage', adminAuth, routers.storageAdminRouter)
 
-  // Peers authenticate with the shared replication token rather than the
-  // administrative key: storing a copy is all a peer may ask this node to do.
-  app.use('/api/replication', replicationAuth, routers.replication)
+  // Replication between nodes is not an HTTP route: it runs on the libp2p
+  // protocol in `src/storage/replicationProtocol.ts`, where the handshake
+  // already proves which peer is calling.
 
   app.use('/api/helia', adminAuth, routers.helia)
   app.use('/api/libp2p', adminAuth, routers.libp2p)

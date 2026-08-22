@@ -72,13 +72,16 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   },
   "replication": {
     "enabled": false,
-    "factor": 2,
+    "placement": [
+      { "minAgeMs": 0, "copies": 4 },
+      { "minAgeMs": 15552000000, "copies": 3 },
+      { "minAgeMs": 31536000000, "copies": 2 }
+    ],
     "ackQuorum": 1,
     "requireQuorumOnUpload": false,
     "requestTimeoutMs": 30000,
     "repairEnabled": true,
-    "repairSchedule": "0 */30 * * * *",
-    "token": ""
+    "repairSchedule": "0 */30 * * * *"
   }
 }
 ```
@@ -104,22 +107,22 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
 - Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
 - Leave `storage.gc.enabled` as `false` until a deletion policy is agreed; `POST /api/storage/gc` runs on demand meanwhile
-- Set `replication.token` on every node that should accept copies, and `replication.enabled` on every node that should push them
-- Add `apiUrl` to each entry of `nodes` that takes part in replication
+- Set `replication.enabled` on every node that should place copies; replication needs no key and no extra address, because it runs on a libp2p protocol between the peers already listed in `nodes`
+- Tune `replication.placement` if the deployment wants a different number of copies per file age
 
 Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 
 ## HTTP access policy
 
-| Class                | Routes                                                                                                                                                 | Policy                                                                             |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                  |
-| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply           |
-| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                         |
-| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                          |
-| Peer replication     | `POST /api/replication/:cid`                                                                                                                           | A matching `x-replication-token` header is required; the admin key is not accepted |
-| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`          |
-| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                              |
+| Class                | Routes                                                                                                                                                 | Policy                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                     |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply              |
+| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                            |
+| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                             |
+| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake; accepted only from the peers listed in `nodes` |
+| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`             |
+| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                 |
 
 Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
 
@@ -256,11 +259,13 @@ Example response:
   ],
   "replication": {
     "mode": "best-effort",
-    "factor": 1,
+    "desiredCopies": 1,
+    "copies": 1,
     "required": 1,
     "acknowledged": 1,
     "replicas": [],
     "satisfied": true,
+    "networkTooSmall": true,
     "attempts": []
   }
 }
@@ -294,7 +299,7 @@ Example response:
   "createdAt": 1720614998797,
   "expiresAt": null,
   "confirmedAt": 1720614998797,
-  "replication": { "acknowledged": 1, "required": 1, "factor": 1 }
+  "replication": { "acknowledged": 1, "required": 1, "heldLocally": true }
 }
 ```
 
@@ -360,7 +365,7 @@ curl --fail-with-body --request POST \
   'https://ipfs.example.org/api/storage/gc?dryRun=true'
 ```
 
-`POST /api/storage/repair` pushes copies of any confirmed file that holds fewer than `replication.factor` of them.
+`POST /api/storage/repair` places copies of any confirmed file whose designated holders have not all acknowledged. A collection pass also hands over local copies of files that belong on other nodes, once those nodes confirm they hold them; the report lists them under `demoted`.
 
 ## Validation
 

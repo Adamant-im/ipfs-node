@@ -1,32 +1,58 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { multiaddr } from '@multiformats/multiaddr'
 import type { ReplicationConfig } from '../src/storage/config.js'
-import { missingReplicas, replicate, selectUnderReplicated } from '../src/storage/replication.js'
+import { placeFile, storageTargets } from '../src/storage/placement.js'
+import {
+  isUnderReplicated,
+  replicate,
+  requiredAcks,
+  type ReplicationPeer
+} from '../src/storage/replication.js'
+
+const DAY = 24 * 60 * 60 * 1000
+const CID = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
+const SELF = 'self-peer'
 
 const baseConfig: ReplicationConfig = {
   enabled: true,
-  factor: 3,
+  placement: [
+    { minAgeMs: 0, copies: 3 },
+    { minAgeMs: 365 * DAY, copies: 2 }
+  ],
   ackQuorum: 2,
   requireQuorumOnUpload: false,
   requestTimeoutMs: 1000,
   repairEnabled: true,
-  repairSchedule: '0 * * * * *',
-  token: 'r'.repeat(64)
+  repairSchedule: '0 * * * * *'
 }
 
-const targets = [
-  { name: 'ipfs2', apiUrl: 'https://ipfs2.example' },
-  { name: 'ipfs3', apiUrl: 'https://ipfs3.example' }
-]
+const peer = (name: string): ReplicationPeer => ({
+  name,
+  peerId: `peer-id-${name}`,
+  multiAddr: multiaddr('/ip4/127.0.0.1/tcp/4001')
+})
+
+const PEERS = [peer('ipfs2'), peer('ipfs3'), peer('ipfs4'), peer('ipfs5')]
+
+const placementFor = (ageMs: number, peers = PEERS) =>
+  placeFile({
+    cid: CID,
+    ageMs,
+    tiers: baseConfig.placement,
+    selfPeerId: SELF,
+    peerIds: peers.map((item) => item.peerId)
+  })
 
 describe('replicate', () => {
   it('reports best effort storage when replication is disabled', async () => {
     const report = await replicate({
-      cid: 'bafkrei1',
-      targets,
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
       config: { ...baseConfig, enabled: false },
-      token: baseConfig.token,
-      request: async () => assert.fail('peers must not be contacted')
+      store: async () => assert.fail('peers must not be contacted')
     })
 
     assert.equal(report.mode, 'best-effort')
@@ -34,78 +60,126 @@ describe('replicate', () => {
     assert.equal(report.satisfied, true)
   })
 
+  it('places copies on a subset rather than on every peer', async () => {
+    const asked: string[] = []
+
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async (target) => {
+        asked.push(target.name)
+      }
+    })
+
+    // Four peers are available, but a fresh file only wants three holders
+    assert.ok(asked.length < PEERS.length, `asked ${asked.length} of ${PEERS.length} peers`)
+    assert.equal(asked.length, storageTargets(placementFor(0), SELF).length)
+    assert.equal(report.copies, 3)
+  })
+
+  it('asks fewer peers as a file ages', async () => {
+    const askedFresh: string[] = []
+    const askedOld: string[] = []
+
+    await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async (target) => {
+        askedFresh.push(target.name)
+      }
+    })
+    await replicate({
+      cid: CID,
+      ageMs: 400 * DAY,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async (target) => {
+        askedOld.push(target.name)
+      }
+    })
+
+    assert.ok(askedOld.length < askedFresh.length)
+  })
+
   it('counts the local copy towards the quorum', async () => {
     const report = await replicate({
-      cid: 'bafkrei1',
-      targets,
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
       config: baseConfig,
-      token: baseConfig.token,
-      request: async (target) => {
-        if (target.name === 'ipfs3') {
+      store: async (target) => {
+        if (target.name !== storageTargets(placementFor(0), SELF)[0].replace('peer-id-', '')) {
           throw new Error('unreachable')
         }
       }
     })
 
-    assert.equal(report.acknowledged, 2)
-    assert.deepEqual(report.replicas, ['ipfs2'])
-    assert.equal(report.satisfied, true)
+    assert.equal(report.acknowledged, report.replicas.length + 1)
+    assert.equal(report.satisfied, report.acknowledged >= report.required)
   })
 
-  it('reports an unsatisfied quorum when too few peers acknowledge', async () => {
+  it('reports an unsatisfied quorum when no peer acknowledges', async () => {
     const report = await replicate({
-      cid: 'bafkrei1',
-      targets,
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
       config: baseConfig,
-      token: baseConfig.token,
-      request: async () => {
-        throw new Error('unreachable')
+      store: async () => {
+        throw new Error('connection refused')
       }
     })
 
     assert.equal(report.acknowledged, 1)
     assert.equal(report.satisfied, false)
-    assert.deepEqual(
-      report.attempts.map((attempt) => attempt.ok),
-      [false, false]
-    )
+    assert.ok(report.attempts.every((attempt) => !attempt.ok))
   })
 
-  it('survives a node that is offline', async () => {
+  it('does not demand a quorum the network cannot reach', async () => {
+    const single = [peer('ipfs2')]
+
     const report = await replicate({
-      cid: 'bafkrei1',
-      targets,
-      config: { ...baseConfig, factor: 2, ackQuorum: 1 },
-      token: baseConfig.token,
-      request: async (target) => {
-        if (target.name === 'ipfs2') {
-          throw new Error('connection refused')
-        }
-      }
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: single,
+      config: { ...baseConfig, ackQuorum: 3 },
+      store: async () => {}
     })
 
+    assert.equal(report.networkTooSmall, true)
+    assert.equal(report.required, 2)
     assert.equal(report.satisfied, true)
-    assert.deepEqual(report.replicas, ['ipfs3'])
   })
 })
 
-describe('under-replication detection', () => {
-  it('counts the copies still missing, including the local one', () => {
-    assert.equal(missingReplicas(baseConfig, []), 2)
-    assert.equal(missingReplicas(baseConfig, ['ipfs2']), 1)
-    assert.equal(missingReplicas(baseConfig, ['ipfs2', 'ipfs3']), 0)
+describe('requiredAcks', () => {
+  it('never exceeds the copies that can exist', () => {
+    assert.equal(requiredAcks({ ...baseConfig, ackQuorum: 3 }, placementFor(0)), 3)
+    assert.equal(requiredAcks({ ...baseConfig, ackQuorum: 3 }, placementFor(0, [peer('only')])), 2)
+  })
+})
+
+describe('isUnderReplicated', () => {
+  it('compares against the peers the placement designated', () => {
+    const placement = placementFor(0)
+    const targets = storageTargets(placement, SELF).length
+
+    assert.equal(isUnderReplicated(targets, placement, SELF), false)
+    assert.equal(isUnderReplicated(targets - 1, placement, SELF), true)
   })
 
-  it('selects only the files below the replication factor', () => {
-    const records = [
-      { cid: 'a', replicas: ['ipfs2', 'ipfs3'] },
-      { cid: 'b', replicas: ['ipfs2'] },
-      { cid: 'c', replicas: [] }
-    ]
+  it('reports nothing missing when the network is too small to place more', () => {
+    const placement = placementFor(0, [peer('only')])
 
-    assert.deepEqual(
-      selectUnderReplicated(records, baseConfig).map((item) => item.cid),
-      ['b', 'c']
-    )
+    assert.equal(isUnderReplicated(1, placement, SELF), false)
   })
 })

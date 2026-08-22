@@ -90,16 +90,19 @@ The guard fails closed. With no key configured the routes answer `503` rather
 than being open, so a node cannot be filled with permanently pinned content by
 an anonymous caller.
 
-`POST /api/replication/:cid` is different: it is authorized by
-`replication.token`, a secret shared by the ADAMANT nodes. A peer only ever asks
-this node to store a copy, so distributing the administrative key across the node
-set would grant far more than replication needs. Setting the token opens the
-intake route on its own; `replication.enabled` only governs whether this node
-pushes copies out.
+Replication between nodes is not an HTTP route and uses no key at all. It runs
+on the libp2p protocol `/adamant/replication/1.0.0`, where the handshake already
+proves the calling peer id cryptographically. Nothing has to be distributed, and
+a peer needs no HTTP address to be reachable.
+
+Which peers may spend this node's disk is a policy, not a credential: today the
+node accepts requests from the peers listed in `nodes`. That is still a closed
+set, and it is the piece an uploader signature replaces so that anyone can run a
+node without being handed a secret.
 
 ## Garbage collection
 
-Collection applies two independent rules:
+Collection applies three independent rules:
 
 1. **Expiry.** A `temporary` file that outlived `expiresAt` is released,
    whatever the blockstore size is.
@@ -107,6 +110,10 @@ Collection applies two independent rules:
    `storage.gc.highWatermarkBytes`, the oldest unconfirmed files are released
    until the estimated size drops below `storage.gc.lowWatermarkBytes`. The gap
    between the two thresholds stops the collector from running on every tick.
+3. **Handover.** A confirmed file whose copies belong on other nodes is released
+   here once those nodes confirm they hold it. This is how an ageing file drops
+   from four holders to two without ever losing durability; see
+   [Replication and durability](#replication-and-durability).
 
 Released files lose their pin, then Helia deletes every unpinned block. That
 pass also reclaims blocks cached while serving other peers.
@@ -136,20 +143,79 @@ Schedule it accordingly.
 node holds it. `GET /api/storage/policy` reports `"mode": "best-effort"` so
 clients can see what they are getting.
 
-With replication enabled, a node that makes a file durable pushes it to the other
-ADAMANT nodes listed in `nodes` that declare an `apiUrl`. The peer pulls the DAG
-over libp2p and pins it before answering, so an acknowledgement means the copy
-exists and is protected.
+With replication enabled, a file is placed on a subset of the ADAMANT nodes. The
+peer pulls the DAG over libp2p and pins it before answering, so an
+acknowledgement means the copy exists and is protected there, not that a request
+was queued.
 
-- `replication.factor` — copies that must exist, including this node
-- `replication.ackQuorum` — acknowledgements required for an upload to be durable
-- `replication.requireQuorumOnUpload` — when `true`, an upload that cannot reach
-  the quorum is released and answered with `503`; when `false` (default) the
-  upload succeeds, reports the shortfall, and the repair job converges later
+### How many copies, and where
+
+Copies are **not** sent to every node. On a large node set that would cost
+bandwidth and disk everywhere for no added durability. Copies are also not sent
+to a random subset, because then no node could tell where a file is supposed to
+live, and both repair and handover would need a network-wide search.
+
+Instead the holders are derived from the CID with rendezvous hashing: each
+candidate node is scored by `sha256(peerId ‖ cid)` and the highest scores win.
+Two properties follow, and the rest of the design depends on both:
+
+- Every node computes the same holders for a CID without asking anyone, so the
+  set is agreed by construction rather than negotiated.
+- Adding or removing a node moves only the fraction of CIDs it wins or loses,
+  instead of reshuffling all of them the way a modulo assignment would.
+
+How many holders a file gets depends on its **age**, through
+`replication.placement`:
+
+| File age            | Holders, including this node |
+| ------------------- | ---------------------------- |
+| Fresh               | 4                            |
+| Older than 180 days | 3                            |
+| Older than 365 days | 2                            |
+
+Age is used rather than time of last access on purpose. Recording when a file
+was last read would build a log of user activity, and sharing that log between
+nodes so they could agree on it would spread the leak further. Creation time is
+already implied by the upload, so it reveals nothing new.
+
+When the network is no larger than the desired copy count, every node is
+expected to hold the file: no copy requests are sent, because there is nowhere
+for a copy to go, and nothing is ever handed over.
+
+### Handing a copy over
+
+As a file ages its desired holder count shrinks, so nodes that are no longer
+designated may release their copy. A node releases one only when **both** hold:
+
+- it is outside the designated set for that CID, and
+- every designated holder confirms over the protocol that it has the file.
+
+The designated set is identical on every node, and a designated holder never
+considers releasing. That is what prevents two nodes from dropping the last two
+copies at the same moment, with no locking between them. If a designated holder
+does not answer, or answers that it does not have the file, the copy stays where
+it is and repair puts it where it belongs on the next pass.
+
+Releasing a copy leaves the registry record in place with `heldLocally: false`:
+the file is still durable in the network, this node simply stopped being one of
+its holders.
+
+### Reading a file
+
+Routing stays the node's problem, not the client's. A client asks whichever node
+it likes for a CID; if that node does not hold the file, it fetches the blocks
+over bitswap from the peers that do and streams them on. Placement does not
+change that contract — it only makes it likely that a connected peer has the
+file, and it tells the node which peers to expect it from.
+
+A node that cannot retrieve content answers `408` after `findFileTimeout`. It
+never answers `404`, because it cannot know that content does not exist.
+
+### Repair
 
 The repair job (`replication.repairSchedule`, or `POST /api/storage/repair`)
-lists confirmed files holding fewer copies than the factor requires and pushes
-the missing ones again.
+lists confirmed files this node holds whose designated peers have not all
+acknowledged, and places the missing copies again.
 
 Replication needs the peers to be connected over libp2p, because the copy itself
 travels by bitswap. Keep every replication peer in `peerDiscovery.bootstrap` as
@@ -160,18 +226,17 @@ well as in `nodes`.
 Helia has no native pin-orchestration protocol. Cross-node pinning has to come
 from somewhere, so the two realistic options are:
 
-|                    | Helia with an explicit control plane (selected)                | Kubo with IPFS Cluster                     |
-| ------------------ | -------------------------------------------------------------- | ------------------------------------------ |
-| Runtime            | The existing Node.js process                                   | A Go daemon plus a cluster daemon per node |
-| Pin orchestration  | REST calls between ADAMANT nodes, authorized by a shared token | Raft or CRDT consensus inside the cluster  |
-| Replication factor | Enforced by this node and by the repair job                    | Enforced by the cluster                    |
-| Operational cost   | None beyond the current deployment                             | New services, new state, new failure modes |
-| Fit                | Small, fixed, mutually trusted node set                        | Large or dynamic clusters                  |
+|                   | Helia with an explicit control plane (selected)                         | Kubo with IPFS Cluster                     |
+| ----------------- | ----------------------------------------------------------------------- | ------------------------------------------ |
+| Runtime           | The existing Node.js process                                            | A Go daemon plus a cluster daemon per node |
+| Pin orchestration | A libp2p protocol between ADAMANT nodes, authenticated by the handshake | Raft or CRDT consensus inside the cluster  |
+| Placement         | Rendezvous hashing over the CID, computed identically everywhere        | Allocation decided by the cluster          |
+| Operational cost  | None beyond the current deployment                                      | New services, new state, new failure modes |
+| Fit               | Small, fixed, mutually trusted node set                                 | Large or dynamic clusters                  |
 
-The ADAMANT node set is small, fixed, and mutually trusted, and the project
-already runs a REST API on every node. An explicit control plane covers the
-requirement without adding a second runtime, so **Helia-native orchestration is
-the selected durability model**. Kubo with IPFS Cluster remains the fallback if
+The ADAMANT nodes already speak libp2p to each other, so the control plane costs
+one protocol handler and no new runtime, credential, or port. **Helia-native
+orchestration is therefore the selected durability model.** Kubo with IPFS Cluster remains the fallback if
 the node set grows to a size where consensus-based pin allocation is worth its
 operational cost.
 
@@ -185,6 +250,9 @@ operational cost.
 - `availableBytes` — free space on the blockstore filesystem
 - `reservedBytes` and `usableBytes` — the disk reserve and what is left for uploads
 - `files` — how many files are in each lifecycle state
+
+A collection report also lists `demoted`: files whose local copy was handed over
+to their designated holders during that pass.
 
 Values are refreshed on the `diskUsageScanPeriod` schedule, because a directory
 scan and a full registry sweep are too expensive for a request path. A subset is
@@ -225,8 +293,8 @@ Read this before enabling `storage.gc.enabled` in production.
 ### Operational safeguards
 
 - Keep `storage.gc.enabled` false until a deletion policy is agreed
-- Keep `replication.factor` at two or more, so a mistaken deletion on one node is
-  recoverable from another
+- Keep the smallest tier of `replication.placement` at two copies or more, so a
+  mistaken deletion on one node is recoverable from another
 - Run the dry run again after changing the watermarks or the TTL
 - Watch `GET /api/storage/metrics` for `gc.lastRun.errors` after each run
 

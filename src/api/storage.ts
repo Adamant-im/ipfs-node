@@ -46,10 +46,11 @@ router.get('/policy', readLimiter, (req, res) => {
     durability: config.replication.enabled
       ? {
           mode: 'quorum',
-          factor: config.replication.factor,
+          // Copies are reduced as a file ages; the tiers are the whole policy.
+          placement: config.replication.placement,
           ackQuorum: config.replication.ackQuorum
         }
-      : { mode: 'best-effort', factor: 1, ackQuorum: 1 }
+      : { mode: 'best-effort', placement: [{ minAgeMs: 0, copies: 1 }], ackQuorum: 1 }
   })
 })
 
@@ -81,6 +82,7 @@ storageAdminRouter.post('/gc', async (req, res, next) => {
       estimatedBytesAfter: report.estimatedBytesAfter,
       releasedCids: report.releasedCids,
       retainedCids: report.retainedCids,
+      demoted: report.demoted,
       removedBlocks: report.removedBlocks,
       removedCids: report.removedCids,
       repairedPins: report.repairedPins,

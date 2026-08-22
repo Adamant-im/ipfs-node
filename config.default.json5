@@ -3,7 +3,6 @@
     {
       name: 'ipfs1',
       multiAddr: '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
-      // apiUrl: 'https://ipfs1.example', // Only needed when replication is enabled
     },
     {
       name: 'ipfs2',
@@ -71,18 +70,24 @@
       lowWatermarkBytes: 42949672960 // 40 GiB. Collection reclaims down to this size
     }
   },
-  // Replication across the nodes listed in `nodes` that declare an `apiUrl`.
+  // Replication across the nodes listed in `nodes`. Copies travel over libp2p,
+  // so a peer needs no HTTP address and no shared secret: the handshake already
+  // proves which node is calling.
   // Disabled by default: the node then stores content best effort, locally only.
   replication: {
     enabled: false,
-    factor: 2, // Copies that must exist, including this node
+    // How many nodes should hold a file, including this one, by file age.
+    // Copies shrink as content ages instead of being tracked by access time,
+    // which would record when users fetch their files.
+    placement: [
+      { minAgeMs: 0, copies: 4 }, // fresh
+      { minAgeMs: 15552000000, copies: 3 }, // older than 180 days
+      { minAgeMs: 31536000000, copies: 2 } // older than 365 days
+    ],
     ackQuorum: 1, // Acknowledgements required before an upload is durable
     requireQuorumOnUpload: false, // true rejects an upload that cannot reach the quorum
     requestTimeoutMs: 30000,
     repairEnabled: true,
-    repairSchedule: '0 */30 * * * *',
-    // Shared by all ADAMANT nodes, sent as x-replication-token.
-    // Generate with: openssl rand -hex 32
-    token: ''
+    repairSchedule: '0 */30 * * * *'
   }
 }

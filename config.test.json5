@@ -40,12 +40,14 @@
   },
   replication: {
     enabled: false,
-    factor: 2,
+    placement: [
+      { minAgeMs: 0, copies: 3 },
+      { minAgeMs: 31536000000, copies: 2 }
+    ],
     ackQuorum: 1,
     requireQuorumOnUpload: false,
     requestTimeoutMs: 5000,
     repairEnabled: false,
-    repairSchedule: '0 */30 * * * *',
-    token: ''
+    repairSchedule: '0 */30 * * * *'
   }
 }

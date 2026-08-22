@@ -2,6 +2,9 @@ import express from 'express'
 import { httpLogger, logger } from './utils/logger.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
+import { helia } from './helia.js'
+import { registerReplicationProtocol } from './storage/replicationProtocol.js'
+import { createReplicationHandlers } from './storage/service.js'
 import { garbageCollectionCron } from './gc.cron.js'
 import { replicationRepairCron } from './replication.cron.js'
 import cors from 'cors'
@@ -9,7 +12,6 @@ import * as routers from './api/index.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
 import { mountApiRoutes } from './security/accessPolicy.js'
 import { createApiKeyAuth } from './security/apiKey.js'
-import { createReplicationAuth } from './security/replicationToken.js'
 import { createCorsOriginDelegate } from './security/cors.js'
 import { parseTrustProxy } from './security/trustProxy.js'
 
@@ -31,6 +33,10 @@ if (config.storage.gc.enabled) {
 }
 
 if (config.replication.enabled) {
+  // Answering the protocol is what lets peers place copies here, so it is
+  // registered before the HTTP server starts accepting uploads.
+  await registerReplicationProtocol(helia, createReplicationHandlers())
+
   if (config.replication.repairEnabled) {
     replicationRepairCron.start()
   }
@@ -67,15 +73,7 @@ app.get('/', (req, res) => {
   res.send('IPFS node')
 })
 
-mountApiRoutes(
-  app,
-  routers,
-  createApiKeyAuth(config.adminApiKey),
-  config.enableDebugApi === true,
-  // The token alone opens replication intake. `replication.enabled` governs
-  // whether this node pushes copies out, which a receive-only node never does.
-  createReplicationAuth(config.replication.token)
-)
+mountApiRoutes(app, routers, createApiKeyAuth(config.adminApiKey), config.enableDebugApi === true)
 
 app.use(notFoundHandler)
 app.use(errorHandler)

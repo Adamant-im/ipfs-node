@@ -14,6 +14,7 @@ function record(overrides: Partial<FileRecord> & Pick<FileRecord, 'cid' | 'state
     fileSize: 100,
     storedBytes: 100,
     pinned: true,
+    heldLocally: true,
     replicas: [],
     ...overrides
   }
