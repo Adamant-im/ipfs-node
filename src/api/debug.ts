@@ -5,7 +5,7 @@ import { helia } from '../helia.js'
 
 const router = Router()
 
-router.get('/autopeering', async (req, res) => {
+router.get('/autopeering', async (req, res, next) => {
   try {
     const nodes = getNodesList([helia.libp2p.peerId.toString()])
     pino.logger.info(`Peering nodes list: ${nodes.map((node) => node.name)}`)
@@ -27,10 +27,7 @@ router.get('/autopeering', async (req, res) => {
       peeredSuccessfullyTo: successPeers
     })
   } catch (err) {
-    pino.logger.error(err)
-    res.send({
-      error: err.message
-    })
+    next(err)
   }
 })
 

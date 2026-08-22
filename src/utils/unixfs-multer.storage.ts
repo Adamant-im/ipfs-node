@@ -3,6 +3,7 @@ import * as e from 'express'
 import { UnixFS } from '@helia/unixfs'
 import { pino } from './logger.js'
 import { UnixFsMulterFile } from './types.js'
+import { sanitizeFilename } from './sanitizeFilename.js'
 
 export interface UnixfsStorageOptions {
   unixfs: UnixFS
@@ -18,6 +19,8 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error?: Error, info?: Partial<UnixFsMulterFile>) => void
   ): void {
+    const safeFilename = sanitizeFilename(file.originalname)
+    file.originalname = safeFilename
     const folder = this.options.destination(req, file)
     const filename = this.options.filename(req, file)
     this.options.unixfs
@@ -38,7 +41,7 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {
-    pino.logger.info(`Need remove file ${file.originalname}`)
+    pino.logger.info('Remove file requested')
     callback(null)
   }
 }

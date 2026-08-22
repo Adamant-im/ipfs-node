@@ -6,16 +6,17 @@ import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
-import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
+import { downloadFile, getFileStats } from '../utils/file.js'
+import { uploadLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { parseCid } from '../utils/cid.js'
+import { sendDownloadStream } from '../utils/downloadResponse.js'
 
 const router = Router()
 
-router.post('/upload', multerStorage.array('files'), async (req, res) => {
-  if (!req.files) {
+router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, res, next) => {
+  if (!Array.isArray(req.files) || req.files.length === 0) {
     res.statusCode = 400
-    return res.send({
-      error: 'No file uploaded'
-    })
+    return res.send({ error: 'No file uploaded' })
   }
 
   if (req.files.length > config.maxFileCount) {
@@ -27,7 +28,7 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
 
   try {
     const files = flatFiles(req.files as UnixFsMulterFile[])
-    pino.logger.info(`req.files: : ${JSON.stringify(files.map((item) => item.originalname))}`)
+    pino.logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
     const cids: CID[] = []
     for (const file of files) {
@@ -52,50 +53,25 @@ router.post('/upload', multerStorage.array('files'), async (req, res) => {
       cids: cids.map((cid) => cid.toString())
     })
   } catch (err) {
-    pino.logger.error(err)
-
-    res.status(400)
-    res.send({
-      error: err.message
-    })
+    next(err)
   }
 })
 
-router.get('/:cid', async (req, res) => {
+router.get('/:cid', readLimiter, async (req, res, next) => {
   try {
-    const cid = CID.parse(req.params.cid)
+    const cid = parseCid(req.params.cid)
     const fileStats = await getFileStats(cid)
-
-    let streamStarted = false
     const stream = downloadFile(cid)
 
-    stream.on('data', () => {
-      if (!streamStarted) {
-        streamStarted = true
-        res.set('Content-Type', 'application/octet-stream')
-        res.set('Content-Length', fileStats.fileSize.toString())
-      }
-    })
-
-    stream.on('error', (err) => {
-      pino.logger.error(err)
-      res.status(408).send({
-        error: err.message
-      })
-    })
-
-    stream.pipe(res)
+    sendDownloadStream(
+      stream,
+      res,
+      { cid: cid.toString(), fileSize: fileStats.fileSize },
+      next,
+      (error) => pino.logger.error(error)
+    )
   } catch (error) {
-    if (error instanceof FileNotFoundError) {
-      res.status(408).send({
-        error: error.message
-      })
-    } else {
-      pino.logger.error(error)
-      res.status(500).send({
-        error: error.message
-      })
-    }
+    next(error)
   }
 })
 

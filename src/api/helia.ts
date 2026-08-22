@@ -1,59 +1,57 @@
 import { Router } from 'express'
 import { Pin } from 'helia'
-import { CID } from 'multiformats/cid'
 import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
+import { pinLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { parseCid } from '../utils/cid.js'
 
 const router = Router()
 
-router.get('/pins', async (req, res) => {
-  const pins: Pin[] = []
+router.get('/pins', readLimiter, async (req, res, next) => {
+  try {
+    const pins: Pin[] = []
 
-  for await (const pin of helia.pins.ls()) {
-    pino.logger.info('PIN LS', pin)
-    pins.push(pin)
+    for await (const pin of helia.pins.ls()) {
+      pino.logger.info('PIN LS', pin)
+      pins.push(pin)
+    }
+
+    res.send({ pins })
+  } catch (err) {
+    next(err)
   }
-
-  res.send({
-    pins
-  })
 })
 
-router.post('/pin/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
-
+router.post('/pin/:cid', pinLimiter, async (req, res, next) => {
   try {
+    const cid = parseCid(req.params.cid)
     for await (const pin of helia.pins.add(cid)) {
       pino.logger.info('PINNED', pin)
     }
+    res.send({ pinned: true, cid: cid.toString() })
   } catch (err) {
-    pino.logger.error(`Error: ${err.message}`)
-    res.statusCode = 500
-    return res.send({
-      error: err.message
-    })
+    next(err)
   }
-
-  res.send({
-    pinned: true,
-    cid: cid.toString()
-  })
 })
 
-router.get('/pins/isPinned/:cid', async (req, res) => {
-  const cid = CID.parse(req.params.cid)
-
-  const isPinned = await helia.pins.isPinned(cid)
-
-  res.send({
-    cid: cid.toString(),
-    isPinned
-  })
-})
-
-router.get('/routing/findProviders/:cid', async (req, res) => {
+router.get('/pins/isPinned/:cid', readLimiter, async (req, res, next) => {
   try {
-    const cid = CID.parse(req.params.cid)
+    const cid = parseCid(req.params.cid)
+
+    const isPinned = await helia.pins.isPinned(cid)
+
+    res.send({
+      cid: cid.toString(),
+      isPinned
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
+router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) => {
+  try {
+    const cid = parseCid(req.params.cid)
 
     const providers: string[] = []
     for await (const provider of helia.routing.findProviders(cid)) {
@@ -65,10 +63,7 @@ router.get('/routing/findProviders/:cid', async (req, res) => {
       providers
     })
   } catch (err) {
-    res.send({
-      error: err.message
-    })
-    pino.logger.error(err)
+    next(err)
   }
 })
 

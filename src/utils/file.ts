@@ -3,6 +3,7 @@ import { Readable } from 'node:stream'
 import { clearTimeout } from 'node:timers'
 import { config } from '../config.js'
 import { ifs } from '../helia.js'
+import { FileNotFoundError } from './fileErrors.js'
 
 /**
  * Return file statistics by CID.
@@ -18,11 +19,12 @@ export async function getFileStats(cid: CID) {
 
     const stats = await ifs.stat(cid, { signal: abortController.signal })
     return stats
-  } catch (err) {
-    console.log(err)
-    clearTimeout(timeout)
-
+  } catch {
     throw new FileNotFoundError('Cannot find requested CID. Request timed out.')
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout)
+    }
   }
 }
 
@@ -53,13 +55,12 @@ export function downloadFile(cid: CID) {
   stream.on('end', () => {
     clearTimeout(abortTimer)
   })
+  stream.on('error', () => {
+    clearTimeout(abortTimer)
+  })
+  stream.on('close', () => {
+    clearTimeout(abortTimer)
+  })
 
   return stream
-}
-
-export class FileNotFoundError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'FileNotFoundError'
-  }
 }
