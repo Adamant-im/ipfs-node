@@ -2,16 +2,17 @@ import { PeerId } from '@libp2p/interface'
 import { peerIdFromString } from '@libp2p/peer-id'
 import type { PingService } from '@libp2p/ping'
 import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
-import { Request, Response, Router } from 'express'
+import { type NextFunction, Request, Response, Router } from 'express'
 import { PeerIdDto } from '../dto/peer-id.dto.js'
 import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
+import { InvalidRequestError } from '../security/errors.js'
 
 const router = Router()
 
 router.get(
   '/services/ping',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: NextFunction) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
       const pingService = helia.libp2p.services.ping as PingService
@@ -28,7 +29,7 @@ router.get(
 
 router.get(
   '/peerStore',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: NextFunction) => {
     const peerId = req.query.peerId
 
     try {
@@ -61,7 +62,7 @@ router.get(
 
 router.get(
   '/peerInfo',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: NextFunction) => {
     const peerId = req.query.peerId
 
     try {
@@ -85,7 +86,7 @@ router.get(
   async (
     req: Request<never, never, never, PeerIdDto & { multiAddr: string }>,
     res: Response,
-    next: Function
+    next: NextFunction
   ) => {
     let peerId: PeerId | undefined
     let multiAddr: Multiaddr | undefined
@@ -97,12 +98,8 @@ router.get(
       if (req.query.multiAddr) {
         multiAddr = multiaddr(req.query.multiAddr || '')
       }
-    } catch (err) {
-      pino.logger.error('Invalid peer ID:' + err.message)
-      res.send({
-        success: false,
-        error: 'Invalid peer ID'
-      })
+    } catch {
+      next(new InvalidRequestError('Invalid peer identifier or multiaddress'))
       return
     }
 
@@ -112,17 +109,16 @@ router.get(
       pino.logger.info(`Peering by PeerID: ${peerId}`)
     }
 
+    const peer = multiAddr || peerId
+    if (!peer) {
+      next(new InvalidRequestError('Peer identifier or multiaddress is required'))
+      return
+    }
+
     try {
-      const peer = multiAddr || peerId
-      if (!peer) {
-        throw new Error('Empty peerId and MultiAddr')
-      }
       const connection = await helia.libp2p.dial(peer)
       res.send({ success: true, connection })
     } catch (err) {
-      pino.logger.warn(`Cannot dial peer: ${err.message}`)
-
-      pino.logger.error(err)
       next(err)
     }
   }
@@ -130,7 +126,7 @@ router.get(
 
 router.get(
   '/connections',
-  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: Function) => {
+  async (req: Request<never, never, never, PeerIdDto>, res: Response, next: NextFunction) => {
     try {
       const peerId = req.query.peerId?.toString() || ''
       const connections = helia.libp2p.getConnections(peerId ? peerIdFromString(peerId) : undefined)
@@ -140,7 +136,6 @@ router.get(
         connections
       })
     } catch (err) {
-      pino.logger.error(err)
       next(err)
     }
   }
@@ -160,7 +155,6 @@ router.get('/peers', (req, res, next) => {
 
     res.send({ peers })
   } catch (err) {
-    pino.logger.error(err)
     next(err)
   }
 })

@@ -27,7 +27,6 @@ router.get('/autopeering', async (req, res, next) => {
       peeredSuccessfullyTo: successPeers
     })
   } catch (err) {
-    pino.logger.error(err)
     next(err)
   }
 })

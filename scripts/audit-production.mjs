@@ -23,7 +23,11 @@ try {
   throw new Error('npm audit produced invalid JSON')
 }
 
-if (!report.metadata || typeof report.vulnerabilities !== 'object') {
+if (
+  !report.metadata ||
+  report.vulnerabilities === null ||
+  typeof report.vulnerabilities !== 'object'
+) {
   throw new Error('npm audit report is incomplete')
 }
 

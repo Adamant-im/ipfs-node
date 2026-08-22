@@ -6,9 +6,10 @@ import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
-import { downloadFile, FileNotFoundError, getFileStats } from '../utils/file.js'
+import { downloadFile, getFileStats } from '../utils/file.js'
 import { uploadLimiter, readLimiter } from '../middleware/rateLimiter.js'
-import { InvalidRequestError } from '../security/errors.js'
+import { parseCid } from '../utils/cid.js'
+import { sendDownloadStream } from '../utils/downloadResponse.js'
 
 const router = Router()
 
@@ -52,8 +53,6 @@ router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, 
       cids: cids.map((cid) => cid.toString())
     })
   } catch (err) {
-    pino.logger.error(err)
-
     next(err)
   }
 })
@@ -64,33 +63,16 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
     const fileStats = await getFileStats(cid)
     const stream = downloadFile(cid)
 
-    res.set('Content-Type', 'application/octet-stream')
-    res.set('Content-Length', fileStats.fileSize.toString())
-    res.set('Content-Disposition', `attachment; filename="${cid.toString()}"`)
-    res.set('X-Content-Type-Options', 'nosniff')
-
-    stream.on('error', (err) => {
-      pino.logger.error(err)
-      next(err)
-    })
-
-    stream.pipe(res)
+    sendDownloadStream(
+      stream,
+      res,
+      { cid: cid.toString(), fileSize: fileStats.fileSize },
+      next,
+      (error) => pino.logger.error(error)
+    )
   } catch (error) {
-    if (error instanceof FileNotFoundError) {
-      res.status(404).send({ error: 'File not found' })
-      return
-    }
     next(error)
   }
 })
-
-/** Parse a route CID without exposing parser internals to the client. */
-function parseCid(value: string): CID {
-  try {
-    return CID.parse(value)
-  } catch {
-    throw new InvalidRequestError('Invalid CID')
-  }
-}
 
 export default router

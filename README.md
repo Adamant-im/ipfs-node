@@ -61,7 +61,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 ### Configuration migration
 
 - Replace `cors.origin` or `cors.originRegexps` with `cors.allowedOrigins`
-- Use exact origins such as `https://adm.im` or left-most subdomain wildcards such as `https://*.adamant.im`
+- Use exact origins such as `https://adm.im` or any-depth subdomain suffix wildcards such as `https://*.adamant.im`
 - Set `adminApiKey` before using any administrative API
 - Leave `trustProxy` as `false` for direct connections; configure exact proxy addresses, CIDR ranges, or a verified hop count behind a proxy
 - Set `enableDebugApi: true` only when the authenticated debug route is operationally required
@@ -87,9 +87,13 @@ Upload remains public for compatibility with direct Messenger clients. The servi
 
 This is an explicit compatibility decision, not an authorization guarantee. A deployment that requires signed upload authorization must enforce it at a trusted gateway until a client-compatible signing protocol is designed. Files of any content type are accepted, but downloads are served as `application/octet-stream` attachments with content sniffing disabled.
 
+The multipart contract accepts `files` parts only. Text fields are rejected with a controlled `400 Bad Request` response.
+
+Interrupted uploads can leave unpinned blocks in the blockstore. Deleting only the returned root CID would miss descendant blocks, while recursively deleting content-addressed blocks could remove data shared with pinned files. Until [#22](https://github.com/Adamant-im/ipfs-node/issues/22) adds reference-aware garbage collection, operators must monitor and bound blockstore growth at the deployment layer.
+
 ### CORS
 
-`cors.allowedOrigins` accepts canonical HTTP(S) origins only. It does not accept paths, credentials, query strings, fragments, or unrestricted `*`. Wildcards are limited to a left-most subdomain. For example, `https://*.adamant.im` matches `https://chat.adamant.im` but not `https://adamant.im` or `https://adamant.im.example.org`.
+`cors.allowedOrigins` accepts canonical HTTP(S) origins only. It does not accept paths, credentials, query strings, fragments, or unrestricted `*`. Wildcards match subdomains at any depth beneath the configured suffix. For example, `https://*.adamant.im` matches both `https://chat.adamant.im` and `https://nested.chat.adamant.im`, but not `https://adamant.im` or `https://adamant.im.example.org`.
 
 Requests without an `Origin` header, such as server-to-server calls and `curl`, are not blocked by CORS. Unauthorized administrative requests are still rejected by API-key middleware.
 
@@ -104,6 +108,8 @@ trustProxy: ['127.0.0.1/8', '::1/128']
 A numeric hop count is supported only for a fixed topology in which every path to the application has exactly that number of trusted hops. The blanket value `true` is rejected because a client could spoof `X-Forwarded-For` when the last proxy does not overwrite it.
 
 Application limiters use in-memory counters per process. The TLS proxy must also enforce request rates, connection limits, header limits, and a body-size limit no larger than `uploadLimitSizeBytes` for multi-process or distributed deployments.
+
+Keeping `trustProxy` disabled behind a proxy makes every client share the proxy's IP identity and therefore the same application rate-limit bucket. The process logs a startup warning for this configuration. Do not enable a broader trust rule merely to suppress the warning; configure only the known proxy addresses or a verified fixed hop count.
 
 ### TLS boundary
 
@@ -152,6 +158,18 @@ curl --fail-with-body \
   --output file.bin \
   https://ipfs.example.org/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm
 ```
+
+Download responses use the following stable status contract:
+
+| Status                      | Meaning                                                                |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `200 OK`                    | The response contains the requested file as an attachment              |
+| `400 Bad Request`           | The CID is invalid                                                     |
+| `408 Request Timeout`       | The file could not be found or retrieved before the configured timeout |
+| `429 Too Many Requests`     | The read rate limit was exceeded                                       |
+| `500 Internal Server Error` | An unexpected internal failure occurred before streaming started       |
+
+The timeout status remains `408 Request Timeout` for compatibility with existing clients. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
 
 ### Check public health
 

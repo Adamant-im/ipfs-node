@@ -3,9 +3,10 @@ import { packageJson } from '../config.js'
 import { getDiskUsageStats } from '../disk-usage.cron.js'
 import { helia } from '../helia.js'
 
+export const publicNodeRouter = Router()
 const router = Router()
 
-router.get('/health', async (req, res, next) => {
+publicNodeRouter.get('/health', async (req, res, next) => {
   try {
     res.send({
       timestamp: Date.now(),

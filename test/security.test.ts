@@ -12,6 +12,7 @@ import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
 import { createMultipartLimits } from '../src/security/uploadLimits.js'
+import { FileNotFoundError } from '../src/utils/fileErrors.js'
 
 describe('CORS origin policy', () => {
   const matches = createOriginMatcher([
@@ -105,6 +106,23 @@ describe('public error mapping', () => {
       body: { error: 'Invalid CID' }
     })
   })
+
+  it('preserves the public timeout response without exposing internal details', () => {
+    assert.deepEqual(getPublicError(new FileNotFoundError('/private/path was not found')), {
+      status: 408,
+      body: { error: 'File request timed out' }
+    })
+  })
+
+  it('maps peer input failures to controlled validation responses', () => {
+    assert.deepEqual(
+      getPublicError(new InvalidRequestError('Invalid peer identifier or multiaddress')),
+      {
+        status: 400,
+        body: { error: 'Invalid peer identifier or multiaddress' }
+      }
+    )
+  })
 })
 
 describe('streaming multipart limits', () => {
@@ -120,8 +138,10 @@ describe('streaming multipart limits', () => {
     app.post('/upload', upload, (req, res) => res.send({ ok: true }))
     app.use(
       (err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        void req
         void _next
-        res.status(400).send({ error: 'Rejected' })
+        const publicError = getPublicError(err)
+        res.status(publicError.status).send(publicError.body)
       }
     )
 
@@ -135,6 +155,13 @@ describe('streaming multipart limits', () => {
   it('accepts the configured maximum and rejects the next file while streaming', async () => {
     assert.equal((await sendFiles(serverUrl, 2)).status, 200)
     assert.equal((await sendFiles(serverUrl, 3)).status, 400)
+  })
+
+  it('rejects text fields with a dedicated public response', async () => {
+    const response = await sendFiles(serverUrl, 1, true)
+
+    assert.equal(response.status, 400)
+    assert.deepEqual(await response.json(), { error: 'Multipart fields are not allowed' })
   })
 })
 
@@ -179,14 +206,20 @@ describe('route access policy', () => {
 
   before(async () => {
     const file = Router().get('/test', (req, res) => res.send({ public: true }))
+    const publicNodeRouter = Router().get('/health', (req, res) => res.send({ public: true }))
     const node = Router()
-      .get('/health', (req, res) => res.send({ public: true }))
       .get('/info', (req, res) => res.send({ admin: true }))
+      .get('/future', (req, res) => res.send({ admin: true }))
     const helia = Router().get('/test', (req, res) => res.send({ admin: true }))
     const libp2p = Router().get('/test', (req, res) => res.send({ admin: true }))
     const debug = Router().get('/test', (req, res) => res.send({ admin: true }))
 
-    mountApiRoutes(app, { file, node, helia, libp2p, debug }, createApiKeyAuth(key), false)
+    mountApiRoutes(
+      app,
+      { file, publicNodeRouter, node, helia, libp2p, debug },
+      createApiKeyAuth(key),
+      false
+    )
 
     const server = await startServer(app)
     serverUrl = server.url
@@ -201,7 +234,12 @@ describe('route access policy', () => {
   })
 
   it('protects node information, Helia, and libp2p routes', async () => {
-    for (const path of ['/api/node/info', '/api/helia/test', '/api/libp2p/test']) {
+    for (const path of [
+      '/api/node/info',
+      '/api/node/future',
+      '/api/helia/test',
+      '/api/libp2p/test'
+    ]) {
       assert.equal((await fetch(`${serverUrl}${path}`)).status, 401)
       assert.equal(
         (await fetch(`${serverUrl}${path}`, { headers: { 'x-api-key': key } })).status,
@@ -222,6 +260,7 @@ describe('route access policy', () => {
       debugApp,
       {
         file: emptyRouter,
+        publicNodeRouter: emptyRouter,
         node: emptyRouter,
         helia: emptyRouter,
         libp2p: emptyRouter,
@@ -290,10 +329,17 @@ async function startServer(app: Express): Promise<{ url: string; close: () => Pr
   }
 }
 
-async function sendFiles(serverUrl: string, count: number): Promise<Response> {
+async function sendFiles(
+  serverUrl: string,
+  count: number,
+  includeTextField = false
+): Promise<Response> {
   const body = new FormData()
   for (let index = 0; index < count; index += 1) {
     body.append('files', new Blob([String(index)]), `${index}.txt`)
+  }
+  if (includeTextField) {
+    body.append('description', 'not accepted')
   }
   return fetch(`${serverUrl}/upload`, { method: 'POST', body })
 }

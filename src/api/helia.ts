@@ -1,10 +1,9 @@
 import { Router } from 'express'
 import { Pin } from 'helia'
-import { CID } from 'multiformats/cid'
 import { helia } from '../helia.js'
 import { pino } from '../utils/logger.js'
 import { pinLimiter, readLimiter } from '../middleware/rateLimiter.js'
-import { InvalidRequestError } from '../security/errors.js'
+import { parseCid } from '../utils/cid.js'
 
 const router = Router()
 
@@ -64,18 +63,8 @@ router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) =>
       providers
     })
   } catch (err) {
-    pino.logger.error(err)
     next(err)
   }
 })
-
-/** Parse a route CID without exposing parser internals to the client. */
-function parseCid(value: string): CID {
-  try {
-    return CID.parse(value)
-  } catch {
-    throw new InvalidRequestError('Invalid CID')
-  }
-}
 
 export default router

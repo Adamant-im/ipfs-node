@@ -8,9 +8,9 @@ type OriginRule = {
 }
 
 /**
- * Compile a list of exact origins and left-most subdomain wildcards.
- * Wildcards use the form `https://*.example.org`; paths, credentials,
- * query strings, and fragments are rejected.
+ * Compile a list of exact origins and any-depth subdomain suffix wildcards.
+ * Wildcards use the form `https://*.example.org`; paths, credentials, query
+ * strings, fragments, and the suffix origin itself are rejected.
  *
  * @param allowedOrigins browser origins accepted by the API
  * @returns a predicate suitable for testing a request Origin value

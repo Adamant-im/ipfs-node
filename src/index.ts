@@ -17,7 +17,15 @@ diskUsageCron.start()
 const PORT = config.serverPort
 const app = express()
 app.disable('x-powered-by')
-app.set('trust proxy', parseTrustProxy(config.trustProxy))
+const trustProxy = parseTrustProxy(config.trustProxy)
+app.set('trust proxy', trustProxy)
+
+if (trustProxy === false) {
+  pino.logger.warn(
+    'trustProxy is false. If requests arrive through a reverse proxy, all clients will share ' +
+      'the proxy IP for rate limiting until exact trusted proxy addresses are configured.'
+  )
+}
 
 app.use(pino)
 

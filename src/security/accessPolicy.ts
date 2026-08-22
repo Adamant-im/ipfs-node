@@ -2,6 +2,7 @@ import type { Application, RequestHandler, Router } from 'express'
 
 export type ApiRouters = {
   file: Router
+  publicNodeRouter: Router
   node: Router
   helia: Router
   libp2p: Router
@@ -25,9 +26,8 @@ export function mountApiRoutes(
 ): void {
   app.use('/api/file', routers.file)
 
-  // Node health remains public while topology-sensitive information is admin-only.
-  app.use('/api/node/info', adminAuth)
-  app.use('/api/node', routers.node)
+  app.use('/api/node', routers.publicNodeRouter)
+  app.use('/api/node', adminAuth, routers.node)
 
   app.use('/api/helia', adminAuth, routers.helia)
   app.use('/api/libp2p', adminAuth, routers.libp2p)
