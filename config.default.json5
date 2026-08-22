@@ -3,6 +3,7 @@
     {
       name: 'ipfs1',
       multiAddr: '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
+      // apiUrl: 'https://ipfs1.example', // Only needed when replication is enabled
     },
     {
       name: 'ipfs2',
@@ -50,5 +51,38 @@
   // Admin routes return 503 while this value is empty.
   adminApiKey: '',
   // The debug API is absent unless explicitly enabled; it still requires the admin key.
-  enableDebugApi: false
+  enableDebugApi: false,
+  // Bounded storage lifecycle. Every option has a documented default, so an
+  // existing configuration file keeps working without this section.
+  storage: {
+    maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
+    maxConcurrentUploads: 4, // Uploads writing into the blockstore at the same time
+    diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
+    // true keeps an upload temporary until POST /api/file/:cid/confirm.
+    // Enabling it is a protocol change: clients must perform that call.
+    confirmationRequired: false,
+    temporaryTtlMs: 86400000, // 24 h. Lifetime of an unconfirmed upload
+    gc: {
+      // Controls the scheduled collector only. POST /api/storage/gc always runs
+      // on demand. Enable this after agreeing on a deletion policy.
+      enabled: false,
+      schedule: '0 */15 * * * *',
+      highWatermarkBytes: 53687091200, // 50 GiB. Collection starts above this blockstore size
+      lowWatermarkBytes: 42949672960 // 40 GiB. Collection reclaims down to this size
+    }
+  },
+  // Replication across the nodes listed in `nodes` that declare an `apiUrl`.
+  // Disabled by default: the node then stores content best effort, locally only.
+  replication: {
+    enabled: false,
+    factor: 2, // Copies that must exist, including this node
+    ackQuorum: 1, // Acknowledgements required before an upload is durable
+    requireQuorumOnUpload: false, // true rejects an upload that cannot reach the quorum
+    requestTimeoutMs: 30000,
+    repairEnabled: true,
+    repairSchedule: '0 */30 * * * *',
+    // Shared by all ADAMANT nodes, sent as x-replication-token.
+    // Generate with: openssl rand -hex 32
+    token: ''
+  }
 }

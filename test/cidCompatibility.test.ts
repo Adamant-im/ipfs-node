@@ -9,12 +9,25 @@ import { FsBlockstore } from 'blockstore-fs'
 import { CID } from 'multiformats/cid'
 import { CID_FIXTURES, README_FIXTURE, deterministicBytes } from './fixtures.js'
 import { UnixfsMulterStorage } from '../src/utils/unixfs-multer.storage.js'
+import { UploadSession } from '../src/storage/uploadSession.js'
 import type { UnixFsMulterFile } from '../src/utils/types.js'
 
 let storeDir: string
 let blockstore: FsBlockstore
 let ifs: UnixFS
 let storage: UnixfsMulterStorage
+let session: UploadSession
+
+/** A session over the bare blockstore; nothing is pinned in this test. */
+function createSession(): UploadSession {
+  return new UploadSession({
+    blockstore,
+    isPinned: async () => false,
+    deleteBlock: (cid) => blockstore.delete(cid),
+    maxRequestSizeBytes: 64 * 1024 * 1024,
+    parseCid: (value) => CID.parse(value)
+  })
+}
 
 /**
  * Push a buffer through the production multer storage engine and return the
@@ -32,6 +45,8 @@ async function uploadThroughStorageEngine(
     stream: Readable.from(content)
   } as unknown as Express.Multer.File
 
+  session = createSession()
+
   return new Promise((resolve, reject) => {
     storage._handleFile({} as never, file, (err, result) => {
       if (err != null) {
@@ -48,7 +63,7 @@ before(async () => {
   blockstore = new FsBlockstore(join(storeDir, 'blockstore'))
   await blockstore.open()
   ifs = unixfs({ blockstore })
-  storage = new UnixfsMulterStorage({ unixfs: ifs })
+  storage = new UnixfsMulterStorage({ getSession: () => session })
 })
 
 after(async () => {

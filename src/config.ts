@@ -5,6 +5,12 @@ import JSON5 from 'json5'
 import { validateSecurityConfig } from './security/config.js'
 import type { RateLimitPolicy } from './security/rateLimit.js'
 import type { TrustProxySetting } from './security/trustProxy.js'
+import {
+  resolveReplicationConfig,
+  resolveStorageConfig,
+  type ReplicationConfig,
+  type StorageConfig
+} from './storage/config.js'
 
 /**
  * Locate the repository root by walking up to the nearest `package.json`.
@@ -40,6 +46,11 @@ export type LogLevel = (typeof LOG_LEVELS)[number]
 export interface ConfigNode {
   name: string
   multiAddr: string
+  /**
+   * Base URL of the node REST API, for example `https://ipfs1.adamant.im`.
+   * Only nodes that take part in replication need one.
+   */
+  apiUrl?: string
 }
 
 export interface Config {
@@ -73,6 +84,10 @@ export interface Config {
   /** Administrative API key. An empty value makes administrative routes fail closed. */
   adminApiKey: string
   enableDebugApi: boolean
+  /** Bounded storage lifecycle; see `src/storage/config.ts`. */
+  storage: StorageConfig
+  /** Cross-node durability policy; see `src/storage/config.ts`. */
+  replication: ReplicationConfig
 }
 
 /**
@@ -124,6 +139,28 @@ function requireStringArray(value: unknown, path: string): string[] {
 }
 
 /**
+ * Validate an HTTP(S) base URL used to reach another node's REST API.
+ *
+ * Only the scheme and syntax are checked; reachability is a runtime concern.
+ */
+function requireHttpUrl(value: unknown, path: string): string {
+  const raw = requireString(value, path)
+
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    fail(path, 'must be an absolute http(s) URL')
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    fail(path, 'must use the http or https scheme')
+  }
+
+  return raw
+}
+
+/**
  * Validate a positive integer.
  *
  * @param min Smallest accepted value; used to reject zero or negative limits
@@ -158,7 +195,11 @@ export function validateConfig(raw: unknown): Config {
     const entry = requireObject(node, `nodes[${index}]`)
     return {
       name: requireString(entry.name, `nodes[${index}].name`),
-      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`),
+      apiUrl:
+        entry.apiUrl === undefined
+          ? undefined
+          : requireHttpUrl(entry.apiUrl, `nodes[${index}].apiUrl`)
     }
   })
 
@@ -185,6 +226,12 @@ export function validateConfig(raw: unknown): Config {
 
   const cors = requireObject(root.cors, 'cors')
 
+  // Owns the storage lifecycle and replication policy. Both sections are
+  // optional: every option falls back to a documented default so that config
+  // files written before this feature keep working.
+  const storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
+  const replication = resolveReplicationConfig(root.replication)
+
   return {
     nodes,
     storeFolder,
@@ -199,7 +246,9 @@ export function validateConfig(raw: unknown): Config {
     trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
     rateLimits: root.rateLimits as Config['rateLimits'],
     adminApiKey: (root.adminApiKey ?? '') as string,
-    enableDebugApi: root.enableDebugApi === true
+    enableDebugApi: root.enableDebugApi === true,
+    storage,
+    replication
   }
 }
 
