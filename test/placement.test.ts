@@ -102,12 +102,34 @@ describe('placeFile', () => {
     assert.deepEqual(fromSelf.holders.sort(), fromPeer.holders.sort())
   })
 
-  it('reports a network too small to place the desired copies', () => {
+  it('puts the file on every node when the network is smaller than the desired count', () => {
+    // Three nodes in total, four copies wanted: all three hold it, and the
+    // fourth copy is not looked for on a node that does not exist
     const placement = place(0, ['peer-a', 'peer-b'])
 
-    assert.equal(placement.networkTooSmall, true)
-    assert.equal(placement.copies, 3)
     assert.equal(placement.desiredCopies, 4)
+    assert.equal(placement.copies, 3)
+    assert.deepEqual(placement.holders.sort(), ['peer-a', 'peer-b', 'self'])
+    assert.equal(placement.selfIsHolder, true)
+    assert.deepEqual(storageTargets(placement, 'self').sort(), ['peer-a', 'peer-b'])
+    assert.equal(placement.networkTooSmall, true)
+    assert.equal(mayDemote(placement), false)
+  })
+
+  it('asks nobody when it is the only node', () => {
+    const placement = place(0, [])
+
+    assert.equal(placement.copies, 1)
+    assert.deepEqual(storageTargets(placement, 'self'), [])
+    assert.equal(mayDemote(placement), false)
+  })
+
+  it('stops growing the holder set once the network is large enough', () => {
+    const placement = place(0, ['peer-a', 'peer-b', 'peer-c', 'peer-d', 'peer-e'])
+
+    assert.equal(placement.copies, 4)
+    assert.equal(placement.holders.length, 4)
+    assert.equal(placement.networkTooSmall, false)
   })
 
   it('never asks itself to store a copy it already has', () => {

@@ -178,9 +178,19 @@ was last read would build a log of user activity, and sharing that log between
 nodes so they could agree on it would spread the leak further. Creation time is
 already implied by the upload, so it reveals nothing new.
 
-When the network is no larger than the desired copy count, every node is
-expected to hold the file: no copy requests are sent, because there is nowhere
-for a copy to go, and nothing is ever handed over.
+When the network is no larger than the desired copy count, every node becomes a
+designated holder, so the file goes to all of them. Asking for four copies on a
+three-node network places three, and the fourth is simply not looked for: the
+count is capped at the nodes that exist rather than retried against a node that
+does not. Nothing is ever handed over in that state either, because there is
+nowhere for a copy to move.
+
+| Nodes | Desired copies | Holders        | Peers asked | Handover                            |
+| ----- | -------------- | -------------- | ----------- | ----------------------------------- |
+| 1     | 4              | 1              | 0           | never                               |
+| 3     | 4              | 3, all of them | 2           | never                               |
+| 4     | 4              | 4, all of them | 3           | never                               |
+| 6     | 4              | 4              | 3 or 4      | allowed for the two outside the set |
 
 ### Handing a copy over
 
@@ -220,6 +230,13 @@ acknowledged, and places the missing copies again.
 Replication needs the peers to be connected over libp2p, because the copy itself
 travels by bitswap. Keep every replication peer in `peerDiscovery.bootstrap` as
 well as in `nodes`.
+
+A copy request made in the first seconds after a node starts can time out: the
+connection is up, but bitswap has not yet learned which peers can serve blocks,
+so the receiving node cannot pull the DAG in time. The upload still succeeds and
+reports the shortfall, and the repair job places the missing copies on its next
+pass. This is worth knowing when reading the logs of a node that has just been
+restarted; it is not worth reacting to.
 
 ### Why not Kubo with IPFS Cluster
 
