@@ -1,33 +1,38 @@
 import { StorageEngine } from 'multer'
 import * as e from 'express'
 import { UnixFS } from '@helia/unixfs'
-import { pino } from './logger.js'
+import { logger } from './logger.js'
 import { UnixFsMulterFile } from './types.js'
 import { sanitizeFilename } from './sanitizeFilename.js'
 
 export interface UnixfsStorageOptions {
   unixfs: UnixFS
-  destination: (req: e.Request, file: Express.Multer.File) => string
-  filename: (req: e.Request, file: Express.Multer.File) => string
 }
 
 export class UnixfsMulterStorage implements StorageEngine {
   constructor(private readonly options: UnixfsStorageOptions) {}
 
+  /**
+   * Import an uploaded file into the blockstore and attach its CID to the
+   * multer file record.
+   *
+   * `addByteStream` is used rather than `addFile`: since `@helia/unixfs` v4,
+   * `addFile` wraps the content in a UnixFS directory and returns the directory
+   * CID, which would change the CIDs this node has always issued. Adding the
+   * raw byte stream reproduces the pre-migration CIDs exactly.
+   *
+   * The filename never reaches the DAG, but it is still sanitized because it is
+   * echoed back in the upload response and written to the log.
+   */
   _handleFile(
     req: e.Request,
     file: Express.Multer.File,
     callback: (error?: Error, info?: Partial<UnixFsMulterFile>) => void
   ): void {
-    const safeFilename = sanitizeFilename(file.originalname)
-    file.originalname = safeFilename
-    const folder = this.options.destination(req, file)
-    const filename = this.options.filename(req, file)
+    file.originalname = sanitizeFilename(file.originalname)
+
     this.options.unixfs
-      .addFile({
-        path: `${folder}/${filename}`,
-        content: file.stream
-      })
+      .addByteStream(file.stream)
       .then((cid) => {
         callback(undefined, { ...file, cid })
       })
@@ -41,7 +46,7 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {
-    pino.logger.info('Remove file requested')
+    logger.info('Remove file requested')
     callback(null)
   }
 }

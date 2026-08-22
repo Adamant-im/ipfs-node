@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { Pin } from 'helia'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 import { pinLimiter, readLimiter } from '../middleware/rateLimiter.js'
 import { parseCid } from '../utils/cid.js'
 
@@ -12,7 +12,7 @@ router.get('/pins', readLimiter, async (req, res, next) => {
     const pins: Pin[] = []
 
     for await (const pin of helia.pins.ls()) {
-      pino.logger.info('PIN LS', pin)
+      logger.info(`Pinned CID: ${pin.cid.toString()}`)
       pins.push(pin)
     }
 
@@ -25,8 +25,9 @@ router.get('/pins', readLimiter, async (req, res, next) => {
 router.post('/pin/:cid', pinLimiter, async (req, res, next) => {
   try {
     const cid = parseCid(req.params.cid)
-    for await (const pin of helia.pins.add(cid)) {
-      pino.logger.info('PINNED', pin)
+    // `pins.add` yields the CID of every block it walks while pinning the DAG
+    for await (const pinnedCid of helia.pins.add(cid)) {
+      logger.info(`Pinned block: ${pinnedCid.toString()}`)
     }
     res.send({ pinned: true, cid: cid.toString() })
   } catch (err) {
@@ -43,24 +44,6 @@ router.get('/pins/isPinned/:cid', readLimiter, async (req, res, next) => {
     res.send({
       cid: cid.toString(),
       isPinned
-    })
-  } catch (err) {
-    next(err)
-  }
-})
-
-router.get('/routing/findProviders/:cid', readLimiter, async (req, res, next) => {
-  try {
-    const cid = parseCid(req.params.cid)
-
-    const providers: string[] = []
-    for await (const provider of helia.routing.findProviders(cid)) {
-      pino.logger.info(`Found provider of CID:${cid.toString()}, PeerId:${provider.id.toString()}`)
-      providers.push(provider.id.toString())
-    }
-
-    res.send({
-      providers
     })
   } catch (err) {
     next(err)

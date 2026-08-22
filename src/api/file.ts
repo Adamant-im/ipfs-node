@@ -3,7 +3,7 @@ import { CID } from 'multiformats/cid'
 import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 import { downloadFile, getFileStats } from '../utils/file.js'
@@ -28,22 +28,22 @@ router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, 
 
   try {
     const files = flatFiles(req.files as UnixFsMulterFile[])
-    pino.logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
+    logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
     const cids: CID[] = []
     for (const file of files) {
-      pino.logger.info(`Adding ${file.originalname} to IPFS`)
+      logger.info(`Adding ${file.originalname} to IPFS`)
 
       const { cid } = file
-      pino.logger.info(`Successfully added file ${cid}`)
+      logger.info(`Successfully added file ${cid}`)
       cids.push(cid)
 
       const isPinned = await helia.pins.isPinned(cid)
       if (isPinned) {
-        pino.logger.info(`File already pinned ${cid}`)
+        logger.info(`File already pinned ${cid}`)
       } else {
         for await (const pinned of helia.pins.add(cid)) {
-          pino.logger.info(`Filed pinned: ${pinned}`)
+          logger.info(`Filed pinned: ${pinned}`)
         }
       }
     }
@@ -66,9 +66,9 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
     sendDownloadStream(
       stream,
       res,
-      { cid: cid.toString(), fileSize: fileStats.fileSize },
+      { cid: cid.toString(), fileSize: fileStats.size },
       next,
-      (error) => pino.logger.error(error)
+      (error) => logger.error(error)
     )
   } catch (error) {
     next(error)

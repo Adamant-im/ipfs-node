@@ -1,0 +1,13 @@
+dist
+dist-test
+node_modules
+package-lock.json
+npm-audit-report.json
+
+# Semgrep rule definitions are formatted for readability of the pattern blocks
+.semgrep
+
+# Scratch worktrees and agent working directories
+.claude
+.ai-ignored
+.ai-tasks

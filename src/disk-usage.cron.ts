@@ -2,7 +2,7 @@ import { blockstorePath, datastorePath } from './store.js'
 import { dirSize, availableStorageSize } from './utils/utils.js'
 import { CronJob } from 'cron'
 import { config } from './config.js'
-import { pino } from './utils/logger.js'
+import { logger } from './utils/logger.js'
 
 const oneMb = 1048576
 
@@ -15,13 +15,13 @@ export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
   if (!started) {
     started = true
     scan()
-      .catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
+      .catch((err) => logger.error(`${err.message}\n${err.stack}`))
       .finally(() => (started = false))
   }
 })
 
 async function scan() {
-  pino.logger.info('[Cron] Running "diskUsage" cronjob.')
+  logger.info('[Cron] Running "diskUsage" cronjob.')
   const start = Date.now()
 
   const blockstoreSize = await dirSize(blockstorePath)
@@ -35,10 +35,10 @@ async function scan() {
   }
 
   availableSizeInMb = Number((await availableStorageSize(blockstorePath)) / BigInt(oneMb))
-  pino.logger.info(`Check folder size took ${Date.now() - start} ms.`)
+  logger.info(`Check folder size took ${Date.now() - start} ms.`)
 }
 
-scan().catch((err) => pino.logger.error(`${err.message}\n${err.stack}`))
+scan().catch((err) => logger.error(`${err.message}\n${err.stack}`))
 
 export function getDiskUsageStats() {
   return {

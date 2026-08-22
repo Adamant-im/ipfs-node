@@ -6,7 +6,7 @@ The application is not a Kubo wrapper. It is a Node.js service with an Express R
 
 ## Requirements
 
-- Node.js 20 or later
+- Node.js 24 LTS. The repository ships an `.nvmrc`, so `nvm use` selects it
 - A TLS-terminating reverse proxy for every public deployment
 - A unique administrative API key for operator endpoints
 
@@ -15,10 +15,16 @@ The application is not a Kubo wrapper. It is a Node.js service with an Express R
 ```bash
 git clone https://github.com/Adamant-im/ipfs-node.git
 cd ipfs-node
+nvm use
 npm ci
 npm run build
 node dist/index.js
 ```
+
+`npm ci` must run install scripts. Helia depends on `@libp2p/webrtc`, whose
+`node-datachannel` native module downloads a prebuilt binary from GitHub
+releases; installing with `--ignore-scripts` produces a tree that fails at
+startup. See [Dependency notes](#dependency-notes).
 
 The process can also be managed with PM2:
 
@@ -29,7 +35,11 @@ pm2 start dist/index.js --name="IPFS node"
 
 ## Configuration
 
-Copy `config.default.json5` to `config.json5` and replace all deployment-specific values. The security-relevant fields are shown below:
+Copy `config.default.json5` to `config.json5` and replace all deployment-specific values.
+
+The config file is selected by the `IPFS_NODE_CONFIG` environment variable, or by the first CLI argument when the variable is not set. Both select `config.<name>.json5`; with neither, `config.json5` is used. `node dist/index.js test1` and `IPFS_NODE_CONFIG=test1 node dist/index.js` are equivalent.
+
+The whole configuration is validated at startup: a missing file, invalid JSON5, or a field with the wrong type aborts the process with a message naming the offending field. The security-relevant fields are shown below:
 
 ```jsonc
 {
@@ -60,6 +70,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 
 ### Configuration migration
 
+- Remove `autoPeeringPeriod`; no scheduled auto-peering exists, and `GET /api/debug/autopeering` performs it on request
 - Replace `cors.origin` or `cors.originRegexps` with `cors.allowedOrigins`
 - Use exact origins such as `https://adm.im` or any-depth subdomain suffix wildcards such as `https://*.adamant.im`
 - Set `adminApiKey` before using any administrative API
@@ -79,7 +90,9 @@ Invalid CORS, proxy, API-key, or rate-limit configuration stops the process inst
 | Disabled by default  | all `/api/debug/*`                                            | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key` |
 | Authenticated user   | None                                                          | The service has no end-user identity or session layer                     |
 
-Administrative coverage includes pin operations, provider queries, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
+Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
+
+`GET /api/helia/routing/findProviders/:cid` no longer exists. Provider lookup requires content routing, and this deployment intentionally runs no DHT — see [Network topology](#network-topology).
 
 ### Public upload decision
 
@@ -111,6 +124,20 @@ Application limiters use in-memory counters per process. The TLS proxy must also
 
 Keeping `trustProxy` disabled behind a proxy makes every client share the proxy's IP identity and therefore the same application rate-limit bucket. The process logs a startup warning for this configuration. Do not enable a broader trust rule merely to suppress the warning; configure only the known proxy addresses or a verified fixed hop count.
 
+## Network topology
+
+The node forms a private mesh with the peers listed in `nodes` and `peerDiscovery.bootstrap`. libp2p is configured explicitly and the Helia defaults are not merged in, so the node runs:
+
+- TCP transport only, with Noise encryption and Yamux stream multiplexing
+- bootstrap peer discovery, restricted to the configured multiaddrs
+- the `identify` and `ping` services only
+
+There is no DHT, no mDNS discovery, no circuit relay, no NAT traversal, and no HTTP gateway routing. Blocks are exchanged with known peers over bitswap, so block requests never leave the configured peer set and no CID is disclosed to a public gateway.
+
+The node is composed from `createHeliaLight`, `withLibp2pLight`, and `withBitswap` rather than `createHelia`, because `createHelia` merges its default libp2p configuration into whatever is passed in. Keeping it would silently add mDNS, the public IPFS bootstrap list, kad-DHT, AutoNAT, AutoTLS, UPnP, circuit relay, and WebRTC/WebSocket transports.
+
+The libp2p private key is stored in the datastore under `/pkcs8/self`, so a node keeps its peer identity across restarts as long as its `storeFolder` is preserved. Upgrading from the previous Helia 4 stack preserves both the peer identity and the existing blockstore contents; no store migration is required.
+
 ### TLS boundary
 
 The Node.js process serves HTTP and does not terminate TLS. Bind it to a private interface or firewall it so clients can reach it only through a correctly configured HTTPS reverse proxy. The proxy must replace untrusted forwarding headers and forward requests to the configured `serverPort`.
@@ -126,9 +153,31 @@ npm run security:audit
 npm run security:semgrep
 ```
 
-The audit fails on every unaccepted high or critical production advisory. One exact advisory, `GHSA-32mq-hpph-xfvr`, is temporarily accepted until [#21](https://github.com/Adamant-im/ipfs-node/issues/21) upgrades Helia: Helia 4 installs the affected Kademlia DHT package, but `src/helia.ts` replaces the default service map and does not instantiate the vulnerable DHT service. The audit script validates the exact package and advisory relationship so unrelated future findings still fail.
+The audit fails on every high or critical production advisory. There are no accepted exceptions: the Helia 4 Kademlia DHT advisory `GHSA-32mq-hpph-xfvr`, previously tolerated until the runtime upgrade, is resolved by the Helia 7 dependency set.
 
 Use `npm run security:audit:raw` to inspect the unfiltered npm result.
+
+## Dependency notes
+
+`helia` depends on `@helia/libp2p`, which depends on `@libp2p/webrtc` even though WebRTC is never configured here. That pulls two things into the runtime tree:
+
+- `node-datachannel`, a native module whose prebuilt binary is downloaded from GitHub releases during `npm install`. An installer that reaches the npm registry but not GitHub releases produces a tree that fails at startup, so `--ignore-scripts` is suitable only for auditing, not for running or testing
+- `react-native-webrtc`, and through it `react-native` and its Metro bundler
+
+`npm run security:audit` scopes the audit with `--omit=dev --omit=peer` and reports no findings. Running a bare `npm audit --omit=dev` additionally surfaces advisories against Metro and its `image-size` dependency; Metro is a React Native build tool that this service never loads. Re-check these when Helia is upgraded.
+
+## Development
+
+```bash
+npm run dev
+npm run lint
+npm run format
+npm test
+```
+
+`npm test` compiles `src` and `test` to `dist-test` and then runs the unit and integration suites with Node's built-in test runner against `config.test.json5`, which has no bootstrap peers and listens on loopback with an OS-assigned port.
+
+The unit suites cover the HTTP security boundary, configuration validation, filename sanitization, disk measurement, and the file CIDs issued before the Helia migration. The integration suite starts two isolated nodes with temporary stores, transfers a file between them over bitswap, and verifies that a peer identity survives a restart.
 
 ## API usage
 
@@ -197,10 +246,11 @@ curl --fail-with-body \
 ## Validation
 
 ```bash
-npm ci --ignore-scripts
+npm ci
 npm run build
-npm test
 npm run lint
+npm run format
+npm test
 npm run security:audit
 npm run security:semgrep
 git diff --check

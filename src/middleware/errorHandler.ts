@@ -1,6 +1,6 @@
 import type { ErrorRequestHandler, RequestHandler } from 'express'
 import { getPublicError } from '../security/errors.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 
 /** Return a generic response for routes outside the documented API surface. */
 export const notFoundHandler: RequestHandler = (req, res): void => {
@@ -16,7 +16,7 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, next): void => 
     return
   }
 
-  pino.logger.error(err)
+  logger.error(err)
   const publicError = getPublicError(err)
   res.status(publicError.status).send(publicError.body)
 }

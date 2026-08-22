@@ -2,11 +2,11 @@
   "compilerOptions": {
     "allowJs": false,
     "checkJs": false,
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2024", "DOM"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "sourceMap": true,
-    "target": "ES2022",
+    "target": "ES2024",
     "strict": true,
     "noImplicitAny": true,
     "useUnknownInCatchVariables": false,

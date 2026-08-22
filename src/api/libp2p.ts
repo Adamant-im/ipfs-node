@@ -1,22 +1,42 @@
-import { PeerId } from '@libp2p/interface'
+import { Connection, PeerId } from '@libp2p/interface'
 import { peerIdFromString } from '@libp2p/peer-id'
-import type { PingService } from '@libp2p/ping'
 import { multiaddr, Multiaddr } from '@multiformats/multiaddr'
 import { type NextFunction, Request, Response, Router } from 'express'
 import { PeerIdDto } from '../dto/peer-id.dto.js'
 import { helia } from '../helia.js'
-import { pino } from '../utils/logger.js'
+import { logger } from '../utils/logger.js'
 import { InvalidRequestError } from '../security/errors.js'
 
 const router = Router()
+
+/**
+ * Reduce a libp2p connection to a JSON-serialisable summary.
+ *
+ * libp2p `Connection` objects hold streams, loggers and multiaddr instances and
+ * cannot be passed to `res.send()` directly — serialising one throws
+ * "toJSON not set".
+ */
+function serializeConnection(connection: Connection) {
+  return {
+    id: connection.id,
+    remotePeer: connection.remotePeer.toString(),
+    remoteAddr: connection.remoteAddr.toString(),
+    direction: connection.direction,
+    status: connection.status,
+    multiplexer: connection.multiplexer,
+    encryption: connection.encryption,
+    streams: connection.streams.length,
+    timeline: connection.timeline
+  }
+}
 
 router.get(
   '/services/ping',
   async (req: Request<never, never, never, PeerIdDto>, res: Response, next: NextFunction) => {
     try {
       const peerId = peerIdFromString(req.query.peerId || '')
-      const pingService = helia.libp2p.services.ping as PingService
-      const pong = await pingService.ping(peerId)
+      // Round-trip time in milliseconds; the `ping` service is registered in `createIpfsNode`
+      const pong = await helia.libp2p.services.ping.ping(peerId)
 
       res.send({
         pong
@@ -104,9 +124,9 @@ router.get(
     }
 
     if (multiAddr) {
-      pino.logger.info(`Peering by multiAddress: ${multiAddr}`)
+      logger.info(`Peering by multiAddress: ${multiAddr}`)
     } else if (peerId) {
-      pino.logger.info(`Peering by PeerID: ${peerId}`)
+      logger.info(`Peering by PeerID: ${peerId}`)
     }
 
     const peer = multiAddr || peerId
@@ -117,7 +137,7 @@ router.get(
 
     try {
       const connection = await helia.libp2p.dial(peer)
-      res.send({ success: true, connection })
+      res.send({ success: true, connection: serializeConnection(connection) })
     } catch (err) {
       next(err)
     }
@@ -133,7 +153,7 @@ router.get(
 
       res.send({
         length: connections.length,
-        connections
+        connections: connections.map(serializeConnection)
       })
     } catch (err) {
       next(err)

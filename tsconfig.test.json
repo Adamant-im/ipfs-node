@@ -4,5 +4,5 @@
     "outDir": "./dist-test",
     "rootDir": "."
   },
-  "include": ["src/security/**/*.ts", "src/utils/sanitizeFilename.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

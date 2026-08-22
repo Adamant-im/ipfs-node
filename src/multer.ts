@@ -5,10 +5,6 @@ import { UnixfsMulterStorage } from './utils/unixfs-multer.storage.js'
 import { createMultipartLimits } from './security/uploadLimits.js'
 
 export const multerStorage = multer({
-  storage: new UnixfsMulterStorage({
-    unixfs: ifs,
-    destination: () => '/',
-    filename: (_req, file) => file.originalname
-  }),
+  storage: new UnixfsMulterStorage({ unixfs: ifs }),
   limits: createMultipartLimits(config.uploadLimitSizeBytes, config.maxFileCount)
 })
