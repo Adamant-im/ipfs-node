@@ -4,14 +4,38 @@ import type { PeerId } from '@libp2p/interface'
 import type { IpfsNode } from '../ipfs-node.js'
 
 /**
- * Protocol ADAMANT nodes use to place copies of a file.
+ * Version of the replication wire format.
+ *
+ * Deliberately not the package version. It describes what two nodes have to
+ * agree on to talk to each other, and that changes far less often than the
+ * software does: taking it from `package.json` would break interoperability on
+ * every release, for no reason.
+ *
+ * Raise it when the wire format changes in a way an older node cannot read —
+ * a new required field, a different framing, or an operation whose meaning
+ * changed. Adding an operation an older node simply never sends does not
+ * require it.
+ */
+export const REPLICATION_PROTOCOL_VERSION = '1.0.0'
+
+/**
+ * Protocol nodes use to place copies of a file.
  *
  * It runs over libp2p rather than over the REST API on purpose. The libp2p
  * handshake already proves the remote peer id cryptographically, so no shared
  * secret has to be distributed, no second port has to be exposed, and no peer
  * has to publish an HTTP address for the others to reach it.
  */
-export const REPLICATION_PROTOCOL = '/adamant/replication/1.0.0'
+export const REPLICATION_PROTOCOL = `/adamant/replication/${REPLICATION_PROTOCOL_VERSION}`
+
+/**
+ * Versions this node speaks, newest first.
+ *
+ * libp2p negotiates the first entry both ends support, so keeping an older
+ * version in this list is what lets a network be upgraded one node at a time.
+ * Until there is a second entry, an upgrade has to be applied everywhere.
+ */
+export const SUPPORTED_REPLICATION_PROTOCOLS = [REPLICATION_PROTOCOL]
 
 /** Requests are two short fields; anything larger is a protocol violation. */
 const MAX_MESSAGE_BYTES = 4096
@@ -212,7 +236,7 @@ export async function registerReplicationProtocol(
   node: IpfsNode,
   handlers: ReplicationHandlers
 ): Promise<void> {
-  await node.libp2p.handle(REPLICATION_PROTOCOL, (stream, connection) => {
+  await node.libp2p.handle(SUPPORTED_REPLICATION_PROTOCOLS, (stream, connection) => {
     respond(stream, connection, handlers)
       .then(async () => stream.close())
       .catch((err: Error) => {
@@ -234,7 +258,7 @@ async function call(
   options: ReplicationCallOptions
 ): Promise<ReplicationResponse> {
   const signal = AbortSignal.timeout(options.timeoutMs)
-  const stream = await node.libp2p.dialProtocol(peer, REPLICATION_PROTOCOL, { signal })
+  const stream = await node.libp2p.dialProtocol(peer, SUPPORTED_REPLICATION_PROTOCOLS, { signal })
 
   const abortStream = (): void => stream.abort(new Error('Replication request timed out'))
   signal.addEventListener('abort', abortStream, { once: true })

@@ -1,5 +1,6 @@
 import { CronJob } from 'cron'
 import { config } from './config.js'
+import { REPLICATION_PROTOCOL } from './storage/replicationProtocol.js'
 import { repairReplication, type RepairReport } from './storage/service.js'
 import { logger } from './utils/logger.js'
 
@@ -51,6 +52,9 @@ export const replicationRepairCron = new CronJob(config.replication.repairSchedu
 export function getReplicationState() {
   return {
     enabled: config.replication.enabled,
+    // Shown so a mixed deployment is visible: nodes on different protocol
+    // versions cannot place copies on each other.
+    protocol: REPLICATION_PROTOCOL,
     placement: config.replication.placement,
     ackQuorum: config.replication.ackQuorum,
     requireQuorumOnUpload: config.replication.requireQuorumOnUpload,

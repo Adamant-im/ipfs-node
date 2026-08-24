@@ -318,6 +318,30 @@ A copy request that a peer cannot answer in time is reported as a shortfall
 rather than failing the upload, and the repair job places the missing copies on
 its next pass.
 
+### Protocol version
+
+Copies are placed over the libp2p protocol `/adamant/replication/1.0.0`. The
+version in that identifier belongs to the wire format, not to the release: it
+says what two nodes must agree on to talk to each other, and that changes far
+less often than the software. Taking it from `package.json` would break
+interoperability on every release for no reason.
+
+Raise it when an older node can no longer read what a newer one sends — a new
+required field, different framing, or an operation whose meaning changed. Adding
+an operation that older nodes never send does not require it.
+
+libp2p negotiates the newest version both ends offer, so listing an older one
+alongside the current one is what allows a network to be upgraded one node at a
+time. Only the current version is offered today, which means an upgrade has to
+be applied everywhere: nodes on different versions cannot place copies on each
+other. `GET /api/storage/metrics` reports the protocol a node speaks, so a mixed
+deployment is visible rather than silent.
+
+Messages are framed with a four byte length. The obvious alternative, treating
+the end of the stream as the delimiter, requires the half-close to arrive
+promptly, and when it does not both ends wait for each other until the call
+times out.
+
 ### Why not Kubo with IPFS Cluster
 
 Helia has no native pin-orchestration protocol. Cross-node pinning has to come

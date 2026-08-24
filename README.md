@@ -312,7 +312,7 @@ curl --fail-with-body https://ipfs.example.org/api/storage/metrics
 curl --fail-with-body https://ipfs.example.org/api/storage/policy
 ```
 
-`metrics` reports pinned, reclaimable, available, and reserved bytes together with the lifecycle counters. `policy` reports the limits and the durability mode a client should expect before uploading.
+`metrics` reports pinned, reclaimable, available, and reserved bytes together with the lifecycle counters, and the libp2p replication protocol this node speaks — nodes on different protocol versions cannot place copies on each other, so a mixed deployment is visible here. `policy` reports the limits and the durability mode a client should expect before uploading.
 
 ### Download a file
 
