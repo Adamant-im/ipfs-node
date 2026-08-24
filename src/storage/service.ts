@@ -2,7 +2,9 @@ import { CID } from 'multiformats/cid'
 import { config } from '../config.js'
 import { helia, ifs } from '../helia.js'
 import { logger } from '../utils/logger.js'
+import { availableStorageSize } from '../utils/utils.js'
 import { getNodesList } from '../utils/utils.js'
+import { blockstorePath } from '../store.js'
 import { mayDemote, placeFile, storageTargets, type Placement } from './placement.js'
 import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
 import type { FileRecord } from './registry.js'
@@ -13,6 +15,7 @@ import {
   type ReplicationReport
 } from './replication.js'
 import {
+  probeAccept,
   probeHave,
   requestStore,
   type ReplicationHandlers,
@@ -72,6 +75,18 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
     peers: getReplicationPeers(),
     config: config.replication,
     store: async (peer) => {
+      // Ask before sending. A peer that already holds the file needs nothing,
+      // and a peer with no room should cost one short message rather than a
+      // whole transfer it will refuse. Repair runs on a schedule, so without
+      // this a peer that cannot take a file is re-sent it forever.
+      if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+        return
+      }
+
+      if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+        throw new Error('peer has no room for another copy')
+      }
+
       await requestStore(helia, peer.multiAddr, cid, callOptions())
     }
   })
@@ -188,7 +203,23 @@ export function createReplicationHandlers(): ReplicationHandlers {
     isAuthorized: (peerId) => getReplicationPeers().some((peer) => peer.peerId === peerId),
     store: async (cid) => (await acceptReplica(cid)).storedBytes,
     have: async (cid) => isDirectlyPinned(helia, CID.parse(cid)),
+    willAccept: hasRoomForAnotherCopy,
     onError: (message) => logger.warn(message)
+  }
+}
+
+/**
+ * Whether this node can take another copy without eating into the reserve.
+ *
+ * The same reserve that refuses uploads refuses copies from peers, so a full
+ * node stops being chosen instead of accepting content it cannot keep.
+ */
+export async function hasRoomForAnotherCopy(): Promise<boolean> {
+  try {
+    const available = Number(await availableStorageSize(blockstorePath))
+    return available > config.storage.diskReserveBytes
+  } catch {
+    return false
   }
 }
 
@@ -197,6 +228,83 @@ export interface RepairReport {
   underReplicated: number
   repaired: string[]
   stillMissing: string[]
+  /** Files nobody was found holding, whose local blocks were pinned again. */
+  rescued: string[]
+}
+
+/**
+ * Files checked per pass for having lost every copy.
+ *
+ * Bounded so the probes stay cheap on a node with many records. Candidates
+ * rotate, so everything is covered across a few passes.
+ */
+const RESCUE_BATCH = 50
+
+/**
+ * Take a released file back when no other node is holding it.
+ *
+ * Repair only looks at files a node holds, so a file handed over to peers that
+ * later left is nobody's responsibility and disappears silently while every
+ * registry still calls it confirmed.
+ *
+ * The check is cheap because it starts with a local lookup: a node can only
+ * rescue a file whose blocks it still has, and blocks are kept until space runs
+ * short, so shortly after a handover they usually are. Anything already
+ * reclaimed is skipped without touching the network.
+ */
+async function rescueOrphanedFiles(
+  records: FileRecord[],
+  peers: ReplicationPeer[]
+): Promise<string[]> {
+  const self = selfPeerId()
+  const rescued: string[] = []
+  const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
+
+  const candidates = records
+    .filter((record) => record.state === 'confirmed' && !record.heldLocally)
+    .slice(0, RESCUE_BATCH)
+
+  for (const record of candidates) {
+    const cid = CID.parse(record.cid)
+
+    if (!(await helia.blockstore.has(cid))) {
+      continue
+    }
+
+    const holders = storageTargets(placementFor(record.cid, record.createdAt, peers), self)
+      .map((peerId) => byPeerId.get(peerId))
+      .filter((peer): peer is ReplicationPeer => peer !== undefined)
+
+    const answers = await Promise.all(
+      holders.map(async (peer) => {
+        try {
+          return await probeHave(helia, peer.multiAddr, record.cid, callOptions())
+        } catch {
+          return false
+        }
+      })
+    )
+
+    if (answers.some(Boolean)) {
+      continue
+    }
+
+    try {
+      // Only worth pinning if the whole DAG is still here; an offline stat says
+      // so without going near the network.
+      await ifs.stat(cid, { extended: true, offline: true })
+      await pinFile(helia, cid)
+      await fileRegistry.setPinned(record.cid, true)
+      await fileRegistry.save({ ...record, pinned: true, heldLocally: true })
+      rescued.push(record.cid)
+      logger.warn(`No node was holding ${record.cid}; kept the local copy instead`)
+    } catch {
+      // The blocks are only partly here, so there is nothing to rescue
+      continue
+    }
+  }
+
+  return rescued
 }
 
 /**
@@ -207,7 +315,13 @@ export interface RepairReport {
  * responsibility.
  */
 export async function repairReplication(): Promise<RepairReport> {
-  const report: RepairReport = { checked: 0, underReplicated: 0, repaired: [], stillMissing: [] }
+  const report: RepairReport = {
+    checked: 0,
+    underReplicated: 0,
+    repaired: [],
+    stillMissing: [],
+    rescued: []
+  }
 
   if (!config.replication.enabled) {
     return report
@@ -215,9 +329,8 @@ export async function repairReplication(): Promise<RepairReport> {
 
   const peers = getReplicationPeers()
   const self = selfPeerId()
-  const candidates = (await fileRegistry.all()).filter(
-    (record) => record.state === 'confirmed' && record.heldLocally
-  )
+  const records = await fileRegistry.all()
+  const candidates = records.filter((record) => record.state === 'confirmed' && record.heldLocally)
 
   report.checked = candidates.length
 
@@ -237,6 +350,8 @@ export async function repairReplication(): Promise<RepairReport> {
       report.repaired.push(record.cid)
     }
   }
+
+  report.rescued = await rescueOrphanedFiles(records, peers)
 
   return report
 }

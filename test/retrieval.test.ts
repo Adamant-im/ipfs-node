@@ -36,8 +36,18 @@ describe('retrievalTargets', () => {
   it('asks a handful of nodes rather than the whole network', () => {
     const targets = retrievalTargets(CID, config, SELF, PEERS)
 
-    assert.ok(targets.length <= 4, `asked ${targets.length} of ${PEERS.length}`)
+    assert.ok(targets.length <= 6, `asked ${targets.length} of ${PEERS.length}`)
     assert.ok(targets.length > 0)
+  })
+
+  it('reaches a little past the designated holders, to cover membership drift', () => {
+    const exact = retrievalTargets(CID, config, SELF, PEERS, 0)
+    const widened = retrievalTargets(CID, config, SELF, PEERS)
+
+    assert.ok(widened.length > exact.length)
+    for (const target of exact) {
+      assert.ok(widened.some((item) => item.peerId === target.peerId))
+    }
   })
 
   it('covers the holders of a file of any age', () => {

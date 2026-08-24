@@ -96,7 +96,9 @@ describe('retrieval from an unconnected holder', () => {
     const opened = await connectToHolders(reader.node, [target])
     assert.equal(opened, 1)
 
-    assert.equal(await canRead(readerFs, cid, 10000), true)
+    // Generous: the point is that connecting makes the read possible at all,
+    // not how quickly it finishes on a loaded machine running other suites
+    assert.equal(await canRead(readerFs, cid, 30000), true)
   })
 
   it('opens nothing when the holder is already connected', async () => {

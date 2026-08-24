@@ -21,10 +21,13 @@ export type ReplicationRequest =
   | { op: 'store'; cid: string }
   /** Report whether this node deliberately holds `cid`. */
   | { op: 'have'; cid: string }
+  /** Report whether this node has room to take another copy. */
+  | { op: 'accept'; cid: string }
 
 export type ReplicationResponse =
   | { ok: true; op: 'store'; storedBytes: number }
   | { ok: true; op: 'have'; has: boolean }
+  | { ok: true; op: 'accept'; willAccept: boolean }
   | { ok: false; error: string }
 
 /**
@@ -45,6 +48,13 @@ export interface ReplicationHandlers {
   store(cid: string): Promise<number>
   /** Whether this node holds `cid` durably, not merely cached. */
   have(cid: string): Promise<boolean>
+  /**
+   * Whether this node has room for another copy.
+   *
+   * Asked before a transfer starts, so a node that is full costs one short
+   * message instead of a whole file that it cannot keep.
+   */
+  willAccept(): Promise<boolean>
   onError?(message: string): void
 }
 
@@ -96,7 +106,7 @@ function parseRequest(value: unknown): ReplicationRequest {
     throw new Error('Replication request is missing a CID')
   }
 
-  if (message.op !== 'store' && message.op !== 'have') {
+  if (message.op !== 'store' && message.op !== 'have' && message.op !== 'accept') {
     throw new Error('Unknown replication operation')
   }
 
@@ -119,6 +129,15 @@ async function respond(
 
   if (request.op === 'have') {
     await sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
+    return
+  }
+
+  if (request.op === 'accept') {
+    await sendMessage(stream, {
+      ok: true,
+      op: 'accept',
+      willAccept: await handlers.willAccept()
+    })
     return
   }
 
@@ -185,6 +204,22 @@ export async function requestStore(
 ): Promise<number> {
   const response = await call(node, peer, { op: 'store', cid }, options)
   return response.ok && response.op === 'store' ? response.storedBytes : 0
+}
+
+/**
+ * Ask a peer whether it has room for another copy.
+ *
+ * A peer that answers no is skipped, which is the difference between one short
+ * message and a whole file transferred to a node that will refuse it.
+ */
+export async function probeAccept(
+  node: IpfsNode,
+  peer: PeerId | Multiaddr,
+  cid: string,
+  options: ReplicationCallOptions
+): Promise<boolean> {
+  const response = await call(node, peer, { op: 'accept', cid }, options)
+  return response.ok && response.op === 'accept' ? response.willAccept : false
 }
 
 /** Ask a peer whether it still holds a file durably. */

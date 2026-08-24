@@ -12,6 +12,19 @@ import type { ReplicationPeer } from './replication.js'
 export const HOLDER_DIAL_TIMEOUT_MS = 5000
 
 /**
+ * Nodes contacted beyond a file's designated holders.
+ *
+ * The holders are computed from the current membership, and a file stored
+ * before a node joined or left can sit just outside that set. Widening the
+ * ranking by a couple of places covers that drift.
+ *
+ * The widening is applied in one pass rather than after a failed attempt: a
+ * dial to an already-connected peer is skipped, so the extra names usually cost
+ * nothing, and a second round would add its own wait to every miss.
+ */
+export const RETRIEVAL_WIDENING = 2
+
+/**
  * The nodes worth asking for a CID this node does not hold.
  *
  * The holders of a file are a prefix of its rendezvous ranking, and the ranking
@@ -20,6 +33,10 @@ export const HOLDER_DIAL_TIMEOUT_MS = 5000
  * age, without knowing when it was uploaded. That matters here, because a node
  * asked for a file it never stored has no record of it.
  *
+ * A few places beyond the widest tier are included as well, so a file that sits
+ * just outside the current holder set is still found; see
+ * {@link RETRIEVAL_WIDENING}.
+ *
  * With replication disabled there are no designated holders, so every known
  * node is a candidate.
  */
@@ -27,7 +44,8 @@ export function retrievalTargets(
   cid: string,
   config: ReplicationConfig,
   selfPeerId: string,
-  peers: ReplicationPeer[]
+  peers: ReplicationPeer[],
+  widening: number = RETRIEVAL_WIDENING
 ): ReplicationPeer[] {
   if (!config.enabled) {
     return peers
@@ -36,7 +54,7 @@ export function retrievalTargets(
   const widest = Math.max(...config.placement.map((tier) => tier.copies))
   const ranked = rankHolders(cid, [selfPeerId, ...peers.map((peer) => peer.peerId)]).slice(
     0,
-    widest
+    widest + widening
   )
   const wanted = new Set(ranked)
 

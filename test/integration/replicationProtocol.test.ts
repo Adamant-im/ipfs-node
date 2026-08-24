@@ -10,6 +10,7 @@ import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { isDirectlyPinned, pinFile } from '../../src/storage/pinning.js'
 import {
+  probeAccept,
   probeHave,
   registerReplicationProtocol,
   requestStore,
@@ -53,6 +54,7 @@ let senderFs: UnixFS
 let holderFs: UnixFS
 let authorized: Set<string>
 let refusals: string[]
+let hasRoom = true
 
 before(async () => {
   sender = await startNode()
@@ -71,6 +73,7 @@ before(async () => {
       return Number(stats.deduplicatedDagSize)
     },
     have: async (cid) => isDirectlyPinned(holder.node, CID.parse(cid)),
+    willAccept: async () => hasRoom,
     onError: (message) => refusals.push(message)
   }
 
@@ -126,7 +129,23 @@ describe('replication over libp2p', () => {
     assert.equal(await probeHave(sender.node, peer, absent.toString(), CALL), false)
   })
 
-  it('refuses a peer that is not an ADAMANT node', async () => {
+  it('says whether it has room before anything is transferred', async () => {
+    const cid = await senderFs.addBytes(deterministicBytes(1024, 'capacity'))
+    const peer = holder.node.libp2p.getMultiaddrs()[0]
+
+    assert.equal(await probeAccept(sender.node, peer, cid.toString(), CALL), true)
+
+    hasRoom = false
+    try {
+      assert.equal(await probeAccept(sender.node, peer, cid.toString(), CALL), false)
+      // The question is answered without the file moving anywhere
+      assert.equal(await isDirectlyPinned(holder.node, cid), false)
+    } finally {
+      hasRoom = true
+    }
+  })
+
+  it('refuses a peer that is not a known node', async () => {
     const cid = await senderFs.addBytes(deterministicBytes(1024, 'unauthorized'))
     const peer = holder.node.libp2p.getMultiaddrs()[0]
 
