@@ -23,6 +23,7 @@ import {
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { fileRegistry } from './state.js'
+import { nextSweepBatch } from './sweep.js'
 
 const callOptions = (): ReplicationCallOptions => ({
   timeoutMs: config.replication.requestTimeoutMs
@@ -233,14 +234,6 @@ export interface RepairReport {
 }
 
 /**
- * Files checked per pass for having lost every copy.
- *
- * Bounded so the probes stay cheap on a node with many records. Candidates
- * rotate, so everything is covered across a few passes.
- */
-const RESCUE_BATCH = 50
-
-/**
  * Take a released file back when no other node is holding it.
  *
  * Repair only looks at files a node holds, so a file handed over to peers that
@@ -260,9 +253,10 @@ async function rescueOrphanedFiles(
   const rescued: string[] = []
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
-  const candidates = records
-    .filter((record) => record.state === 'confirmed' && !record.heldLocally)
-    .slice(0, RESCUE_BATCH)
+  const candidates = nextSweepBatch(
+    'rescue',
+    records.filter((record) => record.state === 'confirmed' && !record.heldLocally)
+  )
 
   for (const record of candidates) {
     const cid = CID.parse(record.cid)
@@ -330,7 +324,10 @@ export async function repairReplication(): Promise<RepairReport> {
   const peers = getReplicationPeers()
   const self = selfPeerId()
   const records = await fileRegistry.all()
-  const candidates = records.filter((record) => record.state === 'confirmed' && record.heldLocally)
+  const candidates = nextSweepBatch(
+    'repair',
+    records.filter((record) => record.state === 'confirmed' && record.heldLocally)
+  )
 
   report.checked = candidates.length
 
@@ -388,8 +385,11 @@ export async function demoteReleasableCopies(): Promise<DemotionReport> {
   const self = selfPeerId()
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
-  const candidates = (await fileRegistry.all()).filter(
-    (record) => record.state === 'confirmed' && record.heldLocally
+  const candidates = nextSweepBatch(
+    'demote',
+    (await fileRegistry.all()).filter(
+      (record) => record.state === 'confirmed' && record.heldLocally
+    )
   )
 
   report.checked = candidates.length
