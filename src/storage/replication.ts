@@ -9,9 +9,19 @@ export interface ReplicationPeer {
   multiAddr: Multiaddr
 }
 
+/**
+ * What a peer did with a copy.
+ *
+ * `stored` means it pinned the file and is responsible for it. `cached` means
+ * it holds the blocks and can serve them, but promises nothing: the copy sits
+ * in the same tier as read cache and goes when the peer needs the space.
+ */
+export type PlacementOutcome = 'stored' | 'cached'
+
 export interface ReplicationAck {
   node: string
   ok: boolean
+  outcome?: PlacementOutcome
   error?: string
 }
 
@@ -29,8 +39,15 @@ export interface ReplicationReport {
   required: number
   /** Copies confirmed right now, including the one on this node. */
   acknowledged: number
-  /** Peer nodes that acknowledged holding a copy. */
+  /** Peer nodes that took responsibility for a copy. */
   replicas: string[]
+  /**
+   * Peer nodes holding an unpinned copy.
+   *
+   * They keep the file readable without promising to keep it, which is what a
+   * node gets when its peers do not know it yet.
+   */
+  cached: string[]
   satisfied: boolean
   /**
    * True when the network is no larger than the desired copy count, so every
@@ -47,8 +64,8 @@ export interface ReplicateOptions {
   selfPeerId: string
   peers: ReplicationPeer[]
   config: ReplicationConfig
-  /** Asks one peer to store and pin the file. */
-  store: (peer: ReplicationPeer, cid: string) => Promise<void>
+  /** Asks one peer to take a copy, and reports what it agreed to. */
+  store: (peer: ReplicationPeer, cid: string) => Promise<PlacementOutcome>
 }
 
 /**
@@ -84,6 +101,7 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
       required: 1,
       acknowledged: 1,
       replicas: [],
+      cached: [],
       satisfied: true,
       networkTooSmall: true,
       attempts: []
@@ -104,15 +122,22 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
   const attempts = await Promise.all(
     targets.map(async (peer): Promise<ReplicationAck> => {
       try {
-        await options.store(peer, cid)
-        return { node: peer.name, ok: true }
+        return { node: peer.name, ok: true, outcome: await options.store(peer, cid) }
       } catch (err) {
         return { node: peer.name, ok: false, error: (err as Error).message }
       }
     })
   )
 
-  const replicas = attempts.filter((attempt) => attempt.ok).map((attempt) => attempt.node)
+  // Only a pinned copy counts towards durability; a cached one can vanish the
+  // moment its peer needs the space.
+  const replicas = attempts
+    .filter((attempt) => attempt.outcome === 'stored')
+    .map((attempt) => attempt.node)
+  const cached = attempts
+    .filter((attempt) => attempt.outcome === 'cached')
+    .map((attempt) => attempt.node)
+
   // The local copy counts: it is pinned before any peer is asked.
   const acknowledged = replicas.length + 1
   const required = requiredAcks(config, placement)
@@ -124,6 +149,7 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
     required,
     acknowledged,
     replicas,
+    cached,
     satisfied: acknowledged >= required,
     networkTooSmall: placement.networkTooSmall,
     attempts

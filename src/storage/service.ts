@@ -11,12 +11,14 @@ import type { FileRecord } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
+  type PlacementOutcome,
   type ReplicationPeer,
   type ReplicationReport
 } from './replication.js'
 import {
   probeAccept,
   probeHave,
+  requestCache,
   requestStore,
   type ReplicationHandlers,
   type ReplicationCallOptions
@@ -75,21 +77,7 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
     selfPeerId: selfPeerId(),
     peers: getReplicationPeers(),
     config: config.replication,
-    store: async (peer) => {
-      // Ask before sending. A peer that already holds the file needs nothing,
-      // and a peer with no room should cost one short message rather than a
-      // whole transfer it will refuse. Repair runs on a schedule, so without
-      // this a peer that cannot take a file is re-sent it forever.
-      if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-        return
-      }
-
-      if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
-        throw new Error('peer has no room for another copy')
-      }
-
-      await requestStore(helia, peer.multiAddr, cid, callOptions())
-    }
+    store: (peer) => placeCopy(peer, cid)
   })
 
   if (report.mode === 'quorum') {
@@ -117,6 +105,42 @@ export async function prepareFileRetrieval(cid: CID): Promise<void> {
   await prepareRetrieval(helia, cid, () =>
     retrievalTargets(cid.toString(), config.replication, selfPeerId(), getReplicationPeers())
   )
+}
+
+/**
+ * Ask one peer to take a copy, and report what it agreed to.
+ *
+ * A peer that already holds the file needs nothing, and a peer with no room is
+ * skipped after one short message rather than after a transfer it will refuse.
+ * Repair runs on a schedule, so without those questions a peer that cannot take
+ * a file is re-sent it forever.
+ *
+ * A peer that does not know this node refuses to become responsible for the
+ * file, which is what happens to a node nobody has configured yet. Its content
+ * would otherwise exist in one copy and disappear with it. So the file is
+ * offered as an unpinned copy instead: the peer can serve it from then on, and
+ * nothing is counted as durable that is not.
+ */
+async function placeCopy(peer: ReplicationPeer, cid: string): Promise<PlacementOutcome> {
+  try {
+    if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+      return 'stored'
+    }
+
+    if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+      throw new Error('peer has no room for another copy')
+    }
+
+    await requestStore(helia, peer.multiAddr, cid, callOptions())
+    return 'stored'
+  } catch (err) {
+    if (!(err as Error).message.includes('Not authorized')) {
+      throw err
+    }
+
+    await requestCache(helia, peer.multiAddr, cid, callOptions())
+    return 'cached'
+  }
 }
 
 /**
@@ -205,6 +229,7 @@ export function createReplicationHandlers(): ReplicationHandlers {
     store: async (cid) => (await acceptReplica(cid)).storedBytes,
     have: async (cid) => isDirectlyPinned(helia, CID.parse(cid)),
     willAccept: hasRoomForAnotherCopy,
+    cacheCopy: cacheFileLocally,
     onError: (message) => logger.warn(message)
   }
 }
@@ -222,6 +247,26 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Pull a file into the blockstore without pinning or registering it.
+ *
+ * Draining the content is what fetches every block of the DAG, and it leaves
+ * them exactly where a read would: unpinned, reclaimed when space is short. The
+ * node can serve the file from now on without promising to keep it.
+ *
+ * @returns Bytes pulled
+ */
+export async function cacheFileLocally(cid: string): Promise<number> {
+  const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
+  let bytes = 0
+
+  for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
+    bytes += chunk.byteLength
+  }
+
+  return bytes
 }
 
 export interface RepairReport {

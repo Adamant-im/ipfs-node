@@ -71,6 +71,7 @@ describe('replicate', () => {
       config: baseConfig,
       store: async (target) => {
         asked.push(target.name)
+        return 'stored'
       }
     })
 
@@ -92,6 +93,7 @@ describe('replicate', () => {
       config: baseConfig,
       store: async (target) => {
         askedFresh.push(target.name)
+        return 'stored'
       }
     })
     await replicate({
@@ -102,6 +104,7 @@ describe('replicate', () => {
       config: baseConfig,
       store: async (target) => {
         askedOld.push(target.name)
+        return 'stored'
       }
     })
 
@@ -119,6 +122,7 @@ describe('replicate', () => {
         if (target.name !== storageTargets(placementFor(0), SELF)[0].replace('peer-id-', '')) {
           throw new Error('unreachable')
         }
+        return 'stored'
       }
     })
 
@@ -152,12 +156,50 @@ describe('replicate', () => {
       selfPeerId: SELF,
       peers: single,
       config: { ...baseConfig, ackQuorum: 3 },
-      store: async () => {}
+      store: async () => 'stored'
     })
 
     assert.equal(report.networkTooSmall, true)
     assert.equal(report.required, 2)
     assert.equal(report.satisfied, true)
+  })
+})
+
+describe('placement outcomes', () => {
+  it('does not count an unpinned copy towards durability', async () => {
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async () => 'cached'
+    })
+
+    // Peers hold the file and can serve it, but none of them promised to keep it
+    assert.deepEqual(report.replicas, [])
+    assert.ok(report.cached.length > 0)
+    assert.equal(report.acknowledged, 1)
+  })
+
+  it('reports stored and cached copies separately', async () => {
+    let first = true
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async () => {
+        const outcome: 'stored' | 'cached' = first ? 'stored' : 'cached'
+        first = false
+        return outcome
+      }
+    })
+
+    assert.equal(report.replicas.length, 1)
+    assert.equal(report.cached.length, report.attempts.length - 1)
+    assert.equal(report.acknowledged, 2)
   })
 })
 

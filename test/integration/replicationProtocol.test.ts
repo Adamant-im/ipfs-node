@@ -74,6 +74,13 @@ before(async () => {
     },
     have: async (cid) => isDirectlyPinned(holder.node, CID.parse(cid)),
     willAccept: async () => hasRoom,
+    cacheCopy: async (cid) => {
+      let bytes = 0
+      for await (const chunk of holderFs.cat(CID.parse(cid))) {
+        bytes += chunk.byteLength
+      }
+      return bytes
+    },
     onError: (message) => refusals.push(message)
   }
 

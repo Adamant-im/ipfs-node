@@ -212,6 +212,30 @@ nowhere for a copy to move.
 | 4     | 4              | 4, all of them | 3           | never                               |
 | 6     | 4              | 4              | 3 or 4      | allowed for the two outside the set |
 
+### A node its peers do not know yet
+
+A node accepts responsibility for a file only from a peer it has been
+configured with, because storing content permanently is a cost somebody has to
+have agreed to. A node that nobody has listed yet would therefore keep
+everything uploaded to it in a single copy, which disappears with it.
+
+So a peer that refuses responsibility is asked for something weaker instead: to
+hold the blocks without pinning them. It can serve the file from then on, and it
+promises nothing — the copy sits in the same tier as read cache and goes when
+that node needs the space. Nothing is counted as durable that is not: an upload
+report lists such peers under `cached`, separately from `replicas`, and the
+acknowledged count ignores them.
+
+This grants a stranger nothing it did not already have. Anyone who knows a CID
+can already make a node fetch and cache those blocks by asking it to serve them;
+this is the same effect with a different trigger, bounded by the same disk
+reserve. What stays behind the configuration check is everything that makes a
+node responsible: pinning, registration, and being counted as a holder.
+
+It is a stopgap, not the answer. A file spread this way survives the loss of the
+node it was uploaded to, but only until its peers need the space, and no repair
+job will notice if the copies go. Node discovery removes the need for it.
+
 ### Handing a copy over
 
 As a file ages its desired holder count shrinks, so nodes that are no longer

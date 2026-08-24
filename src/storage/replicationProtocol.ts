@@ -23,11 +23,20 @@ export type ReplicationRequest =
   | { op: 'have'; cid: string }
   /** Report whether this node has room to take another copy. */
   | { op: 'accept'; cid: string }
+  /**
+   * Hold a copy without taking responsibility for it.
+   *
+   * Accepted from any peer, because it grants nothing a reader does not already
+   * have: the blocks are unpinned, so they are reclaimed as soon as space is
+   * short, exactly like content cached while answering a read.
+   */
+  | { op: 'cache'; cid: string }
 
 export type ReplicationResponse =
   | { ok: true; op: 'store'; storedBytes: number }
   | { ok: true; op: 'have'; has: boolean }
   | { ok: true; op: 'accept'; willAccept: boolean }
+  | { ok: true; op: 'cache'; cachedBytes: number }
   | { ok: false; error: string }
 
 /**
@@ -55,6 +64,13 @@ export interface ReplicationHandlers {
    * message instead of a whole file that it cannot keep.
    */
   willAccept(): Promise<boolean>
+  /**
+   * Pull `cid` into the local blockstore without pinning or registering it.
+   *
+   * The node can serve the file from now on, and gives up nothing: the blocks
+   * live in the same tier as read cache and go when space is needed.
+   */
+  cacheCopy(cid: string): Promise<number>
   onError?(message: string): void
 }
 
@@ -106,11 +122,14 @@ function parseRequest(value: unknown): ReplicationRequest {
     throw new Error('Replication request is missing a CID')
   }
 
-  if (message.op !== 'store' && message.op !== 'have' && message.op !== 'accept') {
+  const operations: ReplicationRequest['op'][] = ['store', 'have', 'accept', 'cache']
+  const op = operations.find((known) => known === message.op)
+
+  if (op === undefined) {
     throw new Error('Unknown replication operation')
   }
 
-  return { op: message.op, cid: message.cid }
+  return { op, cid: message.cid }
 }
 
 async function respond(
@@ -118,14 +137,29 @@ async function respond(
   connection: Connection,
   handlers: ReplicationHandlers
 ): Promise<void> {
-  const peerId = connection.remotePeer.toString()
+  const request = parseRequest(await readMessage(stream))
 
-  if (!handlers.isAuthorized(peerId)) {
-    await sendMessage(stream, { ok: false, error: 'Not authorized' })
+  // Holding an extra copy is open to anyone, because it costs no more than a
+  // read from the same peer would. Everything that makes this node responsible
+  // for content stays behind the authorization check.
+  if (request.op === 'cache') {
+    if (!(await handlers.willAccept())) {
+      await sendMessage(stream, { ok: false, error: 'No room for another copy' })
+      return
+    }
+
+    await sendMessage(stream, {
+      ok: true,
+      op: 'cache',
+      cachedBytes: await handlers.cacheCopy(request.cid)
+    })
     return
   }
 
-  const request = parseRequest(await readMessage(stream))
+  if (!handlers.isAuthorized(connection.remotePeer.toString())) {
+    await sendMessage(stream, { ok: false, error: 'Not authorized' })
+    return
+  }
 
   if (request.op === 'have') {
     await sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
@@ -220,6 +254,23 @@ export async function probeAccept(
 ): Promise<boolean> {
   const response = await call(node, peer, { op: 'accept', cid }, options)
   return response.ok && response.op === 'accept' ? response.willAccept : false
+}
+
+/**
+ * Ask a peer to hold an extra copy it is not responsible for.
+ *
+ * Used when a peer will not accept a copy it has to keep, which is what happens
+ * while this node is not in its configuration. The file still spreads and stays
+ * readable from that peer; nobody promises to keep it there.
+ */
+export async function requestCache(
+  node: IpfsNode,
+  peer: PeerId | Multiaddr,
+  cid: string,
+  options: ReplicationCallOptions
+): Promise<number> {
+  const response = await call(node, peer, { op: 'cache', cid }, options)
+  return response.ok && response.op === 'cache' ? response.cachedBytes : 0
 }
 
 /** Ask a peer whether it still holds a file durably. */
