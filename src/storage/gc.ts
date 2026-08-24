@@ -129,8 +129,14 @@ export interface GcReport {
    * read differently from the CID a file was uploaded under.
    */
   removedCids: string[]
-  /** Confirmed files whose pin was missing and had to be restored. */
+  /** Confirmed files whose pin was missing and was restored. */
   repairedPins: string[]
+  /**
+   * Confirmed files this node holds whose protection could not be established.
+   *
+   * A non-empty list means the run stopped before deleting anything.
+   */
+  unprotected: string[]
   errors: string[]
 }
 
@@ -201,6 +207,7 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     removedBlocks: 0,
     removedCids: [],
     repairedPins: [],
+    unprotected: [],
     errors
   }
 
@@ -218,17 +225,24 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
         continue
       }
 
-      report.repairedPins.push(record.cid)
       log(`Restoring the missing pin of the confirmed file ${record.cid}`)
 
-      if (options.dryRun !== true) {
-        const signal =
-          options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
-
-        await pinFile(options.node, cid, signal)
-        await options.registry.setPinned(record.cid, true)
+      if (options.dryRun === true) {
+        report.repairedPins.push(record.cid)
+        continue
       }
+
+      const signal =
+        options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
+
+      await pinFile(options.node, cid, signal)
+      await options.registry.setPinned(record.cid, true)
+
+      // Recorded only once the pin is actually back, so the field cannot claim
+      // a repair that did not happen.
+      report.repairedPins.push(record.cid)
     } catch (err) {
+      report.unprotected.push(record.cid)
       errors.push(`Pin check failed for ${record.cid}: ${(err as Error).message}`)
     }
   }
@@ -238,10 +252,23 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     return report
   }
 
+  // Collection deletes every unpinned block, so a confirmed file whose pin
+  // could not be restored would be deleted by it. Nothing is unpinned and
+  // nothing is deleted until every confirmed file this node holds is known to
+  // be protected; the next run tries again.
+  if (report.unprotected.length > 0) {
+    log(`Collection abandoned: ${report.unprotected.length} confirmed files could not be protected`)
+    report.durationMs = Date.now() - startedAt
+    return report
+  }
+
+  const releasedCleanly: FileRecord[] = []
+
   for (const record of released) {
     try {
       await unpinFile(options.node, CID.parse(record.cid))
       await options.registry.release(record.cid)
+      releasedCleanly.push(record)
     } catch (err) {
       errors.push(`Release failed for ${record.cid}: ${(err as Error).message}`)
     }
@@ -269,9 +296,10 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     }
   })
 
-  // The registry entry is only dropped once its blocks are gone, so a failed
-  // collection leaves the file visible and reclaimable on the next run.
-  for (const record of released) {
+  // Only files whose release succeeded lose their record. One that failed to
+  // unpin still has blocks and a pin, and dropping its record would hide it
+  // from the next run and from the storage report.
+  for (const record of releasedCleanly) {
     try {
       await options.registry.remove(record.cid)
     } catch (err) {

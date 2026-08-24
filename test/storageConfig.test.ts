@@ -51,15 +51,29 @@ describe('resolveStorageConfig', () => {
     assert.throws(() => resolveStorageConfig({ confirmationRequired: 'yes' }, UPLOAD_LIMIT))
   })
 
+  it('admits enough concurrent uploads for several clients at once', () => {
+    // Several clients uploading to one node at the same time is ordinary
+    // traffic. A limit low enough to be reached by it answers 429 to a person
+    // who did nothing wrong, and disk is bounded by the space claim anyway.
+    assert.ok(
+      DEFAULT_STORAGE_CONFIG.maxConcurrentUploads >= 16,
+      'the default must not turn normal simultaneous use into 429'
+    )
+  })
+
   it('accepts a zero disk reserve, which only disables the reserve check', () => {
     assert.equal(resolveStorageConfig({ diskReserveBytes: 0 }, UPLOAD_LIMIT).diskReserveBytes, 0)
   })
 })
 
 describe('resolveReplicationConfig', () => {
-  it('defaults to disabled best-effort storage', () => {
+  it('places copies by default, since doing so needs no configuration', () => {
     assert.deepEqual(resolveReplicationConfig(undefined), DEFAULT_REPLICATION_CONFIG)
-    assert.equal(DEFAULT_REPLICATION_CONFIG.enabled, false)
+    assert.equal(DEFAULT_REPLICATION_CONFIG.enabled, true)
+  })
+
+  it('can be turned off, leaving every file in a single copy', () => {
+    assert.equal(resolveReplicationConfig({ enabled: false }).enabled, false)
   })
 
   it('reduces copies as files age', () => {

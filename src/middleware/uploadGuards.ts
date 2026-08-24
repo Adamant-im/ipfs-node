@@ -2,7 +2,8 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express'
 import { config } from '../config.js'
 import { helia } from '../helia.js'
 import { blockstore, blockstorePath } from '../store.js'
-import { checkDiskReserve, checkRequestSize, parseContentLength } from '../storage/limits.js'
+import { checkRequestSize, parseContentLength } from '../storage/limits.js'
+import { claimSpace } from '../storage/reservation.js'
 import { uploadLimiter } from '../storage/state.js'
 import { UploadSession } from '../storage/uploadSession.js'
 import { parseCid } from '../utils/cid.js'
@@ -54,11 +55,13 @@ export const admitUpload: RequestHandler = (
   }
 
   let released = false
+  let claimed: { release(): void } | undefined
   const release = (): void => {
     if (released) {
       return
     }
     released = true
+    claimed?.release()
     uploadLimiter.release()
   }
 
@@ -72,14 +75,21 @@ export const admitUpload: RequestHandler = (
 
   availableStorageSize(blockstorePath)
     .then((available) => {
-      const reserveCheck = checkDiskReserve({
+      // A chunked request declares no size, so the most it could write is what
+      // its aggregate limit allows. Claiming that much keeps the reserve honest
+      // for a request whose size is unknown, and claiming at all is what stops
+      // several uploads from each seeing the same free space and passing.
+      const claim = claimSpace({
+        bytes: declaredBytes ?? storage.maxRequestSizeBytes,
         availableBytes: Number(available),
-        reserveBytes: storage.diskReserveBytes,
-        requestedBytes: declaredBytes
+        reserveBytes: storage.diskReserveBytes
       })
 
-      if (!reserveCheck.allowed) {
-        logger.warn(`Upload rejected: ${reserveCheck.reason}`)
+      if (claim === undefined) {
+        logger.warn(
+          `Upload rejected: free space ${String(available)} bytes would fall into the ` +
+            `${storage.diskReserveBytes} byte reserve`
+        )
         release()
         res.status(507).send({ error: 'Insufficient storage' })
         return
@@ -93,6 +103,7 @@ export const admitUpload: RequestHandler = (
         parseCid,
         onCleanupError: (err) => logger.error(`Upload cleanup error: ${err.message}`)
       })
+      claimed = claim
       ;(req as RequestWithSession)[SESSION_KEY] = session
 
       // Covers every way a request can end without a durable result: a parser

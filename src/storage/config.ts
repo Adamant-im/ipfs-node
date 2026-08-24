@@ -29,7 +29,19 @@ export interface GarbageCollectionConfig {
 export interface StorageConfig {
   /** Maximum combined size of all files accepted in a single upload request. */
   maxRequestSizeBytes: number
-  /** Maximum number of upload requests writing into the blockstore at once. */
+  /**
+   * Maximum number of upload requests writing into the blockstore at once.
+   *
+   * A saturation backstop rather than the disk guard: every request claims the
+   * bytes it may write against `diskReserveBytes` atomically, so space is
+   * already bounded without this. What is left for this limit is keeping a node
+   * from opening more concurrent writers than it can serve.
+   *
+   * Several clients uploading to the same node at the same time is ordinary
+   * traffic rather than a burst, so it sits well above what fairness alone
+   * would ask for: a limit low enough to be reached by normal use turns into
+   * `429` for a person who did nothing wrong.
+   */
   maxConcurrentUploads: number
   /** Free space on the blockstore filesystem that uploads must never consume. */
   diskReserveBytes: number
@@ -41,7 +53,15 @@ export interface StorageConfig {
 }
 
 export interface ReplicationConfig {
-  /** When false the node stores content best effort and never contacts peers. */
+  /**
+   * Whether this node places copies of its own content on its peers.
+   *
+   * Answering a peer that wants to place a copy here does not depend on it: a
+   * node that only accepted copies while it was also sending them could not
+   * join a network without every other node being reconfigured first.
+   *
+   * When false the node stores content best effort and never contacts peers.
+   */
   enabled: boolean
   /**
    * How many nodes should hold a file, including this one, by file age.
@@ -62,7 +82,7 @@ export interface ReplicationConfig {
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   maxRequestSizeBytes: 512 * MiB,
-  maxConcurrentUploads: 4,
+  maxConcurrentUploads: 32,
   diskReserveBytes: 5 * GiB,
   confirmationRequired: false,
   temporaryTtlMs: 24 * 60 * 60 * 1000,
@@ -75,7 +95,7 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
 }
 
 export const DEFAULT_REPLICATION_CONFIG: ReplicationConfig = {
-  enabled: false,
+  enabled: true,
   placement: [
     { minAgeMs: 0, copies: 4 },
     { minAgeMs: 180 * DAY, copies: 3 },

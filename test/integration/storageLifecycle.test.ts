@@ -8,6 +8,7 @@ import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
+import { backfillRegistryFromPins } from '../../src/storage/backfill.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
@@ -352,6 +353,36 @@ describe('garbage collection against fixture data', () => {
     assert.equal(remaining.has(digestOf(cids.live)), false)
   })
 
+  it('abandons the run when a confirmed file cannot be protected', async () => {
+    const { registry, cids } = await createFixture()
+
+    // A record whose blocks are not here: its pin cannot be restored, because
+    // nothing can fetch a CID nobody holds
+    const unreachable = 'bafkreiapv3pyvtsdmvcqcgzvvjmayksybgcgfvkbfbbccjnisz3ndnvcam'
+    await registry.save(record({ cid: unreachable, state: 'confirmed', storedBytes: 1024 }))
+
+    const before = await storedDigests()
+
+    const report = await runGarbageCollection({
+      node,
+      registry,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      pinTimeoutMs: 1500,
+      now: 1000
+    })
+
+    // Collection deletes every unpinned block, so it must not run at all while
+    // a confirmed file is unprotected
+    assert.deepEqual(report.unprotected, [unreachable])
+    assert.equal(report.collected, false)
+    assert.equal(report.removedBlocks, 0)
+    assert.deepEqual([...(await storedDigests())].sort(), [...before].sort())
+    assert.equal((await registry.get(cids.abandoned))?.pinned, true)
+
+    await registry.remove(unreachable)
+  })
+
   it('restores a missing pin on confirmed content before deleting anything', async () => {
     const { registry, cids } = await createFixture()
     await unpinFile(node, CID.parse(cids.confirmed))
@@ -367,5 +398,36 @@ describe('garbage collection against fixture data', () => {
     assert.deepEqual(report.repairedPins, [cids.confirmed])
     assert.equal(await isProtected(node, CID.parse(cids.confirmed)), true)
     assert.equal((await storedDigests()).has(digestOf(cids.confirmed)), true)
+  })
+})
+
+describe('registry backfill', () => {
+  it('records a pin that predates the registry, and does so only once', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'legacy-pin'))
+    await pinFile(node, cid)
+
+    const first = await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+    const recorded = await registry.get(cid.toString())
+
+    assert.ok(first.registered > 0)
+    assert.equal(recorded?.state, 'confirmed')
+    assert.equal(recorded?.heldLocally, true)
+    assert.ok((recorded?.storedBytes ?? 0) > 0)
+
+    const second = await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+    assert.equal(second.registered, 0)
+    assert.ok(second.known > 0)
+  })
+
+  it('leaves an existing record untouched', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'already-known'))
+    await pinFile(node, cid)
+    await registry.save(record({ cid: cid.toString(), state: 'confirmed', name: 'mine.bin' }))
+
+    await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+
+    assert.equal((await registry.get(cid.toString()))?.name, 'mine.bin')
   })
 })

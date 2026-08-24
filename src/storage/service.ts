@@ -24,7 +24,8 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
-import { fileRegistry } from './state.js'
+import { claimedBytes, claimSpace } from './reservation.js'
+import { fileRegistry, incomingCopyLimiter } from './state.js'
 import { nextSweepBatch } from './sweep.js'
 
 const callOptions = (): ReplicationCallOptions => ({
@@ -248,7 +249,10 @@ export function createReplicationHandlers(): ReplicationHandlers {
 export async function hasRoomForAnotherCopy(): Promise<boolean> {
   try {
     const available = Number(await availableStorageSize(blockstorePath))
-    return available > config.storage.diskReserveBytes
+    // Space already promised to work in progress is not free. Without this,
+    // several transfers each see the same headroom and cross the reserve
+    // together.
+    return available - claimedBytes() > config.storage.diskReserveBytes
   } catch {
     return false
   }
@@ -264,14 +268,42 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
  * @returns Bytes pulled
  */
 export async function cacheFileLocally(cid: string): Promise<number> {
+  // This is the one operation any peer may ask for, so it carries the limits an
+  // upload carries: how many may run at once, and how much space they may take
+  // together. The size is unknown before the transfer, so the aggregate request
+  // limit is claimed pessimistically and given back at the end.
+  if (!incomingCopyLimiter.tryAcquire()) {
+    throw new Error('Too many copies are already being received')
+  }
+
+  const claim = claimSpace({
+    bytes: config.storage.maxRequestSizeBytes,
+    availableBytes: Number(await availableStorageSize(blockstorePath)),
+    reserveBytes: config.storage.diskReserveBytes
+  })
+
+  if (claim === undefined) {
+    incomingCopyLimiter.release()
+    throw new Error('No room for another copy')
+  }
+
   const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
   let bytes = 0
 
-  for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
-    bytes += chunk.byteLength
-  }
+  try {
+    for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
+      bytes += chunk.byteLength
 
-  return bytes
+      if (bytes > config.storage.maxRequestSizeBytes) {
+        throw new Error('Copy is larger than this node accepts')
+      }
+    }
+
+    return bytes
+  } finally {
+    claim.release()
+    incomingCopyLimiter.release()
+  }
 }
 
 export interface RepairReport {
@@ -381,10 +413,34 @@ export async function repairReplication(): Promise<RepairReport> {
 
   report.checked = candidates.length
 
+  const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
+
   for (const record of candidates) {
     const placement = placementFor(record.cid, record.createdAt, peers)
 
-    if (!isUnderReplicated(record.replicas.length, placement, self)) {
+    // `replicas` is a record of what peers once said. A holder that lost its
+    // blockstore, restarted empty, or left the configuration never changes that
+    // number, and the file would be considered healthy forever. Ask instead.
+    const holders = storageTargets(placement, self)
+      .map((peerId) => byPeerId.get(peerId))
+      .filter((peer): peer is ReplicationPeer => peer !== undefined)
+
+    const answers = await Promise.all(
+      holders.map(async (peer) => {
+        try {
+          return (await probeHave(helia, peer.multiAddr, record.cid, callOptions()))
+            ? peer.name
+            : undefined
+        } catch {
+          return undefined
+        }
+      })
+    )
+
+    const live = answers.filter((name): name is string => name !== undefined)
+    await fileRegistry.setReplicas(record.cid, live)
+
+    if (!isUnderReplicated(live.length, placement, self)) {
       continue
     }
 

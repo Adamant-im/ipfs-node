@@ -31,8 +31,20 @@ and against the bytes actually streamed, because a chunked request declares no
 size.
 
 Free space is measured on the filesystem that holds the blockstore, not on the
-root filesystem. A request is admitted only when
-`freeSpace - declaredRequestSize >= storage.diskReserveBytes`.
+root filesystem. One reading of it is not a reservation, though: two uploads
+that both see a gigabyte free would both be admitted and could cross the reserve
+together. Each request therefore claims the bytes it may write — its declared
+size, or the aggregate limit when it declares none — and the claim is counted
+against free space until the request ends, in success or failure. A request is
+admitted only when
+`freeSpace - alreadyClaimed - requestSize >= storage.diskReserveBytes`.
+
+Copies arriving from peers are uploads as far as the disk is concerned, so they
+take the same claim and the same aggregate limit. Their concurrency is a quarter
+of `storage.maxConcurrentUploads`, because a copy cannot declare its size and so
+claims the aggregate limit for its whole transfer, and because refusing one
+costs nothing a person can see: the sender still holds the file, and repair
+places another copy on its next pass.
 
 ## Cleanup of failed uploads
 
@@ -381,17 +393,31 @@ also included in `GET /api/node/info`.
 
 ## Recovery and rollback
 
-Read this before enabling `storage.gc.enabled` in production.
+The scheduled collector is on by default, so read this before the first upgrade
+rather than before enabling anything.
 
-### Before enabling collection
+What it can delete with the shipped defaults is narrow. It never selects a
+confirmed file this node holds, and with `storage.confirmationRequired` off no
+upload ever expires, so the only unpinned blocks are read cache and content an
+operator released on purpose. Content pinned before this release is protected
+too: Helia never deletes a pinned block, and startup records those pins in the
+registry so they appear in dry runs and in the storage report.
+
+Deletion also waits for pressure. Nothing is freed until the blockstore passes
+`storage.gc.highWatermarkBytes` or free space falls into
+`storage.diskReserveBytes`.
+
+### Before the first collection
 
 1. Run `POST /api/storage/gc?dryRun=true` and review `releasedCids` and
    `retainedCids`. Nothing is deleted by a dry run.
 2. Confirm that every CID that must survive appears in `retainedCids`. If a CID
    is missing, it is not confirmed: pin it with `POST /api/helia/pin/:cid` or
    confirm it with `POST /api/file/:cid/confirm` first.
-3. Confirm `repairedPins` is empty. A non-empty list means confirmed content had
-   lost its pin, which must be understood before deleting anything.
+3. Confirm `repairedPins` and `unprotected` are both empty. Either being
+   non-empty means confirmed content had lost its pin. A run that cannot restore
+   such a pin abandons itself before deleting anything, so an `unprotected` list
+   is a signal to investigate, not a loss.
 4. Back up the datastore directory. It holds the pinset and the lifecycle
    registry, which are what protects content from deletion.
 
@@ -413,7 +439,8 @@ Read this before enabling `storage.gc.enabled` in production.
 
 ### Operational safeguards
 
-- Keep `storage.gc.enabled` false until a deletion policy is agreed
+- Set `storage.gc.enabled` to `false` if the deployment wants deletion to be an
+  explicit decision rather than a default; nothing else changes when it is off
 - Keep the smallest tier of `replication.placement` at two copies or more, so a
   mistaken deletion on one node is recoverable from another
 - Run the dry run again after changing the watermarks or the TTL

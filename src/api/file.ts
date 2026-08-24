@@ -4,7 +4,7 @@ import { helia } from '../helia.js'
 import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
 import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
 import { multerStorage } from '../multer.js'
-import { pinFile } from '../storage/pinning.js'
+import { pinFile, unpinFile } from '../storage/pinning.js'
 import {
   confirmFile,
   prepareFileRetrieval,
@@ -49,6 +49,11 @@ router.post(
 
     const session = getUploadSession(req)
 
+    // A pin protects blocks from the session cleanup, and a registry entry
+    // claims disk in the storage report. Both are created before the request is
+    // known to succeed, so both have to be undone if it does not.
+    const undo: Array<() => Promise<void>> = []
+
     try {
       const files = flatFiles(req.files as UnixFsMulterFile[])
       logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
@@ -58,7 +63,19 @@ router.post(
         const cid = file.cid.toString()
         logger.info(`Successfully added file ${cid}`)
 
-        await pinFile(helia, file.cid)
+        const knownBefore = await fileRegistry.get(cid)
+
+        // Only a pin this request created may be removed again; content that
+        // was already durable keeps the pin it had.
+        if (await pinFile(helia, file.cid)) {
+          undo.push(async () => {
+            await unpinFile(helia, file.cid)
+          })
+        }
+
+        if (!knownBefore) {
+          undo.push(() => fileRegistry.remove(cid))
+        }
 
         records.push(
           await fileRegistry.register(
@@ -77,8 +94,10 @@ router.post(
       }
 
       // Every file is stored and pinned: the blocks written by this request must
-      // now survive, so ownership passes from the session to the registry.
+      // now survive, so ownership passes from the session to the registry and
+      // there is nothing left to undo.
       session.commit()
+      undo.length = 0
 
       const durable = records.filter((record) => record.state === 'confirmed')
       const replication = await Promise.all(durable.map((record) => replicateFile(record.cid)))
@@ -106,8 +125,17 @@ router.post(
         replication: replication[0] ?? null
       })
     } catch (err) {
-      // The session is still open, so the response listener reclaims every block
-      // this request created.
+      // Undo first, then let the response listener reclaim the blocks: cleanup
+      // deliberately skips anything pinned, so a pin left behind here would
+      // keep the failed upload on disk forever.
+      for (const step of undo.reverse()) {
+        try {
+          await step()
+        } catch (undoError) {
+          logger.error(`Could not undo a failed upload: ${(undoError as Error).message}`)
+        }
+      }
+
       next(err)
     }
   }
@@ -136,7 +164,9 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
       expiresAt: record.expiresAt,
       confirmedAt: record.confirmedAt,
       replication: {
-        acknowledged: record.replicas.length + 1,
+        // A file handed over to other nodes keeps its record but no longer
+        // counts here, so the local copy is only added while it is still held.
+        acknowledged: record.replicas.length + (record.heldLocally ? 1 : 0),
         required: config.replication.enabled ? config.replication.ackQuorum : 1,
         heldLocally: record.heldLocally
       }

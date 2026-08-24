@@ -3,9 +3,11 @@ import { httpLogger, logger } from './utils/logger.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
 import { peeringCron, peerWithKnownNodes } from './peering.cron.js'
-import { helia } from './helia.js'
+import { helia, ifs } from './helia.js'
+import { backfillRegistryFromPins } from './storage/backfill.js'
 import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
+import { fileRegistry } from './storage/state.js'
 import { garbageCollectionCron } from './gc.cron.js'
 import { replicationRepairCron } from './replication.cron.js'
 import cors from 'cors'
@@ -25,24 +27,37 @@ diskUsageCron.start()
 peeringCron.start()
 await peerWithKnownNodes()
 
-// Deletion is opt-in: the collector only runs once an operator has agreed to a
-// deletion policy and enabled it. Until then the authorized
-// POST /api/storage/gc endpoint stays the only way to reclaim space.
+// Content pinned before this release has no registry entry, which would leave
+// it out of the storage report, out of dry runs, and out of replication repair.
+// Recording it is idempotent and runs before anything acts on the registry.
+await backfillRegistryFromPins({
+  node: helia,
+  unixfs: ifs,
+  registry: fileRegistry,
+  log: (message) => logger.info(message)
+}).catch((err: Error) => logger.error(`Registry backfill failed: ${err.message}`))
+
+// The collector frees blocks only when space is short: above the high watermark
+// or once free space falls into the disk reserve. It never selects a confirmed
+// file this node holds, so leaving it on costs nothing while there is room.
 if (config.storage.gc.enabled) {
   logger.info(
-    `Garbage collection enabled: high watermark ${config.storage.gc.highWatermarkBytes} bytes, ` +
-      `low watermark ${config.storage.gc.lowWatermarkBytes} bytes`
+    `Garbage collection enabled: frees blocks above ${config.storage.gc.highWatermarkBytes} ` +
+      `bytes of blockstore, or when free space falls into the ` +
+      `${config.storage.diskReserveBytes} byte reserve`
   )
   garbageCollectionCron.start()
 } else {
   logger.info('Garbage collection is disabled. Storage grows until an operator collects it.')
 }
 
-if (config.replication.enabled) {
-  // Answering the protocol is what lets peers place copies here, so it is
-  // registered before the HTTP server starts accepting uploads.
-  await registerReplicationProtocol(helia, createReplicationHandlers())
+// Answering the protocol is what lets peers place copies here, and it is
+// registered whether or not this node places copies of its own. A node that
+// only accepted copies when it was also sending them could not be added to a
+// network without every other node being reconfigured first.
+await registerReplicationProtocol(helia, createReplicationHandlers())
 
+if (config.replication.enabled) {
   if (config.replication.repairEnabled) {
     replicationRepairCron.start()
   }

@@ -60,7 +60,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   "peeringSchedule": "*/30 * * * * *",
   "storage": {
     "maxRequestSizeBytes": 536870912,
-    "maxConcurrentUploads": 4,
+    "maxConcurrentUploads": 32,
     "diskReserveBytes": 5368709120,
     "confirmationRequired": false,
     "temporaryTtlMs": 86400000,
@@ -72,7 +72,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     }
   },
   "replication": {
-    "enabled": false,
+    "enabled": true,
     "placement": [
       { "minAgeMs": 0, "copies": 4 },
       { "minAgeMs": 15552000000, "copies": 3 },
@@ -108,7 +108,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
 - Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
 - `storage.gc.enabled` is on by default and frees blocks only when the blockstore passes `highWatermarkBytes` or free space falls into `diskReserveBytes`; released files stay readable until then
-- Set `replication.enabled` on every node that should place copies; replication needs no key and no extra address, because it runs on a libp2p protocol between the peers already listed in `nodes`
+- `replication.enabled` is on by default and needs no key and no extra address: copies travel on a libp2p protocol between the peers already listed in `nodes`. Turning it off leaves every file in a single copy
 - Tune `replication.placement` if the deployment wants a different number of copies per file age
 - `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did
 

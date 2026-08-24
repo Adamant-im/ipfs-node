@@ -58,7 +58,7 @@
   // existing configuration file keeps working without this section.
   storage: {
     maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
-    maxConcurrentUploads: 4, // Uploads writing into the blockstore at the same time
+    maxConcurrentUploads: 32, // Uploads writing into the blockstore at the same time; over this, 429
     diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
     // true keeps an upload temporary until POST /api/file/:cid/confirm.
     // Enabling it is a protocol change: clients must perform that call.
@@ -76,10 +76,12 @@
   },
   // Replication across the nodes listed in `nodes`. Copies travel over libp2p,
   // so a peer needs no HTTP address and no shared secret: the handshake already
-  // proves which node is calling.
-  // Disabled by default: the node then stores content best effort, locally only.
+  // proves which node is calling, and no extra configuration is needed.
   replication: {
-    enabled: false,
+    // Whether this node places copies of its own content. Answering a peer that
+    // wants to place a copy here does not depend on it. Turning this off leaves
+    // every file in a single copy, on this node only.
+    enabled: true,
     // How many nodes should hold a file, including this one, by file age.
     // Copies shrink as content ages instead of being tracked by access time,
     // which would record when users fetch their files.
