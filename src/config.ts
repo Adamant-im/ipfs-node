@@ -37,6 +37,9 @@ function findRootDir(start: string): string {
 
 const currDir = dirname(fileURLToPath(import.meta.url))
 
+/** Redial unconnected ADAMANT nodes every half minute unless configured otherwise. */
+const DEFAULT_PEERING_SCHEDULE = '*/30 * * * * *'
+
 /** Log levels accepted by `pino`, ordered from least to most verbose. */
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
 
@@ -64,6 +67,12 @@ export interface Config {
   serverPort: number
   /** Disk space scanning period in cron format. */
   diskUsageScanPeriod: string
+  /**
+   * How often the node redials the peers in `nodes` that are not connected,
+   * in cron format. Bootstrap only dials once, so without this a mesh never
+   * recovers from a restart.
+   */
+  peeringSchedule: string
   /** Maximum size of a single uploaded file, in bytes. */
   uploadLimitSizeBytes: number
   /** Maximum number of files accepted per upload request. */
@@ -186,6 +195,10 @@ export function validateConfig(raw: unknown): Config {
   const storeFolder = requireString(root.storeFolder, 'storeFolder')
   const serverPort = requireInteger(root.serverPort, 'serverPort', 1)
   const diskUsageScanPeriod = requireString(root.diskUsageScanPeriod, 'diskUsageScanPeriod')
+  const peeringSchedule =
+    root.peeringSchedule === undefined
+      ? DEFAULT_PEERING_SCHEDULE
+      : requireString(root.peeringSchedule, 'peeringSchedule')
   const findFileTimeout = requireInteger(root.findFileTimeout, 'findFileTimeout', 1)
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
@@ -208,6 +221,7 @@ export function validateConfig(raw: unknown): Config {
     peerDiscovery: { bootstrap, listen },
     serverPort,
     diskUsageScanPeriod,
+    peeringSchedule,
     uploadLimitSizeBytes: root.uploadLimitSizeBytes as number,
     maxFileCount: root.maxFileCount as number,
     findFileTimeout,

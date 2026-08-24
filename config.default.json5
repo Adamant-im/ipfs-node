@@ -25,6 +25,9 @@
   },
   serverPort: 4000,
   diskUsageScanPeriod: '*/30 * * * * *',
+  // Redials the nodes above that are not connected. Bootstrap dials once and
+  // never again, so without this a mesh never recovers from a restart.
+  peeringSchedule: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,
   findFileTimeout: 20000,

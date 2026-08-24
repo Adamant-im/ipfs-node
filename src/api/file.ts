@@ -5,7 +5,12 @@ import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
 import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
 import { multerStorage } from '../multer.js'
 import { pinFile } from '../storage/pinning.js'
-import { confirmFile, releaseFile, replicateFile } from '../storage/service.js'
+import {
+  confirmFile,
+  prepareFileRetrieval,
+  releaseFile,
+  replicateFile
+} from '../storage/service.js'
 import { fileRegistry } from '../storage/state.js'
 import { parseCid } from '../utils/cid.js'
 import { sendDownloadStream } from '../utils/downloadResponse.js'
@@ -144,6 +149,12 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
 router.get('/:cid', readLimiter, async (req, res, next) => {
   try {
     const cid = parseCid(req.params.cid)
+
+    // Reach the file's holders first. Without this the read only succeeds if a
+    // peer that has the file is already connected, which stops being true as
+    // soon as the network is larger than the connection limit.
+    await prepareFileRetrieval(cid)
+
     const fileStats = await getFileStats(cid)
     const stream = downloadFile(cid)
 

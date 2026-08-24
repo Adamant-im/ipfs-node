@@ -2,6 +2,7 @@ import express from 'express'
 import { httpLogger, logger } from './utils/logger.js'
 import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
+import { peeringCron, peerWithKnownNodes } from './peering.cron.js'
 import { helia } from './helia.js'
 import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
@@ -18,6 +19,11 @@ import { parseTrustProxy } from './security/trustProxy.js'
 logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
 diskUsageCron.start()
+
+// Bootstrap dials the peers once and never again, so the mesh is kept together
+// here instead. Retrieval and replication both depend on it being intact.
+peeringCron.start()
+await peerWithKnownNodes()
 
 // Deletion is opt-in: the collector only runs once an operator has agreed to a
 // deletion policy and enabled it. Until then the authorized

@@ -57,6 +57,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   },
   "adminApiKey": "",
   "enableDebugApi": false,
+  "peeringSchedule": "*/30 * * * * *",
   "storage": {
     "maxRequestSizeBytes": 536870912,
     "maxConcurrentUploads": 4,
@@ -109,6 +110,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Leave `storage.gc.enabled` as `false` until a deletion policy is agreed; `POST /api/storage/gc` runs on demand meanwhile
 - Set `replication.enabled` on every node that should place copies; replication needs no key and no extra address, because it runs on a libp2p protocol between the peers already listed in `nodes`
 - Tune `replication.placement` if the deployment wants a different number of copies per file age
+- `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did
 
 Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 

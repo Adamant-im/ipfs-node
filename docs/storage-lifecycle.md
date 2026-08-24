@@ -214,12 +214,38 @@ its holders.
 
 Routing stays the node's problem, not the client's. A client asks whichever node
 it likes for a CID; if that node does not hold the file, it fetches the blocks
-over bitswap from the peers that do and streams them on. Placement does not
-change that contract — it only makes it likely that a connected peer has the
-file, and it tells the node which peers to expect it from.
+over bitswap and streams them on. This matters for the messenger, where the
+sender and the receiver are usually on different nodes: the receiver learns the
+CID as soon as the message arrives and asks its own node for it immediately,
+long before any background job could have moved a copy there.
 
-A node that cannot retrieve content answers `408` after `findFileTimeout`. It
-never answers `404`, because it cannot know that content does not exist.
+Bitswap asks the peers a node happens to be connected to. That is enough while
+every node is connected to every other, and it stops being enough as soon as the
+network outgrows the connection limit: a node connected to none of a file's
+holders waits for `findFileTimeout` and answers `408`.
+
+So before reading a CID it does not hold, a node opens connections to the nodes
+that should hold it. It can name them because holders are derived from the CID,
+and it does not need to know how old the file is: the holders of a file of any
+age are a prefix of the same ranking, so the widest prefix any tier can ask for
+covers all of them. The read then talks to a handful of named nodes instead of
+depending on who happens to be connected.
+
+A node that still cannot retrieve content answers `408` after `findFileTimeout`.
+It never answers `404`, because it cannot know that content does not exist.
+
+### Keeping the mesh connected
+
+`@libp2p/bootstrap` dials its peers once, shortly after start, and never again.
+Nothing else reconnects a peer that restarted or dropped, so a mesh quietly
+comes apart over time. It is easy to miss, because uploads keep working: the
+damage shows up later as slow retrieval and as replication that cannot place
+copies.
+
+The node therefore redials the peers in `nodes` that are not connected, once at
+startup before the API starts serving and then on `peeringSchedule`. The work is
+bounded by the size of `nodes`, which is the operator's own peer list, so it
+never becomes network-wide dialling.
 
 ### Repair
 
@@ -228,15 +254,13 @@ lists confirmed files this node holds whose designated peers have not all
 acknowledged, and places the missing copies again.
 
 Replication needs the peers to be connected over libp2p, because the copy itself
-travels by bitswap. Keep every replication peer in `peerDiscovery.bootstrap` as
-well as in `nodes`.
+travels by bitswap. Startup peering opens those connections before the API
+starts serving, so the first upload after a restart already has somewhere to
+place its copies.
 
-A copy request made in the first seconds after a node starts can time out: the
-connection is up, but bitswap has not yet learned which peers can serve blocks,
-so the receiving node cannot pull the DAG in time. The upload still succeeds and
-reports the shortfall, and the repair job places the missing copies on its next
-pass. This is worth knowing when reading the logs of a node that has just been
-restarted; it is not worth reacting to.
+A copy request that a peer cannot answer in time is reported as a shortfall
+rather than failing the upload, and the repair job places the missing copies on
+its next pass.
 
 ### Why not Kubo with IPFS Cluster
 

@@ -18,6 +18,7 @@ import {
   type ReplicationHandlers,
   type ReplicationCallOptions
 } from './replicationProtocol.js'
+import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { fileRegistry } from './state.js'
 
 const callOptions = (): ReplicationCallOptions => ({
@@ -87,6 +88,19 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
   }
 
   return report
+}
+
+/**
+ * Connect to the nodes that should hold `cid` before reading it.
+ *
+ * A client asks whichever node it likes for a file, and that node is usually
+ * not one of its holders. Placement tells it exactly which nodes to reach, so
+ * the read does not depend on a holder happening to be connected already.
+ */
+export async function prepareFileRetrieval(cid: CID): Promise<void> {
+  await prepareRetrieval(helia, cid, () =>
+    retrievalTargets(cid.toString(), config.replication, selfPeerId(), getReplicationPeers())
+  )
 }
 
 /**
