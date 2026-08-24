@@ -220,7 +220,9 @@ have agreed to. A node that nobody has listed yet would therefore keep
 everything uploaded to it in a single copy, which disappears with it.
 
 So a peer that refuses responsibility is asked for something weaker instead: to
-hold the blocks without pinning them. It can serve the file from then on, and it
+hold the blocks without pinning them. Because such a copy lasts only until its
+node needs the space, the file is spread to a few more nodes than a pinned one
+would be: several fragile copies outlive a single one. It can serve the file from then on, and it
 promises nothing — the copy sits in the same tier as read cache and goes when
 that node needs the space. Nothing is counted as durable that is not: an upload
 report lists such peers under `cached`, separately from `replicas`, and the
@@ -235,6 +237,12 @@ node responsible: pinning, registration, and being counted as a holder.
 It is a stopgap, not the answer. A file spread this way survives the loss of the
 node it was uploaded to, but only until its peers need the space, and no repair
 job will notice if the copies go. Node discovery removes the need for it.
+
+Nothing has to be redone once the node becomes known. Repair already treats such
+a file as under-replicated, so its next pass asks the same peers again, and this
+time they accept responsibility. The blocks are already on those nodes, so
+pinning them is a local operation: no file crosses the network a second time,
+and no node has to be restarted for it.
 
 ### Handing a copy over
 

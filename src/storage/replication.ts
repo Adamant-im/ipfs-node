@@ -1,6 +1,15 @@
 import type { Multiaddr } from '@multiformats/multiaddr'
 import type { ReplicationConfig } from './config.js'
-import { placeFile, storageTargets, type Placement } from './placement.js'
+import { placeFile, rankHolders, storageTargets, type Placement } from './placement.js'
+
+/**
+ * Extra nodes asked to hold an unpinned copy.
+ *
+ * An unpinned copy lasts only until its node needs the space, so spreading a
+ * file that nobody will pin is worth doing more widely than one that is pinned.
+ * Several fragile copies outlive a single one.
+ */
+export const CACHE_WIDENING = 2
 
 /** Another ADAMANT node this one can reach over libp2p. */
 export interface ReplicationPeer {
@@ -66,6 +75,8 @@ export interface ReplicateOptions {
   config: ReplicationConfig
   /** Asks one peer to take a copy, and reports what it agreed to. */
   store: (peer: ReplicationPeer, cid: string) => Promise<PlacementOutcome>
+  /** Asks one peer for an unpinned copy, used to widen a spread nobody pins. */
+  cacheOnly?: (peer: ReplicationPeer, cid: string) => Promise<void>
 }
 
 /**
@@ -137,6 +148,38 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
   const cached = attempts
     .filter((attempt) => attempt.outcome === 'cached')
     .map((attempt) => attempt.node)
+
+  // Nobody took responsibility, which is what a node its peers have not been
+  // configured with gets. Its file now rests on copies that may be reclaimed at
+  // any time, so it is spread wider to make up for how little each one promises.
+  if (replicas.length === 0 && cached.length > 0 && options.cacheOnly !== undefined) {
+    const tried = new Set(targets.map((peer) => peer.peerId))
+    const ranked = rankHolders(
+      cid,
+      options.peers.map((peer) => peer.peerId)
+    )
+    const extra = ranked
+      .filter((peerId) => !tried.has(peerId))
+      .slice(0, CACHE_WIDENING)
+      .map((peerId) => options.peers.find((peer) => peer.peerId === peerId))
+      .filter((peer): peer is ReplicationPeer => peer !== undefined)
+
+    const widened = await Promise.all(
+      extra.map(async (peer): Promise<ReplicationAck> => {
+        try {
+          await options.cacheOnly?.(peer, cid)
+          return { node: peer.name, ok: true, outcome: 'cached' }
+        } catch (err) {
+          return { node: peer.name, ok: false, error: (err as Error).message }
+        }
+      })
+    )
+
+    attempts.push(...widened)
+    cached.push(
+      ...widened.filter((attempt) => attempt.outcome === 'cached').map((attempt) => attempt.node)
+    )
+  }
 
   // The local copy counts: it is pinned before any peer is asked.
   const acknowledged = replicas.length + 1

@@ -72,6 +72,8 @@ export interface ReplicationHandlers {
    */
   cacheCopy(cid: string): Promise<number>
   onError?(message: string): void
+  /** Called when a peer asks for something it is not allowed to ask for. */
+  onRefused?(peerId: string, op: string): void
 }
 
 /**
@@ -85,34 +87,65 @@ function toBytes(chunk: Uint8Array | { subarray(): Uint8Array }): Uint8Array {
   return chunk instanceof Uint8Array ? chunk : chunk.subarray()
 }
 
+/** Bytes of the length prefix that precedes every message. */
+const LENGTH_PREFIX_BYTES = 4
+
 /**
- * Read one message, which ends when the remote closes its writing end.
+ * Frame one message with its length.
  *
- * Each stream carries exactly one request and one reply, so end-of-stream is
- * the frame delimiter and no length prefix is needed.
+ * The length is what tells the reader when a message is complete. Ending the
+ * stream would work too, but only if the half-close reaches the other side
+ * promptly, and when it does not both ends wait for each other until the call
+ * times out.
  */
+function encodeMessage(message: unknown): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(message))
+  const frame = new Uint8Array(LENGTH_PREFIX_BYTES + body.byteLength)
+
+  new DataView(frame.buffer).setUint32(0, body.byteLength)
+  frame.set(body, LENGTH_PREFIX_BYTES)
+
+  return frame
+}
+
+/** Read exactly one framed message, without waiting for the stream to end. */
 async function readMessage(stream: Stream): Promise<unknown> {
   const chunks: Uint8Array[] = []
-  let total = 0
+  let received = 0
 
   for await (const chunk of stream) {
     const bytes = toBytes(chunk)
-    total += bytes.byteLength
+    chunks.push(bytes)
+    received += bytes.byteLength
 
-    if (total > MAX_MESSAGE_BYTES) {
+    if (received > MAX_MESSAGE_BYTES + LENGTH_PREFIX_BYTES) {
       throw new Error('Replication message is too large')
     }
 
-    chunks.push(bytes)
+    if (received < LENGTH_PREFIX_BYTES) {
+      continue
+    }
+
+    const buffer = Buffer.concat(chunks)
+    const length = buffer.readUInt32BE(0)
+
+    if (length > MAX_MESSAGE_BYTES) {
+      throw new Error('Replication message is too large')
+    }
+
+    if (buffer.byteLength >= LENGTH_PREFIX_BYTES + length) {
+      return JSON.parse(
+        buffer.subarray(LENGTH_PREFIX_BYTES, LENGTH_PREFIX_BYTES + length).toString('utf8')
+      ) as unknown
+    }
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  throw new Error('Replication stream ended before a complete message arrived')
 }
 
-/** Send one message and close this end for writing. */
-async function sendMessage(stream: Stream, message: unknown): Promise<void> {
-  stream.send(new TextEncoder().encode(JSON.stringify(message)))
-  await stream.close()
+/** Send one framed message. The stream stays open for the reply. */
+function sendMessage(stream: Stream, message: unknown): void {
+  stream.send(encodeMessage(message))
 }
 
 function parseRequest(value: unknown): ReplicationRequest {
@@ -144,39 +177,34 @@ async function respond(
   // for content stays behind the authorization check.
   if (request.op === 'cache') {
     if (!(await handlers.willAccept())) {
-      await sendMessage(stream, { ok: false, error: 'No room for another copy' })
+      sendMessage(stream, { ok: false, error: 'No room for another copy' })
       return
     }
 
-    await sendMessage(stream, {
-      ok: true,
-      op: 'cache',
-      cachedBytes: await handlers.cacheCopy(request.cid)
-    })
+    const cachedBytes = await handlers.cacheCopy(request.cid)
+    sendMessage(stream, { ok: true, op: 'cache', cachedBytes })
     return
   }
 
-  if (!handlers.isAuthorized(connection.remotePeer.toString())) {
-    await sendMessage(stream, { ok: false, error: 'Not authorized' })
+  const peerId = connection.remotePeer.toString()
+  if (!handlers.isAuthorized(peerId)) {
+    handlers.onRefused?.(peerId, request.op)
+    sendMessage(stream, { ok: false, error: 'Not authorized' })
     return
   }
 
   if (request.op === 'have') {
-    await sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
+    sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
     return
   }
 
   if (request.op === 'accept') {
-    await sendMessage(stream, {
-      ok: true,
-      op: 'accept',
-      willAccept: await handlers.willAccept()
-    })
+    sendMessage(stream, { ok: true, op: 'accept', willAccept: await handlers.willAccept() })
     return
   }
 
   const storedBytes = await handlers.store(request.cid)
-  await sendMessage(stream, { ok: true, op: 'store', storedBytes })
+  sendMessage(stream, { ok: true, op: 'store', storedBytes })
 }
 
 /** Start answering replication requests from other ADAMANT nodes. */
@@ -185,10 +213,12 @@ export async function registerReplicationProtocol(
   handlers: ReplicationHandlers
 ): Promise<void> {
   await node.libp2p.handle(REPLICATION_PROTOCOL, (stream, connection) => {
-    respond(stream, connection, handlers).catch((err: Error) => {
-      handlers.onError?.(`Replication request failed: ${err.message}`)
-      stream.abort(err)
-    })
+    respond(stream, connection, handlers)
+      .then(async () => stream.close())
+      .catch((err: Error) => {
+        handlers.onError?.(`Replication request failed: ${err.message}`)
+        stream.abort(err)
+      })
   })
 }
 
@@ -210,7 +240,7 @@ async function call(
   signal.addEventListener('abort', abortStream, { once: true })
 
   try {
-    await sendMessage(stream, request)
+    sendMessage(stream, request)
     const response = (await readMessage(stream)) as ReplicationResponse
 
     if (response?.ok !== true) {
@@ -220,6 +250,7 @@ async function call(
     return response
   } finally {
     signal.removeEventListener('abort', abortStream)
+    await stream.close().catch(() => {})
   }
 }
 

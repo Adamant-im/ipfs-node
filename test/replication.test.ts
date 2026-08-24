@@ -182,6 +182,46 @@ describe('placement outcomes', () => {
     assert.equal(report.acknowledged, 1)
   })
 
+  it('spreads an unpinned file wider than a pinned one', async () => {
+    const cachedOn: string[] = []
+
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async () => 'cached',
+      cacheOnly: async (peer) => {
+        cachedOn.push(peer.name)
+      }
+    })
+
+    // Nobody pinned it, so it rests on copies that can go at any moment; more
+    // of them is the only compensation available
+    assert.deepEqual(report.replicas, [])
+    assert.ok(cachedOn.length > 0, 'extra peers must be asked')
+    assert.ok(report.cached.length > storageTargets(placementFor(0), SELF).length)
+  })
+
+  it('does not widen when a peer took responsibility', async () => {
+    const cachedOn: string[] = []
+
+    await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: baseConfig,
+      store: async () => 'stored',
+      cacheOnly: async (peer) => {
+        cachedOn.push(peer.name)
+      }
+    })
+
+    assert.deepEqual(cachedOn, [])
+  })
+
   it('reports stored and cached copies separately', async () => {
     let first = true
     const report = await replicate({

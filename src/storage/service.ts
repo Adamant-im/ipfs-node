@@ -77,7 +77,10 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
     selfPeerId: selfPeerId(),
     peers: getReplicationPeers(),
     config: config.replication,
-    store: (peer) => placeCopy(peer, cid)
+    store: (peer) => placeCopy(peer, cid),
+    cacheOnly: async (peer) => {
+      await requestCache(helia, peer.multiAddr, cid, callOptions())
+    }
   })
 
   if (report.mode === 'quorum') {
@@ -230,7 +233,9 @@ export function createReplicationHandlers(): ReplicationHandlers {
     have: async (cid) => isDirectlyPinned(helia, CID.parse(cid)),
     willAccept: hasRoomForAnotherCopy,
     cacheCopy: cacheFileLocally,
-    onError: (message) => logger.warn(message)
+    onError: (message) => logger.warn(message),
+    onRefused: (peerId, op) =>
+      logger.info(`Refused "${op}" from an unknown peer ${peerId}; offering a cached copy instead`)
   }
 }
 
