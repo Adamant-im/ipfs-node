@@ -65,9 +65,10 @@
     confirmationRequired: false,
     temporaryTtlMs: 86400000, // 24 h. Lifetime of an unconfirmed upload
     gc: {
-      // Controls the scheduled collector only. POST /api/storage/gc always runs
-      // on demand. Enable this after agreeing on a deletion policy.
-      enabled: false,
+      // Controls the scheduled collector only; POST /api/storage/gc always runs
+      // on demand. Blocks are freed only when space is short, so leaving this on
+      // costs nothing until one of the thresholds below is reached.
+      enabled: true,
       schedule: '0 */15 * * * *',
       highWatermarkBytes: 53687091200, // 50 GiB. Collection starts above this blockstore size
       lowWatermarkBytes: 42949672960 // 40 GiB. Collection reclaims down to this size

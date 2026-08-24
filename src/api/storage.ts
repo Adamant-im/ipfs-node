@@ -78,6 +78,7 @@ storageAdminRouter.post('/gc', async (req, res, next) => {
       durationMs: report.durationMs,
       dryRun: report.dryRun,
       collected: report.collected,
+      trigger: report.trigger,
       blockstoreBytesBefore: report.blockstoreBytesBefore,
       estimatedBytesAfter: report.estimatedBytesAfter,
       releasedCids: report.releasedCids,

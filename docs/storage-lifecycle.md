@@ -115,18 +115,38 @@ Collection applies three independent rules:
    from four holders to two without ever losing durability; see
    [Replication and durability](#replication-and-durability).
 
-Released files lose their pin, then Helia deletes every unpinned block. That
-pass also reclaims blocks cached while serving other peers.
+### Releasing is not deleting
+
+Losing a pin and losing the bytes are separate steps, and only the first one
+follows from the rules above.
+
+A released file stays on disk, unprotected. It keeps answering reads for free,
+so a node that handed a copy over still serves it until something else needs the
+space. Deleting it eagerly would only mean fetching it again over the network
+later.
+
+Blocks are deleted when space is actually short, which is either of:
+
+- the blockstore grew above `storage.gc.highWatermarkBytes`, or
+- free space on the volume fell into `storage.diskReserveBytes`
+
+The second case matters on a disk smaller than the configured watermark, where
+the ceiling would never be reached and the volume would fill instead. A report
+says which of the two applied in its `trigger` field.
+
+That pass also reclaims blocks cached while serving reads for content this node
+does not hold, which is the only thing that bounds the read cache.
 
 Confirmed files are never selected by the planner, and Helia never deletes a
 pinned block. Before deleting anything, the collector verifies that every
-confirmed file is still protected and restores a missing pin first.
+confirmed file it holds is still protected and restores a missing pin first.
 
-`storage.gc.enabled` controls the **scheduled** collector and is `false` by
-default: deletion in production must be agreed with the maintainers first. The
-authorized `POST /api/storage/gc` endpoint always runs on demand, and
-`?dryRun=true` reports the exact CIDs that would be released and retained without
-touching a block.
+`storage.gc.enabled` controls the **scheduled** collector. It is on by default,
+which costs nothing while there is room: the collector releases what the rules
+say, and frees bytes only under the pressure described above. The authorized
+`POST /api/storage/gc` endpoint always runs on demand, `?dryRun=true` reports the
+exact CIDs that would be released and retained without touching a block, and
+`?force=true` frees them regardless of pressure.
 
 The `removedCids` field of a collection report identifies blocks, not files. The
 blockstore addresses content by multihash and rebuilds a CID with its own default
@@ -230,6 +250,10 @@ and it does not need to know how old the file is: the holders of a file of any
 age are a prefix of the same ranking, so the widest prefix any tier can ask for
 covers all of them. The read then talks to a handful of named nodes instead of
 depending on who happens to be connected.
+
+Blocks fetched this way are written into the local blockstore, so the next read
+of the same file is served locally instead of over the network again. They are
+not pinned, which means they are reclaimed once space is short and not before.
 
 A node that still cannot retrieve content answers `408` after `findFileTimeout`.
 It never answers `404`, because it cannot know that content does not exist.

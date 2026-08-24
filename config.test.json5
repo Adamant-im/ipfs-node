@@ -33,7 +33,7 @@
     confirmationRequired: false,
     temporaryTtlMs: 3600000,
     gc: {
-      enabled: false,
+      enabled: true,
       schedule: '0 */15 * * * *',
       highWatermarkBytes: 10485760,
       lowWatermarkBytes: 5242880

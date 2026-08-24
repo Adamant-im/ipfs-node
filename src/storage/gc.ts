@@ -10,14 +10,23 @@ export interface GcPlanInput {
   /** Current blockstore size in bytes. */
   blockstoreBytes: number
   watermarks: Watermarks
+  /** Free bytes on the blockstore filesystem, when known. */
+  availableBytes?: number
+  /** Free bytes uploads must never consume, when known. */
+  reserveBytes?: number
   /** Every registered file; confirmed files are filtered out by the planner. */
   records: FileRecord[]
   now?: number
 }
 
+/** Why blocks are being deleted, or why they are not. */
+export type CollectionTrigger = 'none' | 'watermark' | 'disk-reserve' | 'forced'
+
 export interface GcPlan {
-  /** True once the blockstore grew past the high watermark. */
+  /** True once space is actually short. */
   shouldCollect: boolean
+  /** What made collection necessary. */
+  trigger: CollectionTrigger
   /** Files released by the TTL policy, independent of the watermarks. */
   expired: FileRecord[]
   /** Additional files evicted to bring the blockstore below the low watermark. */
@@ -34,10 +43,10 @@ export interface GcPlan {
  *
  * 1. TTL: an abandoned upload is released once it outlives its expiry, whatever
  *    the blockstore size is.
- * 2. Watermarks: when the blockstore grows above the high watermark, the oldest
- *    unconfirmed files are evicted until the estimate drops below the low
- *    watermark. Hysteresis between the two thresholds stops the collector from
- *    running on every tick.
+ * 2. Watermarks: when the blockstore grows above the high watermark, or free
+ *    space falls into the disk reserve, the oldest unconfirmed files are evicted
+ *    until the estimate drops below the low watermark. Hysteresis between the
+ *    two thresholds stops the collector from running on every tick.
  *
  * Confirmed files are never selected, so durable content cannot be reclaimed.
  */
@@ -56,7 +65,21 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
     estimatedBytesAfter -= record.storedBytes
   }
 
-  const shouldCollect = input.blockstoreBytes > highWatermarkBytes
+  // Space is short when the blockstore passed its ceiling, or when the volume
+  // itself is running out. The second case matters on a disk smaller than the
+  // configured watermark, where the ceiling would never be reached.
+  const overWatermark = input.blockstoreBytes > highWatermarkBytes
+  const underReserve =
+    input.availableBytes !== undefined &&
+    input.reserveBytes !== undefined &&
+    input.availableBytes < input.reserveBytes
+
+  const shouldCollect = overWatermark || underReserve
+  const trigger: CollectionTrigger = overWatermark
+    ? 'watermark'
+    : underReserve
+      ? 'disk-reserve'
+      : 'none'
   const evicted: FileRecord[] = []
 
   if (shouldCollect) {
@@ -78,6 +101,7 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
 
   return {
     shouldCollect,
+    trigger,
     expired,
     evicted,
     retained: [...confirmed, ...alive.filter((record) => !releasedCids.has(record.cid))],
@@ -90,6 +114,8 @@ export interface GcReport {
   durationMs: number
   dryRun: boolean
   collected: boolean
+  /** What made this run delete blocks, or why it did not. */
+  trigger: CollectionTrigger
   blockstoreBytesBefore: number
   estimatedBytesAfter: number
   releasedCids: string[]
@@ -116,6 +142,10 @@ export interface GcRunOptions {
   registry: FileRegistry
   watermarks: Watermarks
   blockstoreBytes: number
+  /** Free bytes on the blockstore filesystem. */
+  availableBytes?: number
+  /** Free bytes uploads must never consume. */
+  reserveBytes?: number
   /** Report what would happen without unpinning or deleting anything. */
   dryRun?: boolean
   /** Collect even when the blockstore is below the high watermark. */
@@ -144,18 +174,26 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
   const plan = planGarbageCollection({
     blockstoreBytes: options.blockstoreBytes,
     watermarks: options.watermarks,
+    availableBytes: options.availableBytes,
+    reserveBytes: options.reserveBytes,
     records,
     now: startedAt
   })
 
   const released = [...plan.expired, ...plan.evicted]
-  const collect = options.force === true || plan.shouldCollect || released.length > 0
+
+  // Releasing and deleting are separate decisions. Losing a pin is policy: the
+  // file is no longer protected. Deleting is reclamation, and it waits until
+  // space is actually short, so an unpinned block keeps serving reads for free
+  // instead of being thrown away and fetched over the network again.
+  const collect = options.force === true || plan.shouldCollect
 
   const report: GcReport = {
     startedAt,
     durationMs: 0,
     dryRun: options.dryRun === true,
     collected: false,
+    trigger: options.force === true ? 'forced' : plan.trigger,
     blockstoreBytesBefore: options.blockstoreBytes,
     estimatedBytesAfter: plan.estimatedBytesAfter,
     releasedCids: released.map((record) => record.cid),
@@ -195,7 +233,7 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     }
   }
 
-  if (options.dryRun === true || !collect) {
+  if (options.dryRun === true) {
     report.durationMs = Date.now() - startedAt
     return report
   }
@@ -207,6 +245,13 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     } catch (err) {
       errors.push(`Release failed for ${record.cid}: ${(err as Error).message}`)
     }
+  }
+
+  if (!collect) {
+    // Nothing is deleted while there is room. The released blocks stay on disk,
+    // unprotected, and keep answering reads until the space is needed.
+    report.durationMs = Date.now() - startedAt
+    return report
   }
 
   await options.node.gc({

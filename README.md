@@ -65,7 +65,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "confirmationRequired": false,
     "temporaryTtlMs": 86400000,
     "gc": {
-      "enabled": false,
+      "enabled": true,
       "schedule": "0 */15 * * * *",
       "highWatermarkBytes": 53687091200,
       "lowWatermarkBytes": 42949672960
@@ -107,7 +107,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Set `enableDebugApi: true` only when the authenticated debug route is operationally required
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
 - Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
-- Leave `storage.gc.enabled` as `false` until a deletion policy is agreed; `POST /api/storage/gc` runs on demand meanwhile
+- `storage.gc.enabled` is on by default and frees blocks only when the blockstore passes `highWatermarkBytes` or free space falls into `diskReserveBytes`; released files stay readable until then
 - Set `replication.enabled` on every node that should place copies; replication needs no key and no extra address, because it runs on a libp2p protocol between the peers already listed in `nodes`
 - Tune `replication.placement` if the deployment wants a different number of copies per file age
 - `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did

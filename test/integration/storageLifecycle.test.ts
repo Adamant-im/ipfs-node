@@ -17,6 +17,11 @@ import { deterministicBytes } from '../fixtures.js'
 /** Only loopback, and port 0 so the OS picks a free port. */
 const LISTEN = ['/ip4/127.0.0.1/tcp/0']
 const WATERMARKS = { highWatermarkBytes: 1_000_000_000, lowWatermarkBytes: 500_000_000 }
+/**
+ * Space is short, but releasing the expired file alone brings the estimate back
+ * under the low watermark, so nothing else has to be evicted.
+ */
+const TIGHT = { highWatermarkBytes: 3500, lowWatermarkBytes: 3100 }
 
 let storeDir: string
 let blockstore: FsBlockstore
@@ -265,12 +270,13 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
-      watermarks: WATERMARKS,
+      watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
     })
 
     assert.equal(report.collected, true)
+    assert.equal(report.trigger, 'watermark')
     assert.deepEqual(report.releasedCids, [cids.abandoned])
     assert.deepEqual(report.retainedCids.sort(), [cids.confirmed, cids.live].sort())
     assert.deepEqual(report.errors, [])
@@ -283,6 +289,48 @@ describe('garbage collection against fixture data', () => {
 
     assert.equal(await registry.get(cids.abandoned), undefined)
     assert.equal((await registry.get(cids.confirmed))?.state, 'confirmed')
+  })
+
+  it('keeps unpinned blocks on disk while there is still room', async () => {
+    const { registry, cids } = await createFixture()
+
+    const report = await runGarbageCollection({
+      node,
+      registry,
+      watermarks: WATERMARKS,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    // The abandoned upload loses its pin, because that is policy. Its blocks and
+    // the unpinned cache stay, because reclaiming them would only cost a refetch
+    assert.equal(report.collected, false)
+    assert.equal(report.trigger, 'none')
+    assert.deepEqual(report.releasedCids, [cids.abandoned])
+    assert.equal(report.removedBlocks, 0)
+
+    const remaining = await storedDigests()
+    assert.equal(remaining.has(digestOf(cids.abandoned)), true)
+    assert.equal(remaining.has(digestOf(cids.cached)), true)
+    assert.equal((await registry.get(cids.abandoned))?.pinned, false)
+  })
+
+  it('reclaims once free space falls into the disk reserve', async () => {
+    const { registry, cids } = await createFixture()
+
+    const report = await runGarbageCollection({
+      node,
+      registry,
+      watermarks: WATERMARKS,
+      blockstoreBytes: 4096,
+      availableBytes: 1024,
+      reserveBytes: 4096,
+      now: 1000
+    })
+
+    assert.equal(report.collected, true)
+    assert.equal(report.trigger, 'disk-reserve')
+    assert.equal((await storedDigests()).has(digestOf(cids.cached)), false)
   })
 
   it('evicts a live upload too when the blockstore is above the high watermark', async () => {

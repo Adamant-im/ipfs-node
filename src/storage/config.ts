@@ -12,7 +12,13 @@ const DAY = 24 * 60 * 60 * 1000
  * the two stops the collector from running on every tick near one threshold.
  */
 export interface GarbageCollectionConfig {
-  /** Whether the scheduled collector runs. The admin endpoint works regardless. */
+  /**
+   * Whether the scheduled collector runs. The admin endpoint works regardless.
+   *
+   * The collector frees blocks only when space is short, so leaving it on costs
+   * nothing until the blockstore passes `highWatermarkBytes` or free space
+   * falls into `storage.diskReserveBytes`.
+   */
   enabled: boolean
   /** Collection schedule in cron format. */
   schedule: string
@@ -61,7 +67,7 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   confirmationRequired: false,
   temporaryTtlMs: 24 * 60 * 60 * 1000,
   gc: {
-    enabled: false,
+    enabled: true,
     schedule: '0 */15 * * * *',
     highWatermarkBytes: 50 * GiB,
     lowWatermarkBytes: 40 * GiB
