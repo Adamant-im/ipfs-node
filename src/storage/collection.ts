@@ -32,9 +32,9 @@ export interface CollectStorageOptions {
  *
  * Everything it needs is passed in rather than imported, which is what lets a
  * test drive it against a throwaway node and a real lock. The wiring is the
- * part worth testing here: this pass must not start while an upload is between
+ * part worth testing here: Helia GC must not start while an upload is between
  * its first block write and its pin, and that is a property of *taking* the
- * exclusive lease, not of the lock in isolation.
+ * exclusive lease at deletion, not of the lock in isolation.
  *
  * The handover runs **before** the lease is taken. It asks every designated
  * holder whether it has the file, one candidate after another, and each of
@@ -46,26 +46,21 @@ export interface CollectStorageOptions {
  */
 export async function collectStorage(options: CollectStorageOptions): Promise<CollectionReport> {
   const { demoted } = await options.demote({ dryRun: options.dryRun })
+  const metrics = await options.measure()
 
-  return options.lock.withExclusive(async () => {
-    // Measured inside the lease so the watermark decision reflects the
-    // blockstore as it is now, rather than as it was before waiting for an
-    // upload to finish.
-    const metrics = await options.measure()
-
-    const report = await runGarbageCollection({
-      node: options.node,
-      registry: options.registry,
-      watermarks: options.watermarks,
-      blockstoreBytes: metrics.blockstoreBytes,
-      availableBytes: metrics.availableBytes,
-      reserveBytes: options.reserveBytes,
-      dryRun: options.dryRun,
-      force: options.force,
-      pinTimeoutMs: options.pinTimeoutMs,
-      log: options.log
-    })
-
-    return { ...report, demoted }
+  const report = await runGarbageCollection({
+    node: options.node,
+    registry: options.registry,
+    watermarks: options.watermarks,
+    blockstoreBytes: metrics.blockstoreBytes,
+    availableBytes: metrics.availableBytes,
+    reserveBytes: options.reserveBytes,
+    dryRun: options.dryRun,
+    force: options.force,
+    pinTimeoutMs: options.pinTimeoutMs,
+    withCollectionLease: (work) => options.lock.withExclusive(work),
+    log: options.log
   })
+
+  return { ...report, demoted }
 }

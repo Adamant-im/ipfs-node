@@ -180,8 +180,8 @@ pinned block. Before deleting anything, the collector verifies that every
 confirmed file it holds is still protected and restores a missing pin first.
 
 `storage.gc.enabled` controls the **scheduled** collector. It is on by default,
-which costs nothing while there is room: the collector releases what the rules
-say, and frees bytes only under the pressure described above. The authorized
+but frees no bytes while there is room: the collector releases what the rules
+say, and reclaims blocks only under the pressure described above. The authorized
 `POST /api/storage/gc` endpoint always runs on demand, `?dryRun=true` reports the
 exact CIDs that would be released and retained without touching a block, and
 `?force=true` frees them regardless of pressure.
@@ -192,10 +192,12 @@ codec while listing, so an entry can read differently from the CID a file was
 uploaded under.
 
 Intake and pinning hold a process-level shared storage-operation lease from the
-first block write or copy through registry commit or cleanup. Collection holds
-the exclusive lease for its entire demotion and deletion pass, so it cannot
-remove an upload's earlier blocks while the DAG is still unpinned. Once a
-collector is queued, later intake waits behind it to prevent collection
+first block write or copy through registry commit or cleanup. Handover, storage
+measurement, registry planning and dry runs stay outside the exclusive lease;
+they do not delete blocks and may scale with the existing corpus. Only Helia's
+destructive GC holds the exclusive lease, so it waits for every unpinned upload
+to commit or finish cleanup without blocking new uploads during full scans.
+Once deletion is queued, later intake waits behind it to prevent collection
 starvation. Schedule long forced collections accordingly.
 
 ### What a run triggered by free space reclaims

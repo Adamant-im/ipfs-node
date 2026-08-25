@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { FsDatastore } from 'datastore-fs'
+import { Key } from 'interface-datastore'
 import { FileRegistry, isExpired, isReclaimable, type FileRecord } from '../src/storage/registry.js'
 
 const CID_A = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
@@ -53,6 +54,93 @@ after(async () => {
 })
 
 describe('FileRegistry', () => {
+  it('does not reuse a revision persisted by a previous process', async () => {
+    const prefix = '/adm/restart-revision'
+    const previous: FileRecord = {
+      cid: CID_A,
+      name: 'before-restart.jpg',
+      state: 'temporary',
+      createdAt: 1,
+      expiresAt: 2,
+      confirmedAt: null,
+      fileSize: 100,
+      storedBytes: 120,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      revision: 1
+    }
+
+    // Seed the store directly: the in-memory revision generator belongs to the
+    // new process and has never seen this write.
+    await datastore.put(
+      new Key(`${prefix}/${CID_A}`),
+      new TextEncoder().encode(JSON.stringify(previous))
+    )
+
+    const registry = new FileRegistry(datastore, prefix)
+    const current = await registry.save({ ...previous, name: 'after-restart.jpg' })
+
+    assert.notEqual(current.revision, previous.revision)
+    assert.equal(typeof current.revision, 'string')
+  })
+
+  it('fails closed for valid JSON that is not a FileRecord', async () => {
+    const prefix = '/adm/invalid-record'
+    const malformed = {
+      cid: CID_A,
+      name: 'durable.jpg',
+      state: 'corrupted',
+      createdAt: 1,
+      expiresAt: null,
+      confirmedAt: 1,
+      fileSize: 100,
+      storedBytes: 120,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      revision: 1
+    }
+
+    await datastore.put(
+      new Key(`${prefix}/${CID_A}`),
+      new TextEncoder().encode(JSON.stringify(malformed))
+    )
+
+    const registry = new FileRegistry(datastore, prefix)
+
+    await assert.rejects(() => registry.get(CID_A), /Invalid lifecycle registry record/)
+    assert.deepEqual(await registry.all(), [])
+  })
+
+  it('rejects a record whose payload names another CID', async () => {
+    const prefix = '/adm/mismatched-record'
+    const mismatched: FileRecord = {
+      cid: CID_B,
+      name: 'wrong-key.jpg',
+      state: 'confirmed',
+      createdAt: 1,
+      expiresAt: null,
+      confirmedAt: 1,
+      fileSize: 100,
+      storedBytes: 120,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      revision: 'old-process:1'
+    }
+
+    await datastore.put(
+      new Key(`${prefix}/${CID_A}`),
+      new TextEncoder().encode(JSON.stringify(mismatched))
+    )
+
+    const registry = new FileRegistry(datastore, prefix)
+
+    await assert.rejects(() => registry.get(CID_A), /Invalid lifecycle registry record/)
+    assert.deepEqual(await registry.all(), [])
+  })
+
   it('registers an upload as confirmed when confirmation is not required', async () => {
     const registry = createRegistry()
 

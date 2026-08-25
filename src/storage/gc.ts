@@ -188,6 +188,8 @@ export interface GcRunOptions {
   force?: boolean
   /** Bounds the DAG walk when a missing pin has to be restored. */
   pinTimeoutMs?: number
+  /** Excludes in-flight unpinned writes while Helia deletes blocks. */
+  withCollectionLease?: <T>(work: () => Promise<T>) => Promise<T>
   now?: number
   log?: (message: string) => void
 }
@@ -377,21 +379,33 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
 
   let deletionErrors = 0
 
-  await options.node.gc({
-    onProgress: (event) => {
-      if (event.type === 'helia:gc:deleted') {
-        report.removedBlocks += 1
-        if (report.removedCids.length < MAX_REPORTED_CIDS) {
-          report.removedCids.push(event.detail.toString())
+  const collectBlocks = async (): Promise<void> => {
+    await options.node.gc({
+      onProgress: (event) => {
+        if (event.type === 'helia:gc:deleted') {
+          report.removedBlocks += 1
+          if (report.removedCids.length < MAX_REPORTED_CIDS) {
+            report.removedCids.push(event.detail.toString())
+          }
+        }
+
+        if (event.type === 'helia:gc:error') {
+          deletionErrors += 1
+          errors.push(String(event.detail))
         }
       }
+    })
+  }
 
-      if (event.type === 'helia:gc:error') {
-        deletionErrors += 1
-        errors.push(String(event.detail))
-      }
-    }
-  })
+  // Planning, registry scans and pin verification do not delete blocks and can
+  // safely overlap uploads. Only Helia GC needs the exclusive lease: it waits
+  // for every import-to-pin session to settle before inspecting unpinned
+  // blocks, without holding new uploads behind full-corpus scans or dry runs.
+  if (options.withCollectionLease === undefined) {
+    await collectBlocks()
+  } else {
+    await options.withCollectionLease(collectBlocks)
+  }
 
   // Helia resolves even when it could not delete everything. Which file a
   // surviving block belongs to is unknowable — the blockstore addresses content
@@ -425,10 +439,11 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     }
   }
 
-  report.collected = true
+  report.collected = errors.length === 0
   report.durationMs = Date.now() - startedAt
   log(
-    `Garbage collection released ${released.length} files and removed ${report.removedBlocks} blocks`
+    `Garbage collection released ${releasedCleanly.length} files and removed ` +
+      `${report.removedBlocks} blocks`
   )
 
   return report

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,9 +7,11 @@ import { after, before, describe, it } from 'node:test'
 import { unixfs, type UnixFS } from '@helia/unixfs'
 import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
+import { Key } from 'interface-datastore'
 import { fixedSize } from 'ipfs-unixfs-importer/chunker'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
+import { createUploadAdmission, getUploadSession } from '../../src/middleware/uploadAdmission.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
 import { collectStorage } from '../../src/storage/collection.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
@@ -22,6 +25,7 @@ import {
   INTAKE_READ_CONCURRENCY,
   meteredBlocks
 } from '../../src/storage/meter.js'
+import { ConcurrencyLimiter } from '../../src/storage/limits.js'
 import { StorageOperationLock } from '../../src/storage/operationLock.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
@@ -62,6 +66,58 @@ function createSession(
     onCleanupError: (err) => assert.fail(`unexpected cleanup error: ${err.message}`),
     onSettle
   })
+}
+
+class AdmissionResponse extends EventEmitter {
+  statusCode = 200
+  body: unknown
+
+  set(): this {
+    return this
+  }
+
+  status(value: number): this {
+    this.statusCode = value
+    return this
+  }
+
+  send(value: unknown): this {
+    this.body = value
+    return this
+  }
+}
+
+/** Admit one request through the same middleware implementation production uses. */
+async function admitThrough(lock: StorageOperationLock): Promise<{
+  response: AdmissionResponse
+  session: UploadSession
+}> {
+  const admission = createUploadAdmission({
+    storage: { maxRequestSizeBytes: 64 * 1024 * 1024, diskReserveBytes: 1 },
+    limiter: new ConcurrencyLimiter(2),
+    operationLock: lock,
+    availableStorageSize: async () => 1024n ** 4n,
+    blockstore: node.blockstore,
+    isPinned: (cid) => node.pins.isPinned(cid),
+    deleteBlock: (cid) => blockstore.delete(cid),
+    parseCid: (value) => CID.parse(value),
+    log: {
+      info: () => undefined,
+      warn: () => undefined,
+      error: (message) => assert.fail(String(message))
+    }
+  })
+  const request = { headers: { 'content-length': '1048576' } }
+  const response = new AdmissionResponse()
+
+  await new Promise<void>((resolve, reject) => {
+    admission(request as never, response as never, (error?: unknown) =>
+      error === undefined ? resolve() : reject(error)
+    )
+  })
+
+  assert.equal(response.statusCode, 200)
+  return { response, session: getUploadSession(request as never) }
 }
 
 /** Register a file the way an upload does: under the CID lock. */
@@ -282,6 +338,54 @@ describe('upload session cleanup', () => {
   })
 })
 
+describe('upload admission wiring', () => {
+  it('holds the production shared lease until the request commits', async () => {
+    const lock = new StorageOperationLock()
+    const admitted = await admitThrough(lock)
+    let collectionStarted = false
+
+    const collection = lock.withExclusive(async () => {
+      collectionStarted = true
+    })
+
+    for (let tick = 0; tick < 10; tick += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    assert.equal(collectionStarted, false)
+
+    admitted.session.commit()
+    await collection
+    admitted.response.emit('close')
+
+    assert.equal(collectionStarted, true)
+  })
+
+  it('keeps the lease through disconnect cleanup and removes unfinished blocks', async () => {
+    const lock = new StorageOperationLock()
+    const admitted = await admitThrough(lock)
+    const cid = await unixfs({ blockstore: admitted.session.blockstore }).addBytes(
+      deterministicBytes(2 * 1024 * 1024, 'admission-disconnect')
+    )
+    assert.equal(await blockstore.has(cid), true)
+
+    admitted.response.emit('close')
+    let collectionStarted = false
+    const collection = lock.withExclusive(async () => {
+      collectionStarted = true
+    })
+
+    for (let tick = 0; tick < 10; tick += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    assert.equal(collectionStarted, false)
+
+    await collection
+    assert.equal(admitted.session.isSettled, true)
+    assert.equal(collectionStarted, true)
+    assert.equal(await blockstore.has(cid), false)
+  })
+})
+
 describe('garbage collection against fixture data', () => {
   /**
    * One confirmed file, one abandoned upload, one live upload, and a block that
@@ -487,6 +591,60 @@ describe('garbage collection against fixture data', () => {
     assert.equal((await registry.get(cids.abandoned))?.state, 'expired')
   })
 
+  it('does not report a clean collection when registry cleanup fails', async () => {
+    const { registry, cids } = await createFixture()
+    const cleanupFails = new Proxy(registry, {
+      get: (target, property) =>
+        property === 'transition'
+          ? async (): Promise<never> => {
+              throw new Error('registry cleanup failed')
+            }
+          : Reflect.get(target, property, target)
+    }) as FileRegistry
+
+    const report = await runGarbageCollection({
+      node,
+      registry: cleanupFails,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    assert.equal(report.collected, false)
+    assert.ok(report.errors.some((message) => message.includes('registry cleanup failed')))
+    assert.equal((await registry.get(cids.abandoned))?.state, 'expired')
+  })
+
+  it('does not reclaim a syntactically valid but structurally invalid record', async () => {
+    const prefix = `/adm/invalid-lifecycle-${prefixCounter}`
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'invalid-lifecycle'))
+    await pinFile(node, cid)
+    await datastore.put(
+      new Key(`${prefix}/${cid.toString()}`),
+      new TextEncoder().encode(
+        JSON.stringify({
+          ...record({ cid: cid.toString(), state: 'confirmed' }),
+          state: 'corrupted',
+          revision: 1
+        })
+      )
+    )
+
+    const registry = new FileRegistry(datastore, prefix)
+    const report = await runGarbageCollection({
+      node,
+      registry,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    assert.deepEqual(report.releasedCids, [])
+    assert.equal(await isDirectlyPinned(node, cid), true)
+    assert.equal(await blockstore.has(cid), true)
+    await assert.rejects(() => registry.get(cid.toString()), /Invalid lifecycle registry record/)
+  })
+
   it('does not apply a plan the registry has moved past', async () => {
     const { registry, cids } = await createFixture()
 
@@ -684,6 +842,21 @@ describe('block metering', () => {
 describe('collection pass', () => {
   const watermarks = { highWatermarkBytes: 0, lowWatermarkBytes: 0 }
 
+  async function withoutExclusiveWait<T>(work: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('collection waited for the shared lease')), 1000)
+    })
+
+    try {
+      return await Promise.race([work, timeout])
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
   function pass(
     lock: StorageOperationLock,
     registry: FileRegistry,
@@ -702,34 +875,67 @@ describe('collection pass', () => {
     })
   }
 
-  it('waits for an upload that is between its first block and its pin', async () => {
+  it('waits for an upload before Helia starts deleting blocks', async () => {
     // The lease has to be taken by the pass itself. Testing the lock alone
-    // leaves the wiring free to disappear without a test noticing.
-    //
-    // `measure` runs inside the lease and nowhere else, so whether it has been
-    // called says exactly whether the pass got in.
+    // leaves the wiring free to disappear without a test noticing. Planning is
+    // allowed to finish; the injected `gc` marks the exact destructive edge.
     const lock = new StorageOperationLock()
     const registry = createRegistry()
     const lease = await lock.acquireShared()
-    let entered = false
+    let deletionStarted = false
+    let measured: (() => void) | undefined
+    const measurementFinished = new Promise<void>((resolve) => {
+      measured = resolve
+    })
+    const collectingNode = {
+      gc: async (): Promise<void> => {
+        deletionStarted = true
+      }
+    } as IpfsNode
 
     const collection = pass(lock, registry, {
+      node: collectingNode,
       measure: async () => {
-        entered = true
+        measured?.()
         return { blockstoreBytes: 0, availableBytes: 1_000_000_000 }
       }
     })
 
+    await measurementFinished
     for (let tick = 0; tick < 10; tick += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve))
     }
 
-    assert.equal(entered, false, 'the pass must not start while an upload holds its lease')
+    assert.equal(deletionStarted, false, 'Helia GC must wait while an upload holds its lease')
 
     lease.release()
     await collection
 
-    assert.equal(entered, true)
+    assert.equal(deletionStarted, true)
+  })
+
+  it('does not take the exclusive lease for a dry run', async () => {
+    const lock = new StorageOperationLock()
+    const lease = await lock.acquireShared()
+
+    try {
+      const report = await withoutExclusiveWait(pass(lock, createRegistry(), { dryRun: true }))
+      assert.equal(report.collected, false)
+    } finally {
+      lease.release()
+    }
+  })
+
+  it('does not take the exclusive lease when no deletion is needed', async () => {
+    const lock = new StorageOperationLock()
+    const lease = await lock.acquireShared()
+
+    try {
+      const report = await withoutExclusiveWait(pass(lock, createRegistry(), { force: false }))
+      assert.equal(report.collected, false)
+    } finally {
+      lease.release()
+    }
   })
 
   it('asks peers before taking the lease, not while holding it', async () => {

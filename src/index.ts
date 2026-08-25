@@ -37,7 +37,7 @@ await registerReplicationProtocol(helia, createReplicationHandlers())
 function startLifecycleJobs(): void {
   // The collector frees blocks only when space is short: above the high
   // watermark or once free space falls into the disk reserve. It never selects
-  // a confirmed file this node holds, so leaving it on costs nothing while
+  // a confirmed file this node holds, so leaving it on frees nothing while
   // there is room.
   if (config.storage.gc.enabled) {
     logger.info(

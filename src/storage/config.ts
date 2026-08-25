@@ -15,9 +15,9 @@ export interface GarbageCollectionConfig {
   /**
    * Whether the scheduled collector runs. The admin endpoint works regardless.
    *
-   * The collector frees blocks only when space is short, so leaving it on costs
-   * nothing until the blockstore passes `highWatermarkBytes` or free space
-   * falls into `storage.diskReserveBytes`.
+   * The collector frees blocks only when space is short: after the blockstore
+   * passes `highWatermarkBytes` or free space falls into
+   * `storage.diskReserveBytes`.
    */
   enabled: boolean
   /** Collection schedule in cron format. */

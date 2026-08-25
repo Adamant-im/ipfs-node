@@ -53,7 +53,7 @@ export class StorageOperationLock {
     return new Promise((resolve) => this.waiters.push({ mode: 'shared', resolve }))
   }
 
-  /** Take the exclusive lease used by one complete collection pass. */
+  /** Take the exclusive lease used while Helia deletes unpinned blocks. */
   acquireExclusive(): Promise<StorageOperationLease> {
     this.refuseReentry('exclusive')
 
@@ -75,7 +75,7 @@ export class StorageOperationLock {
     }
   }
 
-  /** Run one complete collection operation under the exclusive lease. */
+  /** Run Helia block deletion under the exclusive lease. */
   async withExclusive<T>(work: () => Promise<T>): Promise<T> {
     const lease = await this.acquireExclusive()
     try {

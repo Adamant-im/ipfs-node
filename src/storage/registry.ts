@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Key } from 'interface-datastore'
 import type { Datastore, Pair } from 'interface-datastore'
@@ -10,15 +11,6 @@ export const REGISTRY_PREFIX = '/adm/files'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-
-/**
- * Stamps every stored record, so two writes are never mistaken for one.
- *
- * A counter carried on the record itself would reset whenever a writer builds a
- * fresh record rather than editing the stored one, which is exactly what
- * registering an already-known CID does.
- */
-let writes = 0
 
 /** Lifecycle state of a file known to this node. */
 export type FileState = 'temporary' | 'confirmed' | 'expired'
@@ -56,11 +48,61 @@ export interface FileRecord {
    * all do network or blockstore work after selecting a record; without this
    * stamp they could apply that stale decision to a re-uploaded CID.
    *
-   * It is unique within a process run and means nothing across restarts, which
-   * is all it is compared over: a caller only ever checks a record against a
-   * stamp it was handed by its own write.
+   * New writes use UUIDs so a record selected before a restart cannot be
+   * mistaken for a different write made afterwards. Numbers remain accepted
+   * for records written by earlier versions.
    */
-  revision?: number
+  revision?: string | number
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function isNullableTimestamp(value: unknown): value is number | null {
+  return value === null || isFiniteNonNegative(value)
+}
+
+/** Validate the durable shape before lifecycle policy is allowed to trust it. */
+function isFileRecord(value: unknown): value is FileRecord {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const record = value as Partial<FileRecord>
+  const states: FileState[] = ['temporary', 'confirmed', 'expired']
+  const revisionIsValid =
+    record.revision === undefined ||
+    (typeof record.revision === 'string' && record.revision.length > 0) ||
+    isFiniteNonNegative(record.revision)
+
+  return (
+    typeof record.cid === 'string' &&
+    record.cid.length > 0 &&
+    typeof record.name === 'string' &&
+    record.state !== undefined &&
+    states.includes(record.state) &&
+    isFiniteNonNegative(record.createdAt) &&
+    isNullableTimestamp(record.expiresAt) &&
+    isNullableTimestamp(record.confirmedAt) &&
+    isFiniteNonNegative(record.fileSize) &&
+    isFiniteNonNegative(record.storedBytes) &&
+    typeof record.pinned === 'boolean' &&
+    typeof record.heldLocally === 'boolean' &&
+    Array.isArray(record.replicas) &&
+    record.replicas.every((peer) => typeof peer === 'string') &&
+    revisionIsValid
+  )
+}
+
+/** Decode a record and ensure it belongs to the datastore key that carried it. */
+function decodeRecord(value: Uint8Array, expectedCid: string): FileRecord | undefined {
+  try {
+    const parsed: unknown = JSON.parse(decoder.decode(value))
+    return isFileRecord(parsed) && parsed.cid === expectedCid ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** What {@link FileRegistry.transition} should do with a record. */
@@ -276,7 +318,13 @@ export class FileRegistry {
 
   async get(cid: string): Promise<FileRecord | undefined> {
     try {
-      return JSON.parse(decoder.decode(await this.datastore.get(this.key(cid)))) as FileRecord
+      const record = decodeRecord(await this.datastore.get(this.key(cid)), cid)
+
+      if (record === undefined) {
+        throw new Error(`Invalid lifecycle registry record for ${cid}`)
+      }
+
+      return record
     } catch (err) {
       if (isNotFound(err)) {
         return undefined
@@ -286,8 +334,7 @@ export class FileRegistry {
   }
 
   async save(record: FileRecord): Promise<FileRecord> {
-    writes += 1
-    const stored: FileRecord = { ...record, revision: writes }
+    const stored: FileRecord = { ...record, revision: randomUUID() }
     await this.datastore.put(this.key(stored.cid), encoder.encode(JSON.stringify(stored)))
     return stored
   }
@@ -330,13 +377,18 @@ export class FileRegistry {
         return
       }
 
-      try {
-        yield JSON.parse(decoder.decode(entry.value.value)) as FileRecord
-      } catch {
-        // A corrupted entry must not stop the whole sweep; garbage collection
-        // ignores it and the blocks stay protected until it is repaired.
-        continue
+      const key = entry.value.key.toString()
+      const keyPrefix = `${this.prefix}/`
+      const expectedCid = key.startsWith(keyPrefix) ? key.slice(keyPrefix.length) : ''
+      const record = decodeRecord(entry.value.value, expectedCid)
+
+      if (record !== undefined) {
+        yield record
       }
+
+      // A syntactically or structurally corrupted entry must not be treated as
+      // reclaimable. Ignoring it leaves its Helia pin in force until an
+      // operator repairs the registry.
     }
   }
 
