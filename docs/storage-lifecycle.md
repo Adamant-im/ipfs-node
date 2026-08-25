@@ -191,8 +191,12 @@ blockstore addresses content by multihash and rebuilds a CID with its own defaul
 codec while listing, so an entry can read differently from the CID a file was
 uploaded under.
 
-Collection takes the Helia blockstore write lock, so uploads wait while it runs.
-Schedule it accordingly.
+Intake and pinning hold a process-level shared storage-operation lease from the
+first block write or copy through registry commit or cleanup. Collection holds
+the exclusive lease for its entire demotion and deletion pass, so it cannot
+remove an upload's earlier blocks while the DAG is still unpinned. Once a
+collector is queued, later intake waits behind it to prevent collection
+starvation. Schedule long forced collections accordingly.
 
 ### What a run triggered by free space reclaims
 

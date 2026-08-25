@@ -3,8 +3,9 @@ import { config } from '../config.js'
 import { helia } from '../helia.js'
 import { blockstore, blockstorePath } from '../store.js'
 import { checkRequestSize, parseContentLength } from '../storage/limits.js'
+import type { StorageOperationLease } from '../storage/operationLock.js'
 import { claimSpace } from '../storage/reservation.js'
-import { uploadLimiter } from '../storage/state.js'
+import { storageOperationLock, uploadLimiter } from '../storage/state.js'
 import { UploadSession } from '../storage/uploadSession.js'
 import { parseCid } from '../utils/cid.js'
 import { logger } from '../utils/logger.js'
@@ -57,6 +58,7 @@ export const admitUpload: RequestHandler = (
   let released = false
   let claimed: { release(): void } | undefined
   let session: UploadSession | undefined
+  let operationLease: StorageOperationLease | undefined
   const release = (): void => {
     if (released) {
       return
@@ -64,6 +66,13 @@ export const admitUpload: RequestHandler = (
     released = true
     claimed?.release()
     uploadLimiter.release()
+
+    // An admitted session owns this lease until it has committed or finished
+    // cleanup. Releasing it on `close` before cleanup would reopen the exact
+    // window in which GC can delete the session's unpinned blocks.
+    if (session === undefined || session.isSettled) {
+      operationLease?.release()
+    }
   }
 
   // Attached before anything is awaited, and it covers every way a request can
@@ -99,49 +108,58 @@ export const admitUpload: RequestHandler = (
     return
   }
 
-  availableStorageSize(blockstorePath)
-    .then((available) => {
-      // The client is already gone and the slot went back with it. Claiming
-      // space now would promise it to a request that no longer exists.
-      if (released) {
-        return
-      }
+  void (async () => {
+    operationLease = await storageOperationLock.acquireShared()
 
-      // A chunked request declares no size, so the most it could write is what
-      // its aggregate limit allows. Claiming that much keeps the reserve honest
-      // for a request whose size is unknown, and claiming at all is what stops
-      // several uploads from each seeing the same free space and passing.
-      const claim = claimSpace({
-        bytes: declaredBytes ?? storage.maxRequestSizeBytes,
-        availableBytes: Number(available),
-        reserveBytes: storage.diskReserveBytes
-      })
+    if (released) {
+      operationLease.release()
+      return
+    }
 
-      if (claim === undefined) {
-        logger.warn(
-          `Upload rejected: free space ${String(available)} bytes would fall into the ` +
-            `${storage.diskReserveBytes} byte reserve`
-        )
-        release()
-        res.status(507).send({ error: 'Insufficient storage' })
-        return
-      }
+    const available = await availableStorageSize(blockstorePath)
 
-      session = new UploadSession({
-        blockstore: helia.blockstore,
-        isPinned: (cid) => helia.pins.isPinned(cid),
-        deleteBlock: (cid) => blockstore.delete(cid),
-        maxRequestSizeBytes: storage.maxRequestSizeBytes,
-        parseCid,
-        onCleanupError: (err) => logger.error(`Upload cleanup error: ${err.message}`)
-      })
-      claimed = claim
-      ;(req as RequestWithSession)[SESSION_KEY] = session
+    // The client is already gone and the slot went back with it. Claiming
+    // space now would promise it to a request that no longer exists.
+    if (released) {
+      operationLease.release()
+      return
+    }
 
-      next()
+    // A chunked request declares no size, so the most it could write is what
+    // its aggregate limit allows. Claiming that much keeps the reserve honest
+    // for a request whose size is unknown, and claiming at all is what stops
+    // several uploads from each seeing the same free space and passing.
+    const claim = claimSpace({
+      bytes: declaredBytes ?? storage.maxRequestSizeBytes,
+      availableBytes: Number(available),
+      reserveBytes: storage.diskReserveBytes
     })
-    .catch((err) => {
+
+    if (claim === undefined) {
+      logger.warn(
+        `Upload rejected: free space ${String(available)} bytes would fall into the ` +
+          `${storage.diskReserveBytes} byte reserve`
+      )
       release()
-      next(err)
+      res.status(507).send({ error: 'Insufficient storage' })
+      return
+    }
+
+    session = new UploadSession({
+      blockstore: helia.blockstore,
+      isPinned: (cid) => helia.pins.isPinned(cid),
+      deleteBlock: (cid) => blockstore.delete(cid),
+      maxRequestSizeBytes: storage.maxRequestSizeBytes,
+      parseCid,
+      onCleanupError: (err) => logger.error(`Upload cleanup error: ${err.message}`),
+      onSettle: () => operationLease?.release()
     })
+    claimed = claim
+    ;(req as RequestWithSession)[SESSION_KEY] = session
+
+    next()
+  })().catch((err) => {
+    release()
+    next(err)
+  })
 }

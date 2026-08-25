@@ -120,6 +120,8 @@ export interface UploadSessionOptions {
   maxRequestSizeBytes: number
   parseCid: (cid: string) => CID
   onCleanupError?: (err: Error) => void
+  /** Releases the shared storage-operation lease after commit or cleanup. */
+  onSettle?: () => void
 }
 
 /**
@@ -171,7 +173,11 @@ export class UploadSession {
     }
 
     this.settled = true
-    this.blockstore.releaseAll()
+    try {
+      this.blockstore.releaseAll()
+    } finally {
+      this.options.onSettle?.()
+    }
   }
 
   /**
@@ -190,28 +196,32 @@ export class UploadSession {
     }
 
     this.settled = true
-    const releasable = new Set(this.blockstore.releaseAll())
-    let removed = 0
+    try {
+      const releasable = new Set(this.blockstore.releaseAll())
+      let removed = 0
 
-    for (const key of this.blockstore.created) {
-      if (!releasable.has(key)) {
-        continue
-      }
-
-      try {
-        const cid = this.options.parseCid(key)
-
-        if (await this.options.isPinned(cid)) {
+      for (const key of this.blockstore.created) {
+        if (!releasable.has(key)) {
           continue
         }
 
-        await this.options.deleteBlock(cid)
-        removed += 1
-      } catch (err) {
-        this.options.onCleanupError?.(err as Error)
-      }
-    }
+        try {
+          const cid = this.options.parseCid(key)
 
-    return removed
+          if (await this.options.isPinned(cid)) {
+            continue
+          }
+
+          await this.options.deleteBlock(cid)
+          removed += 1
+        } catch (err) {
+          this.options.onCleanupError?.(err as Error)
+        }
+      }
+
+      return removed
+    } finally {
+      this.options.onSettle?.()
+    }
   }
 }

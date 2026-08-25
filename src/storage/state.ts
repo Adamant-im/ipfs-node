@@ -1,6 +1,7 @@
 import { config } from '../config.js'
 import { datastore } from '../store.js'
 import { ConcurrencyLimiter } from './limits.js'
+import { StorageOperationLock } from './operationLock.js'
 import { FileRegistry } from './registry.js'
 
 /**
@@ -8,6 +9,9 @@ import { FileRegistry } from './registry.js'
  * It shares the node datastore and lives under its own key prefix.
  */
 export const fileRegistry = new FileRegistry(datastore)
+
+/** Keeps collection outside write-to-pin and copy-to-pin critical sections. */
+export const storageOperationLock = new StorageOperationLock()
 
 /** Guards how many uploads may write into the blockstore at the same time. */
 export const uploadLimiter = new ConcurrencyLimiter(config.storage.maxConcurrentUploads)

@@ -1,7 +1,7 @@
 import type { UnixFS } from '@helia/unixfs'
 import type { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
-import { pinFile, unpinFile } from './pinning.js'
+import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
 import type { FileRecord, FileRegistry, LockedFileRegistry } from './registry.js'
 
 /**
@@ -30,6 +30,61 @@ export interface RegisterPinnedOptions extends LifecycleTarget {
   pinTimeoutMs?: number
 }
 
+/** Build the optional deadline shared by one pin and its offline stat. */
+function pinSignal(timeoutMs: number | undefined): AbortSignal | undefined {
+  return timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
+}
+
+/**
+ * Put both sides of a lifecycle transition back to their observed baseline.
+ *
+ * Datastore implementations may reject after persisting a write. Merely
+ * undoing the pin would then leave the newly written record claiming the
+ * opposite state. Restore the pin first and the record second while the CID
+ * lock is still held, and preserve every failure when rollback is incomplete.
+ */
+async function restoreLifecycleBaseline(
+  registry: LockedFileRegistry,
+  node: IpfsNode,
+  cid: CID,
+  previous: FileRecord | undefined,
+  wasPinned: boolean,
+  originalError: unknown,
+  signal?: AbortSignal
+): Promise<never> {
+  const rollbackErrors: unknown[] = []
+
+  try {
+    if (wasPinned) {
+      await pinFile(node, cid, signal)
+    } else {
+      await unpinFile(node, cid)
+    }
+  } catch (err) {
+    rollbackErrors.push(err)
+  }
+
+  try {
+    if (previous === undefined) {
+      await registry.remove(cid.toString())
+    } else {
+      await registry.save(previous)
+    }
+  } catch (err) {
+    rollbackErrors.push(err)
+  }
+
+  if (rollbackErrors.length > 0) {
+    const message = originalError instanceof Error ? originalError.message : String(originalError)
+    throw new AggregateError(
+      [originalError, ...rollbackErrors],
+      `Lifecycle operation failed and rollback was incomplete: ${message}`
+    )
+  }
+
+  throw originalError
+}
+
 /**
  * Pin content and record it as durable, with the CID locked throughout.
  *
@@ -53,11 +108,12 @@ async function registerPinnedUnderLock(
   options: RegisterPinnedOptions,
   previous: FileRecord | undefined
 ): Promise<FileRecord> {
-  const signal =
-    options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
-  const createdPin = await pinFile(options.node, options.cid, signal)
+  const signal = pinSignal(options.pinTimeoutMs)
+  const wasPinned = previous?.pinned === true || (await isDirectlyPinned(options.node, options.cid))
 
   try {
+    await pinFile(options.node, options.cid, signal)
+
     // Everything is local after pinning, so the deduplicated DAG size is what
     // this node actually holds on disk for the file.
     const stats = await options.unixfs.stat(options.cid, {
@@ -78,12 +134,15 @@ async function registerPinnedUnderLock(
       )
     ).record
   } catch (err) {
-    // A failed stat or datastore write must not leave a pin no lifecycle owns.
-    if (createdPin && previous?.pinned !== true) {
-      await unpinFile(options.node, options.cid)
-    }
-
-    throw err
+    return restoreLifecycleBaseline(
+      registry,
+      options.node,
+      options.cid,
+      previous,
+      wasPinned,
+      err,
+      signal
+    )
   }
 }
 
@@ -121,9 +180,12 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         : undefined
     }
 
-    const createdPin = await pinFile(options.node, options.cid)
+    const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
+    const signal = pinSignal(options.pinTimeoutMs)
 
     try {
+      await pinFile(options.node, options.cid, signal)
+
       return await registry.save({
         ...current,
         state: 'confirmed',
@@ -133,11 +195,15 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         heldLocally: true
       })
     } catch (err) {
-      if (createdPin && current.pinned !== true) {
-        await unpinFile(options.node, options.cid)
-      }
-
-      throw err
+      return restoreLifecycleBaseline(
+        registry,
+        options.node,
+        options.cid,
+        current,
+        wasPinned,
+        err,
+        signal
+      )
     }
   })
 }
@@ -170,9 +236,11 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
       return undefined
     }
 
-    const removedPin = await unpinFile(options.node, options.cid)
+    const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
 
     try {
+      await unpinFile(options.node, options.cid)
+
       return await registry.save({
         ...current,
         state: 'expired',
@@ -180,13 +248,7 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
         heldLocally: false
       })
     } catch (err) {
-      // The lifecycle still promises protection when the datastore write did
-      // not land, so restore the pin before exposing the failure.
-      if (removedPin && current.pinned) {
-        await pinFile(options.node, options.cid)
-      }
-
-      throw err
+      return restoreLifecycleBaseline(registry, options.node, options.cid, current, wasPinned, err)
     }
   })
 }

@@ -40,7 +40,7 @@ import {
   type TransferProgress
 } from './meter.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
-import { fileRegistry, incomingCopyLimiter } from './state.js'
+import { fileRegistry, incomingCopyLimiter, storageOperationLock } from './state.js'
 import { nextSweepBatch } from './sweep.js'
 
 const callOptions = (): ReplicationCallOptions => ({
@@ -188,15 +188,17 @@ export async function confirmFile(
   cid: string,
   options: { registerUnknown?: boolean } = {}
 ): Promise<FileRecord | undefined> {
-  const confirmed = await confirmStoredFile({
-    ...lifecycleTarget(),
-    unixfs: ifs,
-    cid: CID.parse(cid),
-    name: cid,
-    registerUnknown: options.registerUnknown,
-    temporaryTtlMs: config.storage.temporaryTtlMs,
-    pinTimeoutMs: config.replication.requestTimeoutMs
-  })
+  const confirmed = await storageOperationLock.withShared(() =>
+    confirmStoredFile({
+      ...lifecycleTarget(),
+      unixfs: ifs,
+      cid: CID.parse(cid),
+      name: cid,
+      registerUnknown: options.registerUnknown,
+      temporaryTtlMs: config.storage.temporaryTtlMs,
+      pinTimeoutMs: config.replication.requestTimeoutMs
+    })
+  )
 
   if (!confirmed) {
     return undefined
@@ -234,17 +236,19 @@ export async function releaseFile(cid: string): Promise<FileRecord | undefined> 
 
 /** Store a copy requested by another ADAMANT node. */
 export async function acceptReplica(cid: string): Promise<FileRecord> {
-  // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
-  // with no limit on how many transfers run at once, how much space they may
-  // take together, or how large the content may be. The `accept` probe that
-  // normally precedes a `store` is an optimisation, not a guarantee: nothing in
-  // the protocol requires it, and several peers can pass their own probe and
-  // then transfer at the same time.
-  await pullUnderIntakeLimits(cid)
+  return storageOperationLock.withShared(async () => {
+    // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
+    // with no limit on how many transfers run at once, how much space they may
+    // take together, or how large the content may be. The `accept` probe that
+    // normally precedes a `store` is an optimisation, not a guarantee: nothing in
+    // the protocol requires it, and several peers can pass their own probe and
+    // then transfer at the same time.
+    await pullUnderIntakeLimits(cid)
 
-  // Every block is local now, so pinning walks the blockstore rather than the
-  // network.
-  return registerPinned(CID.parse(cid), cid)
+    // Every block is local now, so pinning walks the blockstore rather than the
+    // network. The shared lease prevents collection between these two steps.
+    return registerPinned(CID.parse(cid), cid)
+  })
 }
 
 /**
@@ -374,6 +378,11 @@ async function pullUnderIntakeLimits(
  * @returns Bytes pulled
  */
 export async function cacheFileLocally(cid: string, peerId: string): Promise<number> {
+  return storageOperationLock.withShared(() => cacheFileLocallyUnderLock(cid, peerId))
+}
+
+/** Pull one best-effort cache copy while collection is excluded. */
+async function cacheFileLocallyUnderLock(cid: string, peerId: string): Promise<number> {
   // A copy is held to the same size an upload is, so a node accepts as a copy
   // what it would accept as a file. Taking the headroom off this instead would
   // make the two disagree, and quietly: at a 20 MiB request limit a copy would
@@ -470,37 +479,40 @@ async function rescueOrphanedFiles(
     }
 
     try {
-      // Only worth pinning if the whole DAG is still here; an offline stat says
-      // so without going near the network.
-      await ifs.stat(cid, { extended: true, offline: true })
+      const kept = await storageOperationLock.withShared(async () => {
+        // Only worth pinning if the whole DAG is still here; an offline stat says
+        // so without going near the network. Collection cannot invalidate that
+        // result before the following pin is committed.
+        await ifs.stat(cid, { extended: true, offline: true })
 
-      // The record was chosen before the probes, which take as long as the
-      // network does. Writing the snapshot back would undo whatever happened to
-      // the file meanwhile — a re-upload, a release, an updated replica list —
-      // so the pin and the state change happen together, against the record as
-      // it is now.
-      const kept = await fileRegistry.withExclusiveCids([record.cid], async (registry) => {
-        const current = await registry.get(record.cid)
+        // The record was chosen before the probes, which take as long as the
+        // network does. Writing the snapshot back would undo whatever happened to
+        // the file meanwhile — a re-upload, a release, an updated replica list —
+        // so the pin and the state change happen together, against the record as
+        // it is now.
+        return fileRegistry.withExclusiveCids([record.cid], async (registry) => {
+          const current = await registry.get(record.cid)
 
-        if (
-          current === undefined ||
-          current.revision !== record.revision ||
-          current.state !== 'confirmed' ||
-          current.heldLocally
-        ) {
-          return undefined
-        }
-
-        const createdPin = await pinFile(helia, cid)
-
-        try {
-          return await registry.save({ ...current, pinned: true, heldLocally: true })
-        } catch (err) {
-          if (createdPin && current.pinned !== true) {
-            await unpinFile(helia, cid)
+          if (
+            current === undefined ||
+            current.revision !== record.revision ||
+            current.state !== 'confirmed' ||
+            current.heldLocally
+          ) {
+            return undefined
           }
-          throw err
-        }
+
+          const createdPin = await pinFile(helia, cid)
+
+          try {
+            return await registry.save({ ...current, pinned: true, heldLocally: true })
+          } catch (err) {
+            if (createdPin && current.pinned !== true) {
+              await unpinFile(helia, cid)
+            }
+            throw err
+          }
+        })
       })
 
       if (kept === undefined) {

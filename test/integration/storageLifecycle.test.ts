@@ -21,6 +21,7 @@ import {
   INTAKE_READ_CONCURRENCY,
   meteredBlocks
 } from '../../src/storage/meter.js'
+import { StorageOperationLock } from '../../src/storage/operationLock.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
 import { UploadSession } from '../../src/storage/uploadSession.js'
@@ -47,14 +48,18 @@ function createRegistry(): FileRegistry {
   return new FileRegistry(datastore, `/adm/lifecycle-${prefixCounter}`)
 }
 
-function createSession(maxRequestSizeBytes = 64 * 1024 * 1024): UploadSession {
+function createSession(
+  maxRequestSizeBytes = 64 * 1024 * 1024,
+  onSettle?: () => void
+): UploadSession {
   return new UploadSession({
     blockstore: node.blockstore,
     isPinned: (cid) => node.pins.isPinned(cid),
     deleteBlock: (cid) => blockstore.delete(cid),
     maxRequestSizeBytes,
     parseCid: (value) => CID.parse(value),
-    onCleanupError: (err) => assert.fail(`unexpected cleanup error: ${err.message}`)
+    onCleanupError: (err) => assert.fail(`unexpected cleanup error: ${err.message}`),
+    onSettle
   })
 }
 
@@ -187,6 +192,21 @@ describe('upload session cleanup', () => {
     assert.equal(await blockstore.has(cid), true)
   })
 
+  it('releases its operation lease once cleanup settles', async () => {
+    let settled = 0
+    const session = createSession(64 * 1024 * 1024, () => {
+      settled += 1
+    })
+    await unixfs({ blockstore: session.blockstore }).addBytes(
+      deterministicBytes(2048, 'cleanup-settles')
+    )
+
+    await session.cleanup()
+    await session.cleanup()
+
+    assert.equal(settled, 1)
+  })
+
   it('leaves blocks that already existed before the upload', async () => {
     const content = deterministicBytes(2048, 'pre-existing')
     const cid = await ifs.addBytes(content)
@@ -232,6 +252,32 @@ describe('upload session cleanup', () => {
 
     session.budget.consume(1000)
     assert.throws(() => session.budget.consume(100), /Request size limit exceeded/)
+  })
+
+  it('keeps collection outside the import-to-pin window', async () => {
+    const lock = new StorageOperationLock()
+    const lease = await lock.acquireShared()
+    const session = createSession(64 * 1024 * 1024, () => lease.release())
+    const cid = await unixfs({ blockstore: session.blockstore }).addBytes(
+      deterministicBytes(3 * 1024 * 1024, 'gc-race')
+    )
+    let collectionStarted = false
+
+    const collection = lock.withExclusive(async () => {
+      collectionStarted = true
+      await node.gc()
+    })
+
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    assert.equal(collectionStarted, false)
+
+    await pinFile(node, cid)
+    session.commit()
+    await collection
+
+    assert.equal(collectionStarted, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+    assert.equal(await blockstore.has(cid), true)
   })
 })
 
@@ -649,6 +695,30 @@ describe('lifecycle transitions', () => {
     }) as FileRegistry
   }
 
+  /** A registry whose next save lands but reports failure to its caller. */
+  function failsAfterNextSave(registry: FileRegistry): FileRegistry {
+    let fail = true
+
+    return new Proxy(registry, {
+      get: (target, property) => {
+        if (property !== 'save') {
+          return Reflect.get(target, property, target)
+        }
+
+        return async (value: FileRecord): Promise<FileRecord> => {
+          const stored = await target.save(value)
+
+          if (fail) {
+            fail = false
+            throw new Error('datastore acknowledgement failed')
+          }
+
+          return stored
+        }
+      }
+    }) as FileRegistry
+  }
+
   it('adopts an unknown CID only when asked to', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-unknown'))
@@ -701,6 +771,40 @@ describe('lifecycle transitions', () => {
     assert.equal(await isDirectlyPinned(node, cid), true)
   })
 
+  it('passes the configured timeout to a known CID pin', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-timeout'))
+    await registry.save(
+      record({ cid: cid.toString(), state: 'temporary', expiresAt: 9000, pinned: false })
+    )
+    let receivedSignal: AbortSignal | undefined
+    const fakeNode = {
+      pins: {
+        get: async (): Promise<never> => {
+          const error = new Error('not pinned')
+          error.name = 'NotFoundError'
+          throw error
+        },
+        add: async function* (_cid: CID, options?: { signal?: AbortSignal }): AsyncGenerator<CID> {
+          receivedSignal = options?.signal
+          yield cid
+        }
+      }
+    } as unknown as IpfsNode
+
+    await confirmStoredFile({
+      node: fakeNode,
+      registry,
+      unixfs: ifs,
+      cid,
+      temporaryTtlMs: TTL,
+      pinTimeoutMs: 30_000
+    })
+
+    assert.ok(receivedSignal instanceof AbortSignal)
+    assert.equal(receivedSignal.aborted, false)
+  })
+
   it('removes the pin it created when confirmation cannot be recorded', async () => {
     // A record claiming durability for content the blockstore does not protect
     // is the one outcome this must never leave behind
@@ -724,6 +828,53 @@ describe('lifecycle transitions', () => {
 
     assert.equal(await isDirectlyPinned(node, cid), false)
     assert.equal((await registry.get(cid.toString()))?.state, 'temporary')
+  })
+
+  it('restores confirmation state when a failed save actually landed', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-after-write'))
+    await registry.save(
+      record({ cid: cid.toString(), state: 'temporary', expiresAt: 9000, pinned: false })
+    )
+
+    await assert.rejects(
+      () =>
+        confirmStoredFile({
+          node,
+          registry: failsAfterNextSave(registry),
+          unixfs: ifs,
+          cid,
+          temporaryTtlMs: TTL
+        }),
+      /datastore acknowledgement failed/
+    )
+
+    const restored = await registry.get(cid.toString())
+    assert.equal(restored?.state, 'temporary')
+    assert.equal(restored?.expiresAt, 9000)
+    assert.equal(restored?.pinned, false)
+    assert.equal(restored?.heldLocally, true)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('removes a new record when registration failed after writing it', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'register-after-write'))
+
+    await assert.rejects(
+      () =>
+        registerPinnedFile({
+          node,
+          registry: failsAfterNextSave(registry),
+          unixfs: ifs,
+          cid,
+          temporaryTtlMs: TTL
+        }),
+      /datastore acknowledgement failed/
+    )
+
+    assert.equal(await registry.get(cid.toString()), undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
   })
 
   it('releases a registered file and removes its pin', async () => {
@@ -763,6 +914,23 @@ describe('lifecycle transitions', () => {
 
     // The record still promises protection, so the protection has to be there
     assert.equal((await registry.get(cid.toString()))?.pinned, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('restores release state when a failed save actually landed', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'release-after-write'))
+    await registerPinnedFile({ node, registry, unixfs: ifs, cid, temporaryTtlMs: TTL })
+
+    await assert.rejects(
+      () => releaseStoredFile({ node, registry: failsAfterNextSave(registry), cid }),
+      /datastore acknowledgement failed/
+    )
+
+    const restored = await registry.get(cid.toString())
+    assert.equal(restored?.state, 'confirmed')
+    assert.equal(restored?.pinned, true)
+    assert.equal(restored?.heldLocally, true)
     assert.equal(await isDirectlyPinned(node, cid), true)
   })
 })

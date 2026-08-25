@@ -4,7 +4,7 @@ import { helia } from './helia.js'
 import { runGarbageCollection, type GcReport } from './storage/gc.js'
 import { refreshStorageMetrics } from './storage/metrics.js'
 import { demoteReleasableCopies } from './storage/service.js'
-import { fileRegistry } from './storage/state.js'
+import { fileRegistry, storageOperationLock } from './storage/state.js'
 import { logger } from './utils/logger.js'
 
 /** A collection pass, plus the copies it handed over to other nodes first. */
@@ -41,39 +41,41 @@ export async function collectGarbage(
 
   running = true
   try {
-    // Hand copies over before collecting, so the blocks they free are reclaimed
-    // by the same pass instead of waiting for the next one.
-    //
-    // A dry run evaluates them too. A handover unpins a local copy, so a plan
-    // that leaves handovers out is not the plan the real run follows — and the
-    // pre-upgrade dry run is read precisely to see which local pins go. It asks
-    // the same peers the real pass would, and stops short of acting on the
-    // answer.
-    const demoted = (await demoteReleasableCopies({ dryRun: options.dryRun })).demoted
+    return await storageOperationLock.withExclusive(async () => {
+      // Hand copies over before collecting, so the blocks they free are reclaimed
+      // by the same pass instead of waiting for the next one.
+      //
+      // A dry run evaluates them too. A handover unpins a local copy, so a plan
+      // that leaves handovers out is not the plan the real run follows — and the
+      // pre-upgrade dry run is read precisely to see which local pins go. It asks
+      // the same peers the real pass would, and stops short of acting on the
+      // answer.
+      const demoted = (await demoteReleasableCopies({ dryRun: options.dryRun })).demoted
 
-    const metrics = await refreshStorageMetrics()
+      const metrics = await refreshStorageMetrics()
 
-    const report = await runGarbageCollection({
-      node: helia,
-      registry: fileRegistry,
-      watermarks: config.storage.gc,
-      blockstoreBytes: metrics.blockstoreBytes,
-      availableBytes: metrics.availableBytes,
-      reserveBytes: config.storage.diskReserveBytes,
-      dryRun: options.dryRun,
-      force: options.force,
-      pinTimeoutMs: config.replication.requestTimeoutMs,
-      log: (message) => logger.info(message)
+      const report = await runGarbageCollection({
+        node: helia,
+        registry: fileRegistry,
+        watermarks: config.storage.gc,
+        blockstoreBytes: metrics.blockstoreBytes,
+        availableBytes: metrics.availableBytes,
+        reserveBytes: config.storage.diskReserveBytes,
+        dryRun: options.dryRun,
+        force: options.force,
+        pinTimeoutMs: config.replication.requestTimeoutMs,
+        log: (message) => logger.info(message)
+      })
+
+      const collection: CollectionReport = { ...report, demoted }
+
+      if (!collection.dryRun) {
+        lastReport = collection
+        await refreshStorageMetrics()
+      }
+
+      return collection
     })
-
-    const collection: CollectionReport = { ...report, demoted }
-
-    if (!collection.dryRun) {
-      lastReport = collection
-      await refreshStorageMetrics()
-    }
-
-    return collection
   } finally {
     running = false
   }
