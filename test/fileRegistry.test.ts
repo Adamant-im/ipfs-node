@@ -135,6 +135,23 @@ describe('FileRegistry', () => {
     assert.equal(await registry.get(CID_A), undefined)
   })
 
+  it('reports the record a registration replaced', async () => {
+    // Read before the write, the baseline is a guess: another upload can adopt
+    // the CID in between, and a rollback restoring the guess would erase it
+    const registry = createRegistry()
+    const first = await registry.registerReplacing(newFile(), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
+    const second = await registry.registerReplacing(newFile(), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
+
+    assert.equal(first.previous, undefined)
+    assert.equal(second.previous?.revision, first.record.revision)
+  })
+
   it('undoes a write only while it is still the last one', async () => {
     // Two concurrent uploads of the same file write records that match field
     // for field. The first must not roll back the lifecycle the second owns.

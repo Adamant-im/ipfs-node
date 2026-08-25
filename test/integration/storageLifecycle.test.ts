@@ -10,7 +10,11 @@ import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
-import { meteredBlocks } from '../../src/storage/meter.js'
+import {
+  INTAKE_OVERSHOOT_BYTES,
+  INTAKE_READ_CONCURRENCY,
+  meteredBlocks
+} from '../../src/storage/meter.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
 import { UploadSession } from '../../src/storage/uploadSession.js'
@@ -447,6 +451,38 @@ describe('garbage collection against fixture data', () => {
     assert.equal((await storedDigests()).has(digestOf(cids.abandoned)), true)
   })
 
+  it('does not remove a record re-created while blocks were being deleted', async () => {
+    const { registry, cids } = await createFixture()
+
+    // Deleting blocks takes time, and a re-upload can pin and register the same
+    // CID while it runs
+    const racing = new Proxy(node, {
+      get: (target, property) =>
+        property === 'gc'
+          ? async (): Promise<void> => {
+              await pinFile(node, CID.parse(cids.abandoned))
+              await registry.register(
+                { cid: cids.abandoned, name: 'again.bin', fileSize: 1024, storedBytes: 1024 },
+                { confirmationRequired: false, temporaryTtlMs: 1000 }
+              )
+            }
+          : Reflect.get(target, property, target)
+    }) as IpfsNode
+
+    await runGarbageCollection({
+      node: racing,
+      registry,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    const record = await registry.get(cids.abandoned)
+    assert.equal(record?.state, 'confirmed')
+    assert.equal(record?.name, 'again.bin')
+    assert.equal(await isProtected(node, CID.parse(cids.abandoned)), true)
+  })
+
   it('restores a missing pin on confirmed content before deleting anything', async () => {
     const { registry, cids } = await createFixture()
     await unpinFile(node, CID.parse(cids.confirmed))
@@ -492,22 +528,29 @@ describe('block metering', () => {
   })
 
   it('stops a walk that outgrows the limit instead of finishing it', async () => {
-    const payload = deterministicBytes(4 * 1024 * 1024, 'metered-limit')
+    const limit = 2 * 1024 * 1024
+    const payload = deterministicBytes(16 * 1024 * 1024, 'metered-limit')
     const cid = await ifs.addBytes(payload)
     const progress = { bytes: 0 }
-    const metered = unixfs({
-      blockstore: meteredBlocks(node.blockstore, progress, 2 * 1024 * 1024)
-    })
+    const metered = unixfs({ blockstore: meteredBlocks(node.blockstore, progress, limit) })
+
+    // Without a bound on how many blocks are read at a time the exporter
+    // requests the whole DAG before a single byte can be counted, and the limit
+    // bounds nothing
+    const readOptions = {
+      signal: AbortSignal.timeout(30_000),
+      blockReadConcurrency: INTAKE_READ_CONCURRENCY
+    }
 
     await assert.rejects(async () => {
-      for await (const chunk of metered.cat(cid)) {
+      for await (const chunk of metered.cat(cid, readOptions)) {
         void chunk
       }
     }, /larger than this node accepts/)
 
     assert.ok(
-      progress.bytes < payload.byteLength,
-      `metered ${progress.bytes} bytes, so the walk ran further than the limit allowed`
+      progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
+      `metered ${progress.bytes} bytes, past the ${limit + INTAKE_OVERSHOOT_BYTES} the reservation covers`
     )
   })
 })

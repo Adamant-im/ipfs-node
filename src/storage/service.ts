@@ -27,7 +27,12 @@ import {
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
-import { meteredBlocks, type TransferProgress } from './meter.js'
+import {
+  INTAKE_OVERSHOOT_BYTES,
+  INTAKE_READ_CONCURRENCY,
+  meteredBlocks,
+  type TransferProgress
+} from './meter.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter } from './state.js'
 import { nextSweepBatch } from './sweep.js'
@@ -326,7 +331,9 @@ async function pullUnderIntakeLimits(
     // The size is unknown before the transfer, so the aggregate request limit
     // is claimed pessimistically and given back at the end.
     claim = claimSpace({
-      bytes: config.storage.maxRequestSizeBytes,
+      // Plus what the limit can be overshot by, so the disk reserve covers what
+      // can actually arrive rather than what was allowed.
+      bytes: limitBytes + INTAKE_OVERSHOOT_BYTES,
       availableBytes: Number(await availableStorageSize(blockstorePath)),
       reserveBytes: config.storage.diskReserveBytes
     })
@@ -344,7 +351,14 @@ async function pullUnderIntakeLimits(
       blockstore: meteredBlocks(helia.blockstore, progress, limitBytes)
     })
 
-    for await (const chunk of metered.cat(CID.parse(cid), { signal })) {
+    // `blockReadConcurrency` is what the exporter honours; `CatOptions`
+    // re-exports a narrower type that leaves it out, so the options are built
+    // as a value rather than inline. Without it the exporter requests the whole
+    // DAG before the meter can count a single byte, and the limit bounds
+    // nothing at all.
+    const readOptions = { signal, blockReadConcurrency: INTAKE_READ_CONCURRENCY }
+
+    for await (const chunk of metered.cat(CID.parse(cid), readOptions)) {
       void chunk
     }
 
@@ -388,8 +402,13 @@ export async function cacheFileLocally(cid: string, peerId: string): Promise<num
     // The transfer is bounded by what was reserved, not by the request limit.
     // Otherwise a node configured to accept requests larger than the allowance
     // lets a peer reserve part of a transfer and complete all of it, and the
-    // budget only learns of the excess once it has already arrived.
-    return await pullUnderIntakeLimits(cid, progress, allowance)
+    // budget only learns of the excess once it has already arrived. The
+    // headroom comes off it, because the limit is noticed late.
+    return await pullUnderIntakeLimits(
+      cid,
+      progress,
+      Math.max(1, allowance - INTAKE_OVERSHOOT_BYTES)
+    )
   } finally {
     // What actually crossed the network, finished or not.
     reservation.settle(progress.bytes)
@@ -459,9 +478,26 @@ async function rescueOrphanedFiles(
       // Only worth pinning if the whole DAG is still here; an offline stat says
       // so without going near the network.
       await ifs.stat(cid, { extended: true, offline: true })
-      await pinFile(helia, cid)
-      await fileRegistry.setPinned(record.cid, true)
-      await fileRegistry.save({ ...record, pinned: true, heldLocally: true })
+
+      // The record was chosen before the probes, which take as long as the
+      // network does. Writing the snapshot back would undo whatever happened to
+      // the file meanwhile — a re-upload, a release, an updated replica list —
+      // so the pin and the state change happen together, against the record as
+      // it is now.
+      const kept = await fileRegistry.transition(record.cid, async (current) => {
+        if (current === undefined) {
+          return 'keep'
+        }
+
+        await pinFile(helia, cid)
+
+        return { ...current, pinned: true, heldLocally: true }
+      })
+
+      if (kept === undefined) {
+        continue
+      }
+
       rescued.push(record.cid)
       logger.warn(`No node was holding ${record.cid}; kept the local copy instead`)
     } catch {

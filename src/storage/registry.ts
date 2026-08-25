@@ -279,31 +279,49 @@ export class FileRegistry {
     file: NewFileRecord,
     options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
   ): Promise<FileRecord> {
+    return (await this.registerReplacing(file, options)).record
+  }
+
+  /**
+   * Register an upload and report the record it replaced.
+   *
+   * A record read before the write is already a guess by the time the write
+   * happens: another upload of the same file can adopt the CID in between. A
+   * rollback restoring what the caller saw earlier would erase the lifecycle
+   * that upload owns, so the replaced record is captured inside the same
+   * serialised section as the write that replaced it.
+   */
+  async registerReplacing(
+    file: NewFileRecord,
+    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+  ): Promise<{ record: FileRecord; previous: FileRecord | undefined }> {
     return this.exclusive(file.cid, () => this.registerExclusively(file, options))
   }
 
   private async registerExclusively(
     file: NewFileRecord,
     options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
-  ): Promise<FileRecord> {
+  ): Promise<{ record: FileRecord; previous: FileRecord | undefined }> {
     const now = options.now ?? Date.now()
     const existing = await this.get(file.cid)
 
     if (existing?.state === 'confirmed') {
       // Re-uploading already durable content must not weaken its state, and it
       // puts the blocks back on this node whether or not they were released.
-      return this.save({
+      const record = await this.save({
         ...existing,
         storedBytes: Math.max(existing.storedBytes, file.storedBytes),
         fileSize: file.fileSize > 0 ? file.fileSize : existing.fileSize,
         pinned: true,
         heldLocally: true
       })
+
+      return { record, previous: existing }
     }
 
     const confirmed = !options.confirmationRequired
 
-    return this.save({
+    const record = await this.save({
       cid: file.cid,
       name: file.name,
       state: confirmed ? 'confirmed' : 'temporary',
@@ -316,6 +334,8 @@ export class FileRegistry {
       heldLocally: true,
       replicas: existing?.replicas ?? []
     })
+
+    return { record, previous: existing }
   }
 
   /** Move a temporary file to the durable state. Confirming twice is a no-op. */

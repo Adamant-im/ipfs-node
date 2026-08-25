@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { CID } from 'multiformats/cid'
-import { meteredBlocks, type ReadableBlocks } from '../src/storage/meter.js'
+import { MAX_BLOCK_BYTES, meteredBlocks, type ReadableBlocks } from '../src/storage/meter.js'
 
 const CID_A = CID.parse('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku')
 
@@ -49,6 +49,19 @@ describe('meteredBlocks', () => {
 
     await drain(metered)
     await assert.rejects(() => drain(metered), /larger than this node accepts/)
+  })
+
+  it('charges the whole block it stopped on, not the part it had read', async () => {
+    const progress = { bytes: 0 }
+    const metered = meteredBlocks(blocks(600), progress, 1000)
+
+    await drain(metered)
+    await assert.rejects(() => drain(metered))
+
+    // A block is fetched and stored whole, so the overshoot is one block and
+    // callers reserve MAX_BLOCK_BYTES of headroom for it
+    assert.equal(progress.bytes, 1200)
+    assert.ok(progress.bytes <= 1000 + MAX_BLOCK_BYTES)
   })
 
   it('keeps what a failed transfer already cost', async () => {

@@ -44,7 +44,21 @@ take the same claim and the same aggregate limit. Their size is measured in
 blocks rather than in file content: the structural nodes of a DAG are fetched
 and written like any other block, and a limit counting only what a reader would
 see reads zero for a DAG whose content is empty and whose structure is
-megabytes. Their concurrency is a quarter
+megabytes.
+
+Counting is not enough on its own. Left to itself the UnixFS exporter requests
+every block of a DAG before any of them completes — a 64 MiB file issues 65
+reads up front — so by the time the first byte can be counted the whole DAG has
+arrived, whatever the limit said. Intake therefore reads a bounded number of
+blocks at a time, which is what makes the limit enforceable: measured against a
+real node, an unbounded read pulls a 64 MiB file in full under a 4 MiB limit,
+and a bounded one stops at 4 MiB.
+
+What is left is the reads already in flight when the limit is crossed. They
+still complete, so a transfer can exceed its limit by that many blocks; the disk
+claim and the intake reservation both include exactly that much headroom, and
+the whole block is charged rather than the part that was read. The overshoot is
+covered, not merely small. Their concurrency is a quarter
 of `storage.maxConcurrentUploads`, because a copy cannot declare its size and so
 claims the aggregate limit for its whole transfer, and because refusing one
 costs nothing a person can see: the sender still holds the file, and repair
@@ -187,6 +201,10 @@ from a snapshot, and an upload can re-register and confirm one of those CIDs
 before the release reaches it; the record is re-read and the unpin performed with
 nothing else touching the CID, so a file that gained a pin in the meantime keeps
 it. `releasedCids` reports what was released rather than what was planned.
+
+The same applies at the end of a run. Deleting blocks takes time, and a
+re-upload during it can pin and register one of the released CIDs again; a
+record is deregistered only while it is still the one this run released.
 
 A collection that Helia could not complete keeps every record it released, and
 reports `collected: false` with the failures in `errors`. Which file a surviving

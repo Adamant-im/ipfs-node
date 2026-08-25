@@ -13,6 +13,7 @@ import {
   replicateFile
 } from '../storage/service.js'
 import type { FileRecord } from '../storage/registry.js'
+import { rollbackUpload } from '../storage/rollback.js'
 import { fileRegistry } from '../storage/state.js'
 import { parseCid } from '../utils/cid.js'
 import { sendDownloadStream } from '../utils/downloadResponse.js'
@@ -65,55 +66,36 @@ router.post(
         const cid = file.cid.toString()
         logger.info(`Successfully added file ${cid}`)
 
-        const knownBefore = await fileRegistry.get(cid)
-
-        // What this request wrote, so its compensation can tell that write
-        // apart from an identical one made by a concurrent upload of the same
-        // file. Undoing the other request's record would take away a lifecycle
-        // it committed to. It is filled in below, after the compensation that
-        // reads it has been registered.
-        const write: { record?: FileRecord } = {}
-
-        // Compensation runs in reverse of the order it is pushed, so the
-        // registry step goes first to run last. Undoing the pin before the
-        // record means a failure at worst leaves a record for a file that is
-        // still pinned — visible, and reclaimable by the collector. The other
-        // order leaves a pinned file nothing accounts for.
-        //
-        // A CID this node already knew is restored rather than removed:
-        // registering it again may move an expired or released record to
-        // confirmed, and dropping it would lose a lifecycle this request did
-        // not create.
-        undo.push(async () => {
-          await fileRegistry.transition(cid, async (current) => {
-            if (write.record === undefined || current?.revision !== write.record.revision) {
-              return 'keep'
-            }
-
-            return knownBefore ?? 'remove'
-          })
-        })
-
         // Only a pin this request created may be removed again; content that
         // was already durable keeps the pin it had.
-        if (await pinFile(helia, file.cid)) {
-          undo.push(async () => {
-            // Under the same lock as the registry, and only while nothing
-            // claims the CID. A second upload of the same file finds it pinned
-            // already, creates no pin of its own, and would lose its content to
-            // this compensation.
-            await fileRegistry.transition(cid, async (current) => {
-              if (current !== undefined) {
-                return 'keep'
-              }
+        const createdPin = await pinFile(helia, file.cid)
 
+        // What this request wrote, and what it replaced. Both are filled in
+        // below, after the compensation that reads them is registered.
+        //
+        // The baseline cannot be read before the write: another upload of the
+        // same file can adopt the CID in between, and restoring what this
+        // request saw earlier would erase the lifecycle that upload owns. The
+        // registration reports what it actually replaced, from inside the same
+        // serialised section.
+        const write: { record?: FileRecord; previous?: FileRecord } = {}
+
+        // One compensation rather than two: the pin and the record have to be
+        // undone under the same lock and in that order.
+        undo.push(() =>
+          rollbackUpload({
+            registry: fileRegistry,
+            cid,
+            written: write.record,
+            previous: write.previous,
+            createdPin,
+            unpin: async () => {
               await unpinFile(helia, file.cid)
-              return 'keep'
-            })
+            }
           })
-        }
+        )
 
-        write.record = await fileRegistry.register(
+        const registration = await fileRegistry.registerReplacing(
           {
             cid,
             name: file.originalname,
@@ -126,7 +108,10 @@ router.post(
           }
         )
 
-        records.push(write.record)
+        write.record = registration.record
+        write.previous = registration.previous
+
+        records.push(registration.record)
       }
 
       // Every file is stored and pinned: the blocks written by this request must

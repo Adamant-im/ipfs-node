@@ -292,30 +292,30 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     return report
   }
 
+  // The records this run released, as they were stored. Their revisions are
+  // what the cleanup below compares against, so it cannot remove a record
+  // somebody else wrote in the meantime.
   const releasedCleanly: FileRecord[] = []
 
   for (const record of released) {
     try {
-      let acted = false
-
       // The plan was made from a snapshot, and the guard rail ran since. An
       // upload can re-register and confirm the same CID in between, and
       // applying the stale decision would take away the pin it just got. The
       // record is re-read and the unpin performed with nothing else touching
       // the CID.
-      await options.registry.transition(record.cid, async (current) => {
+      const releasedRecord = await options.registry.transition(record.cid, async (current) => {
         if (current === undefined || current.state === 'confirmed') {
           return 'keep'
         }
 
         await unpinFile(options.node, CID.parse(record.cid))
-        acted = true
 
         return { ...current, state: 'expired', pinned: false, heldLocally: false }
       })
 
-      if (acted) {
-        releasedCleanly.push(record)
+      if (releasedRecord) {
+        releasedCleanly.push(releasedRecord)
       } else {
         log(`Skipped ${record.cid}: its lifecycle changed after the plan was made`)
       }
@@ -369,9 +369,16 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
   // Only files whose release succeeded lose their record. One that failed to
   // unpin still has blocks and a pin, and dropping its record would hide it
   // from the next run and from the storage report.
+  //
+  // Deleting blocks took time, and a re-upload during it can have pinned and
+  // registered the same CID again. Removing by CID alone would delete that new
+  // record and leave its pin behind, so the record is removed only while it is
+  // still the one this run released.
   for (const record of releasedCleanly) {
     try {
-      await options.registry.remove(record.cid)
+      await options.registry.transition(record.cid, async (current) =>
+        current?.revision === record.revision ? 'remove' : 'keep'
+      )
     } catch (err) {
       errors.push(`Registry cleanup failed for ${record.cid}: ${(err as Error).message}`)
     }
