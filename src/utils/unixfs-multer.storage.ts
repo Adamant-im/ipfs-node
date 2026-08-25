@@ -13,18 +13,32 @@ export interface UnixfsStorageOptions {
   getSession: (req: e.Request) => UploadSession
 }
 
+/** A part stream being metered, and how much of it has gone by. */
+interface MeteredStream {
+  stream: Readable
+  /** Bytes of this part that reached the importer. */
+  readonly bytes: number
+}
+
 /**
  * Wrap a part stream so that the aggregate request budget is enforced while the
- * bytes flow.
+ * bytes flow, and count the part itself.
  *
  * `Content-Length` is checked before parsing starts, but a chunked request
  * declares no size, so the limit is applied here as well.
+ *
+ * The per-part count is the file's own size. Nothing else knows it: multer
+ * fills `size` only for engines that report it, and the blocks written are not
+ * the same number — re-uploading content this node already holds writes none at
+ * all.
  */
-function budgeted(stream: Readable, budget: RequestSizeBudget): Readable {
+function budgeted(stream: Readable, budget: RequestSizeBudget): MeteredStream {
+  let bytes = 0
   const meter = new Transform({
     transform(chunk: Buffer, encoding, callback) {
       try {
         budget.consume(chunk.length)
+        bytes += chunk.length
         callback(null, chunk)
       } catch (err) {
         callback(err as Error)
@@ -32,7 +46,12 @@ function budgeted(stream: Readable, budget: RequestSizeBudget): Readable {
     }
   })
 
-  return stream.pipe(meter)
+  return {
+    stream: stream.pipe(meter),
+    get bytes() {
+      return bytes
+    }
+  }
 }
 
 /**
@@ -66,11 +85,16 @@ export class UnixfsMulterStorage implements StorageEngine {
 
     const session = this.options.getSession(req)
     const write = session.beginFile()
+    const metered = budgeted(file.stream, session.budget)
 
     unixfs({ blockstore: session.blockstore })
-      .addByteStream(budgeted(file.stream, session.budget))
+      .addByteStream(metered.stream)
       .then((cid) => {
-        callback(undefined, { ...file, cid, storedBytes: write.storedBytes })
+        // `size` is what multer would have set for a disk engine, and what the
+        // lifecycle record stores as the file's size. Leaving it unset wrote
+        // records without one, which nothing noticed until the registry began
+        // validating what it reads.
+        callback(undefined, { ...file, cid, size: metered.bytes, storedBytes: write.storedBytes })
       })
       .catch((err) => {
         callback(err, undefined)

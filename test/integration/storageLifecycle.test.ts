@@ -9,7 +9,11 @@ import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
 import { Key } from 'interface-datastore'
 import { fixedSize } from 'ipfs-unixfs-importer/chunker'
+import { Readable } from 'node:stream'
+import type { Request } from 'express'
 import { CID } from 'multiformats/cid'
+import { UnixfsMulterStorage } from '../../src/utils/unixfs-multer.storage.js'
+import type { UnixFsMulterFile } from '../../src/utils/types.js'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { createUploadAdmission, getUploadSession } from '../../src/middleware/uploadAdmission.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
@@ -31,6 +35,14 @@ import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/sto
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
 import { UploadSession } from '../../src/storage/uploadSession.js'
 import { deterministicBytes } from '../fixtures.js'
+
+/**
+ * Deletion fencing for a test that is the only writer.
+ *
+ * The real collector passes the storage lease here. Stating it at every call
+ * keeps the parameter impossible to forget where it does matter.
+ */
+const runWithoutOtherWriters = <T>(work: () => Promise<T>): Promise<T> => work()
 
 /** Only loopback, and port 0 so the OS picks a free port. */
 const LISTEN = ['/ip4/127.0.0.1/tcp/0']
@@ -426,6 +438,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: WATERMARKS,
       blockstoreBytes: 4096,
       dryRun: true,
@@ -445,6 +458,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -472,6 +486,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: WATERMARKS,
       blockstoreBytes: 4096,
       now: 1000
@@ -496,6 +511,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: WATERMARKS,
       blockstoreBytes: 4096,
       availableBytes: 1024,
@@ -514,6 +530,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: { highWatermarkBytes: 2048, lowWatermarkBytes: 1024 },
       blockstoreBytes: 4096,
       now: 1000
@@ -540,6 +557,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       pinTimeoutMs: 1500,
@@ -579,6 +597,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node: flaky,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -605,6 +624,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry: cleanupFails,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -634,6 +654,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -667,6 +688,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry: planned,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -697,6 +719,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry: planned,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 2000
@@ -731,6 +754,7 @@ describe('garbage collection against fixture data', () => {
     await runGarbageCollection({
       node: racing,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
       now: 1000
@@ -749,6 +773,7 @@ describe('garbage collection against fixture data', () => {
     const report = await runGarbageCollection({
       node,
       registry,
+      withCollectionLease: runWithoutOtherWriters,
       watermarks: WATERMARKS,
       blockstoreBytes: 4096,
       now: 1000
@@ -836,6 +861,50 @@ describe('block metering', () => {
       progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
       `metered ${progress.bytes} bytes, past the reserved ${limit + INTAKE_OVERSHOOT_BYTES}`
     )
+  })
+})
+
+describe('multipart import', () => {
+  it('reports the size of the part it imported', async () => {
+    // Nothing else knows it. Multer fills `size` only for engines that report
+    // it, and the blocks written are a different number — re-uploading content
+    // this node already holds writes none at all. Leaving it unset produced
+    // lifecycle records without a file size, which the registry cannot read.
+    const session = createSession()
+    const storage = new UnixfsMulterStorage({ getSession: () => session })
+    const payload = deterministicBytes(140_000, 'multipart-size')
+
+    const imported = await new Promise<Partial<UnixFsMulterFile>>((resolve, reject) => {
+      storage._handleFile(
+        {} as unknown as Request,
+        { originalname: 'photo.jpg', stream: Readable.from([payload]) } as Express.Multer.File,
+        (err, info) => (err ? reject(err) : resolve(info as Partial<UnixFsMulterFile>))
+      )
+    })
+
+    assert.equal(imported.size, payload.byteLength)
+    assert.notEqual(imported.cid, undefined)
+    assert.ok((imported.storedBytes ?? 0) > 0)
+  })
+
+  it('reports a size even when the content was already stored', async () => {
+    const payload = deterministicBytes(90_000, 'multipart-known')
+    await ifs.addBytes(payload)
+
+    const session = createSession()
+    const storage = new UnixfsMulterStorage({ getSession: () => session })
+
+    const imported = await new Promise<Partial<UnixFsMulterFile>>((resolve, reject) => {
+      storage._handleFile(
+        {} as unknown as Request,
+        { originalname: 'again.jpg', stream: Readable.from([payload]) } as Express.Multer.File,
+        (err, info) => (err ? reject(err) : resolve(info as Partial<UnixFsMulterFile>))
+      )
+    })
+
+    // No new blocks, but the file still has a size
+    assert.equal(imported.storedBytes, 0)
+    assert.equal(imported.size, payload.byteLength)
   })
 })
 

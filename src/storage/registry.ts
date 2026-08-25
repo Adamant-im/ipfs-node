@@ -316,6 +316,16 @@ export class FileRegistry {
     })
   }
 
+  /**
+   * Read one record.
+   *
+   * A record that does not decode is an error here, while {@link list} skips
+   * it. The difference is deliberate: a caller asking for one CID is about to
+   * act on that file and must not be told it simply does not exist, whereas a
+   * sweep over every record must not be stopped by one damaged entry. Either
+   * way the blocks stay protected — the collector only ever selects records it
+   * could read.
+   */
   async get(cid: string): Promise<FileRecord | undefined> {
     try {
       const record = decodeRecord(await this.datastore.get(this.key(cid)), cid)
@@ -335,6 +345,17 @@ export class FileRegistry {
 
   async save(record: FileRecord): Promise<FileRecord> {
     const stored: FileRecord = { ...record, revision: randomUUID() }
+
+    // Checked on the way in as well as on the way out. Validating reads alone
+    // lets a record be persisted that can then never be read: an absent number
+    // survives `JSON.stringify` as a missing key, and the file it describes
+    // disappears from the report, from repair and from every plan while its
+    // pin quietly keeps the blocks. Refusing the write puts the failure where
+    // the mistake is.
+    if (!isFileRecord(stored)) {
+      throw new Error(`Refusing to store an invalid lifecycle record for ${record.cid}`)
+    }
+
     await this.datastore.put(this.key(stored.cid), encoder.encode(JSON.stringify(stored)))
     return stored
   }

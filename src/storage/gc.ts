@@ -188,8 +188,14 @@ export interface GcRunOptions {
   force?: boolean
   /** Bounds the DAG walk when a missing pin has to be restored. */
   pinTimeoutMs?: number
-  /** Excludes in-flight unpinned writes while Helia deletes blocks. */
-  withCollectionLease?: <T>(work: () => Promise<T>) => Promise<T>
+  /**
+   * Excludes in-flight unpinned writes while Helia deletes blocks.
+   *
+   * Required rather than optional: a caller that forgets it would delete blocks
+   * with no lease at all, and nothing would say so. A caller that genuinely has
+   * no concurrent writers passes a function that just runs the work.
+   */
+  withCollectionLease: <T>(work: () => Promise<T>) => Promise<T>
   now?: number
   log?: (message: string) => void
 }
@@ -401,11 +407,7 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
   // safely overlap uploads. Only Helia GC needs the exclusive lease: it waits
   // for every import-to-pin session to settle before inspecting unpinned
   // blocks, without holding new uploads behind full-corpus scans or dry runs.
-  if (options.withCollectionLease === undefined) {
-    await collectBlocks()
-  } else {
-    await options.withCollectionLease(collectBlocks)
-  }
+  await options.withCollectionLease(collectBlocks)
 
   // Helia resolves even when it could not delete everything. Which file a
   // surviving block belongs to is unknowable — the blockstore addresses content

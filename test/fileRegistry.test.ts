@@ -287,6 +287,29 @@ describe('FileRegistry', () => {
     assert.equal(await registry.get(CID_A), undefined)
   })
 
+  it('refuses to store a record it would not be able to read back', async () => {
+    // `JSON.stringify` drops an absent number, so a record written without one
+    // comes back as a shape the registry rejects. Validating only on the way
+    // out let such a record be persisted and then vanish from the report, from
+    // repair and from every plan, while its pin quietly kept the blocks.
+    const registry = createRegistry()
+    const incomplete = {
+      cid: CID_A,
+      name: 'photo.jpg',
+      state: 'confirmed',
+      createdAt: 1,
+      expiresAt: null,
+      confirmedAt: 1,
+      storedBytes: 10,
+      pinned: true,
+      heldLocally: true,
+      replicas: []
+    } as unknown as FileRecord
+
+    await assert.rejects(() => registry.save(incomplete), /Refusing to store an invalid/)
+    assert.equal(await registry.get(CID_A), undefined)
+  })
+
   it('creates a record only while the registry does not know the CID', async () => {
     const registry = createRegistry()
     const legacy: FileRecord = {

@@ -4,7 +4,6 @@ import { helia } from '../helia.js'
 import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
 import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
 import { multerStorage } from '../multer.js'
-import { pinFile, unpinFile } from '../storage/pinning.js'
 import {
   confirmFile,
   effectiveQuorum,
@@ -12,14 +11,12 @@ import {
   releaseFile,
   replicateFile
 } from '../storage/service.js'
-import { rollbackUpload } from '../storage/rollback.js'
 import { fileRegistry } from '../storage/state.js'
+import { createUploadHandler } from './uploadRoute.js'
 import { parseCid } from '../utils/cid.js'
 import { sendDownloadStream } from '../utils/downloadResponse.js'
 import { downloadFile, getFileStats } from '../utils/file.js'
 import { logger } from '../utils/logger.js'
-import { UnixFsMulterFile } from '../utils/types.js'
-import { flatFiles } from '../utils/utils.js'
 
 const router = Router()
 
@@ -43,138 +40,17 @@ router.post(
   uploadLimiter,
   admitUpload,
   multerStorage.array('files'),
-  async (req, res, next) => {
-    if (!Array.isArray(req.files) || req.files.length === 0) {
-      res.statusCode = 400
-      return res.send({ error: 'No file uploaded' })
-    }
-
-    const session = getUploadSession(req)
-
-    try {
-      const files = flatFiles(req.files as UnixFsMulterFile[])
-      logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
-
-      // Hold all involved CIDs until this request either commits or restores
-      // every pin and lifecycle record it changed. Sorting happens inside the
-      // registry, so overlapping multi-file requests cannot deadlock.
-      const records = await fileRegistry.withExclusiveCids(
-        files.map((file) => file.cid.toString()),
-        async (registry) => {
-          const undo: Array<() => Promise<void>> = []
-
-          try {
-            const stored = []
-
-            for (const file of files) {
-              const cid = file.cid.toString()
-              logger.info(`Successfully added file ${cid}`)
-
-              const previous = await registry.get(cid)
-              const createdPin = await pinFile(helia, file.cid)
-
-              let registration
-              try {
-                registration = await registry.registerReplacing(
-                  {
-                    cid,
-                    name: file.originalname,
-                    fileSize: file.size,
-                    storedBytes: file.storedBytes
-                  },
-                  {
-                    confirmationRequired: config.storage.confirmationRequired,
-                    temporaryTtlMs: config.storage.temporaryTtlMs
-                  }
-                )
-              } catch (err) {
-                // A datastore failure can happen before or after it touches the
-                // key. Restore both sides from the baseline captured under the
-                // same CID lock, so neither outcome leaks a pin or a record.
-                await rollbackUpload({
-                  registry,
-                  cid,
-                  previous,
-                  createdPin,
-                  unpin: async () => {
-                    await unpinFile(helia, file.cid)
-                  }
-                })
-                throw err
-              }
-
-              undo.push(() =>
-                rollbackUpload({
-                  registry,
-                  cid,
-                  previous: registration.previous,
-                  createdPin,
-                  unpin: async () => {
-                    await unpinFile(helia, file.cid)
-                  }
-                })
-              )
-
-              stored.push(registration.record)
-            }
-
-            // Every file is stored and pinned. Ownership passes from the
-            // request session to the registry before any CID lock is released.
-            session.commit()
-            return stored
-          } catch (err) {
-            for (const step of undo.reverse()) {
-              try {
-                await step()
-              } catch (undoError) {
-                logger.error(`Could not undo a failed upload: ${(undoError as Error).message}`)
-              }
-            }
-            throw err
-          }
-        }
-      )
-
-      const durable = records.filter((record) => record.state === 'confirmed')
-      const replication = await Promise.all(
-        durable.map(async (record) => ({
-          cid: record.cid,
-          report: await replicateFile(record.cid)
-        }))
-      )
-      const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
-
-      if (
-        config.replication.requireQuorumOnUpload &&
-        replication.some((item) => !item.report.satisfied)
-      ) {
-        // The policy demands a quorum, so the upload is not durable. The files are
-        // released instead of being kept as a copy nobody promised to hold.
-        await Promise.all(durable.map((record) => releaseFile(record.cid)))
-
-        return res.status(503).send({ error: 'Replication quorum not reached' })
-      }
-
-      res.send({
-        filesNames: files.map((file) => file.originalname),
-        cids: records.map((record) => record.cid),
-        files: records.map((record) => ({
-          cid: record.cid,
-          name: record.name,
-          state: record.state,
-          expiresAt: record.expiresAt,
-          // Placement is decided per CID, so one file of a request can meet its
-          // quorum while another does not, on different peers.
-          replication: replicationByCid.get(record.cid) ?? null
-        })),
-        // The first file's report, kept for clients written against it. New
-        // ones should read the per-file field above.
-        replication: replication[0]?.report ?? null
-      })
-    } catch (err) {
-      next(err)
-    }
-  }
+  createUploadHandler({
+    node: helia,
+    registry: fileRegistry,
+    getSession: getUploadSession,
+    confirmationRequired: config.storage.confirmationRequired,
+    temporaryTtlMs: config.storage.temporaryTtlMs,
+    requireQuorumOnUpload: config.replication.requireQuorumOnUpload,
+    replicate: replicateFile,
+    release: releaseFile,
+    log: logger
+  })
 )
 
 /**
