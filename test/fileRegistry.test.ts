@@ -287,6 +287,43 @@ describe('FileRegistry', () => {
     assert.equal((await registry.get(CID_A))?.name, 'second.jpg')
   })
 
+  it('refuses a public mutator called from inside its own lock', async () => {
+    // The two ways to change a record — the locking mutators and the view
+    // handed to withExclusiveCids — cannot be mixed: the inner call queues
+    // behind a lock its own caller holds. That used to hang with no error and
+    // no timeout, so the request simply never answered.
+    const registry = createRegistry()
+    await registry.register(newFile(), { confirmationRequired: false, temporaryTtlMs: TTL })
+
+    await assert.rejects(
+      () => registry.withExclusiveCids([CID_A], async () => registry.setPinned(CID_A, false)),
+      /Deadlock avoided/
+    )
+  })
+
+  it('refuses a nested lock on a CID the caller already holds', async () => {
+    const registry = createRegistry()
+
+    await assert.rejects(
+      () =>
+        registry.withExclusiveCids([CID_A], async () =>
+          registry.withExclusiveCids([CID_A], async () => undefined)
+        ),
+      /Deadlock avoided/
+    )
+  })
+
+  it('allows a public mutator for a CID the caller does not hold', async () => {
+    const registry = createRegistry()
+    await registry.register(newFile(CID_B), { confirmationRequired: false, temporaryTtlMs: TTL })
+
+    const pinned = await registry.withExclusiveCids([CID_A], async () =>
+      registry.setPinned(CID_B, false)
+    )
+
+    assert.equal(pinned?.pinned, false)
+  })
+
   it('takes overlapping multi-CID locks in one order', async () => {
     const registry = createRegistry()
 

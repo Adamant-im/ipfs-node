@@ -265,9 +265,14 @@ fileAdminRouter.post('/:cid/unpin', async (req, res, next) => {
     const cid = parseCid(req.params.cid)
     const record = await releaseFile(cid.toString())
 
+    // Nothing was released, so saying so would be a lie an operator acts on.
+    if (!record) {
+      return res.status(404).send({ error: 'Unknown CID' })
+    }
+
     res.send({
       cid: cid.toString(),
-      state: record?.state ?? 'expired',
+      state: record.state,
       pinned: false,
       reclaimable: true
     })

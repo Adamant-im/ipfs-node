@@ -280,11 +280,18 @@ export async function releaseFile(cid: string): Promise<FileRecord | undefined> 
 
   return fileRegistry.withExclusiveCids([cid], async (registry) => {
     const current = await registry.get(cid)
-    const removedPin = await unpinFile(helia, parsed)
 
+    // Nothing is unpinned for a CID the registry does not know. Startup records
+    // every pin this node holds, so an unknown CID is either not pinned at all
+    // or has not been reconciled yet — and reconciliation is exactly the window
+    // in which removing a pin would drop protection from content that predates
+    // the registry. The caller is told it was unknown rather than that it was
+    // released.
     if (!current) {
       return undefined
     }
+
+    const removedPin = await unpinFile(helia, parsed)
 
     try {
       return await registry.save({
@@ -446,15 +453,27 @@ async function pullUnderIntakeLimits(
  * @returns Bytes pulled
  */
 export async function cacheFileLocally(cid: string, peerId: string): Promise<number> {
+  // A copy is held to the same size an upload is, so a node accepts as a copy
+  // what it would accept as a file. Taking the headroom off this instead would
+  // make the two disagree, and quietly: at a 20 MiB request limit a copy would
+  // stop at 4 MiB, and at 16 MiB or less no copy could be held at all — while
+  // uploads of that size kept working and nothing said why.
+  //
+  // The budget is what carries the headroom. The allowance leaves room for it
+  // so that reserving both still fits, which also keeps a node configured to
+  // accept requests larger than a peer's whole hourly budget from refusing
+  // every copy outright instead of allowing one at a time.
+  const allowance = Math.min(
+    config.storage.maxRequestSizeBytes,
+    PER_PEER_INTAKE_BYTES - INTAKE_OVERSHOOT_BYTES
+  )
+
   // Reserved before a block is fetched rather than counted afterwards. A check
   // that only reads the counters lets every concurrent request see the same
   // figure and pass, and a transfer charged on completion costs a peer nothing
-  // when it aborts after sending almost all of it.
-  // Capped at the budget itself: a node configured to accept requests larger
-  // than a peer's whole hourly allowance would otherwise refuse every copy
-  // outright instead of allowing one at a time.
-  const allowance = Math.min(config.storage.maxRequestSizeBytes, PER_PEER_INTAKE_BYTES)
-  const reservation = reserveIntake(peerId, allowance)
+  // when it aborts after sending almost all of it. What is reserved covers the
+  // overshoot, because the limit is noticed late.
+  const reservation = reserveIntake(peerId, allowance + INTAKE_OVERSHOOT_BYTES)
 
   if (reservation === undefined) {
     throw new Error('Cache budget for this peer is spent')
@@ -463,16 +482,7 @@ export async function cacheFileLocally(cid: string, peerId: string): Promise<num
   const progress: TransferProgress = { bytes: 0 }
 
   try {
-    // The transfer is bounded by what was reserved, not by the request limit.
-    // Otherwise a node configured to accept requests larger than the allowance
-    // lets a peer reserve part of a transfer and complete all of it, and the
-    // budget only learns of the excess once it has already arrived. The
-    // headroom comes off it, because the limit is noticed late.
-    return await pullUnderIntakeLimits(
-      cid,
-      progress,
-      Math.max(1, allowance - INTAKE_OVERSHOOT_BYTES)
-    )
+    return await pullUnderIntakeLimits(cid, progress, allowance)
   } finally {
     // What actually crossed the network, finished or not.
     reservation.settle(progress.bytes)

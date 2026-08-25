@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { Key } from 'interface-datastore'
 import type { Datastore, Pair } from 'interface-datastore'
 
@@ -138,8 +139,32 @@ export class FileRegistry {
    */
   private readonly queued = new Map<string, Promise<unknown>>()
 
+  /**
+   * CIDs whose lock is held by the call currently running.
+   *
+   * The class exposes two ways to change a record: the public mutators, which
+   * take the lock themselves, and the {@link LockedFileRegistry} view handed to
+   * {@link withExclusiveCids}, which does not. Mixing them is a deadlock: the
+   * inner call queues behind a lock its own caller is holding, and neither ever
+   * finishes. Nothing observable happens — no error, no timeout, just a request
+   * that hangs until the client gives up.
+   *
+   * Tracking the held locks per asynchronous context turns that into a thrown
+   * error at the call that made the mistake.
+   */
+  private readonly held = new AsyncLocalStorage<Set<string>>()
+
   /** Run `work` with nothing else touching this CID. */
   private async exclusive<T>(cid: string, work: () => Promise<T>): Promise<T> {
+    const holding = this.held.getStore()
+
+    if (holding?.has(cid)) {
+      throw new Error(
+        `Deadlock avoided: ${cid} is already locked by this operation. ` +
+          'Use the registry passed to withExclusiveCids instead of the public mutators.'
+      )
+    }
+
     const previous = this.queued.get(cid) ?? Promise.resolve()
     // Runs whether or not the previous holder succeeded; its failure is its own.
     const result = previous.then(work, work)
@@ -182,9 +207,19 @@ export class FileRegistry {
       registerReplacing: (file, options) => this.registerExclusively(file, options)
     }
 
+    const holding = new Set(this.held.getStore() ?? [])
+
     const acquire = (index: number): Promise<T> => {
       const cid = ordered[index]
-      return cid === undefined ? work(locked) : this.exclusive(cid, () => acquire(index + 1))
+
+      if (cid === undefined) {
+        return this.held.run(holding, () => work(locked))
+      }
+
+      return this.exclusive(cid, () => {
+        holding.add(cid)
+        return acquire(index + 1)
+      })
     }
 
     return acquire(0)
