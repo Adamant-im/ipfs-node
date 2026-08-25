@@ -51,6 +51,31 @@ describe('storage operation lock', () => {
     intakeLease.release()
   })
 
+  it('refuses a second lease to work that already holds one', async () => {
+    // With a collector queued, a shared holder asking for another shared lease
+    // waits behind the collector while the collector waits for the readers to
+    // reach zero. Nothing moves and nothing is logged, so the guard makes the
+    // mistake fail where it is made.
+    const lock = new StorageOperationLock()
+
+    await assert.rejects(
+      () => lock.withShared(async () => lock.withShared(async () => undefined)),
+      /Deadlock avoided/
+    )
+
+    await assert.rejects(
+      () => lock.withShared(async () => lock.withExclusive(async () => undefined)),
+      /Deadlock avoided/
+    )
+  })
+
+  it('lets sequential leases through after the first one is given back', async () => {
+    const lock = new StorageOperationLock()
+
+    await lock.withShared(async () => undefined)
+    await assert.doesNotReject(() => lock.withExclusive(async () => undefined))
+  })
+
   it('makes releasing a lease idempotent', async () => {
     const lock = new StorageOperationLock()
     const lease = await lock.acquireShared()

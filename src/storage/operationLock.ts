@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 /** A held storage-operation lock. Calling `release` more than once is safe. */
 export interface StorageOperationLease {
   release(): void
@@ -21,8 +23,28 @@ export class StorageOperationLock {
   private writer = false
   private readonly waiters: Waiter[] = []
 
+  /**
+   * The lease the currently running callback holds, when it took one.
+   *
+   * Taking a second lease while holding one is a deadlock, and a quiet one:
+   * with a collector queued, a shared holder that asks for another shared lease
+   * waits behind the collector, and the collector waits for the readers to
+   * reach zero. Neither ever moves, and nothing is logged.
+   *
+   * There is no path that does this today. The guard exists so that the next
+   * one fails loudly at the mistake instead of hanging the request.
+   *
+   * It covers work run through {@link withShared} and {@link withExclusive}. A
+   * lease taken with {@link acquireShared} spans an HTTP request rather than a
+   * callback, so no asynchronous context can carry it; that is why upload
+   * admission holds one and this cannot see it.
+   */
+  private readonly held = new AsyncLocalStorage<Waiter['mode']>()
+
   /** Take a shared lease for an upload, copy, or pin operation. */
   acquireShared(): Promise<StorageOperationLease> {
+    this.refuseReentry('shared')
+
     if (!this.writer && this.waiters.length === 0) {
       this.readers += 1
       return Promise.resolve(this.lease('shared'))
@@ -33,6 +55,8 @@ export class StorageOperationLock {
 
   /** Take the exclusive lease used by one complete collection pass. */
   acquireExclusive(): Promise<StorageOperationLease> {
+    this.refuseReentry('exclusive')
+
     if (!this.writer && this.readers === 0 && this.waiters.length === 0) {
       this.writer = true
       return Promise.resolve(this.lease('exclusive'))
@@ -45,7 +69,7 @@ export class StorageOperationLock {
   async withShared<T>(work: () => Promise<T>): Promise<T> {
     const lease = await this.acquireShared()
     try {
-      return await work()
+      return await this.held.run('shared', work)
     } finally {
       lease.release()
     }
@@ -55,9 +79,20 @@ export class StorageOperationLock {
   async withExclusive<T>(work: () => Promise<T>): Promise<T> {
     const lease = await this.acquireExclusive()
     try {
-      return await work()
+      return await this.held.run('exclusive', work)
     } finally {
       lease.release()
+    }
+  }
+
+  private refuseReentry(wanted: Waiter['mode']): void {
+    const holding = this.held.getStore()
+
+    if (holding !== undefined) {
+      throw new Error(
+        `Deadlock avoided: this operation already holds the ${holding} storage lease and ` +
+          `asked for a ${wanted} one. Do the work inside the lease it already has.`
+      )
     }
   }
 

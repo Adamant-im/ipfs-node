@@ -10,6 +10,7 @@ import { fixedSize } from 'ipfs-unixfs-importer/chunker'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
+import { collectStorage } from '../../src/storage/collection.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
 import {
   confirmStoredFile,
@@ -677,6 +678,88 @@ describe('block metering', () => {
       progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
       `metered ${progress.bytes} bytes, past the reserved ${limit + INTAKE_OVERSHOOT_BYTES}`
     )
+  })
+})
+
+describe('collection pass', () => {
+  const watermarks = { highWatermarkBytes: 0, lowWatermarkBytes: 0 }
+
+  function pass(
+    lock: StorageOperationLock,
+    registry: FileRegistry,
+    overrides: Partial<Parameters<typeof collectStorage>[0]> = {}
+  ): Promise<{ demoted: string[]; collected: boolean }> {
+    return collectStorage({
+      lock,
+      node,
+      registry,
+      watermarks,
+      reserveBytes: 0,
+      demote: async () => ({ demoted: [] }),
+      measure: async () => ({ blockstoreBytes: 0, availableBytes: 1_000_000_000 }),
+      force: true,
+      ...overrides
+    })
+  }
+
+  it('waits for an upload that is between its first block and its pin', async () => {
+    // The lease has to be taken by the pass itself. Testing the lock alone
+    // leaves the wiring free to disappear without a test noticing.
+    //
+    // `measure` runs inside the lease and nowhere else, so whether it has been
+    // called says exactly whether the pass got in.
+    const lock = new StorageOperationLock()
+    const registry = createRegistry()
+    const lease = await lock.acquireShared()
+    let entered = false
+
+    const collection = pass(lock, registry, {
+      measure: async () => {
+        entered = true
+        return { blockstoreBytes: 0, availableBytes: 1_000_000_000 }
+      }
+    })
+
+    for (let tick = 0; tick < 10; tick += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+
+    assert.equal(entered, false, 'the pass must not start while an upload holds its lease')
+
+    lease.release()
+    await collection
+
+    assert.equal(entered, true)
+  })
+
+  it('asks peers before taking the lease, not while holding it', async () => {
+    // Handover probes wait for the network. Inside the lease they would hold
+    // every upload on the node for as long as the slowest peer takes to answer.
+    const lock = new StorageOperationLock()
+    const registry = createRegistry()
+    let heldDuringDemote: boolean | undefined
+
+    await pass(lock, registry, {
+      demote: async () => {
+        // A shared lease can only be taken while the pass does not hold the
+        // exclusive one
+        const probe = await lock.acquireShared()
+        heldDuringDemote = true
+        probe.release()
+        return { demoted: ['handed-over'] }
+      }
+    })
+
+    assert.equal(heldDuringDemote, true)
+  })
+
+  it('reports what the handover released alongside the collection', async () => {
+    const lock = new StorageOperationLock()
+    const report = await pass(lock, createRegistry(), {
+      demote: async () => ({ demoted: ['a', 'b'] })
+    })
+
+    assert.deepEqual(report.demoted, ['a', 'b'])
   })
 })
 

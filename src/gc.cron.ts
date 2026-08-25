@@ -1,17 +1,11 @@
 import { CronJob } from 'cron'
 import { config } from './config.js'
 import { helia } from './helia.js'
-import { runGarbageCollection, type GcReport } from './storage/gc.js'
+import { collectStorage, type CollectionReport } from './storage/collection.js'
 import { refreshStorageMetrics } from './storage/metrics.js'
 import { demoteReleasableCopies } from './storage/service.js'
 import { fileRegistry, storageOperationLock } from './storage/state.js'
 import { logger } from './utils/logger.js'
-
-/** A collection pass, plus the copies it handed over to other nodes first. */
-export interface CollectionReport extends GcReport {
-  /** Files whose local copy was released because peers hold enough copies. */
-  demoted: string[]
-}
 
 let running = false
 let lastReport: CollectionReport | null = null
@@ -24,10 +18,10 @@ export class GarbageCollectionBusyError extends Error {
 }
 
 /**
- * Run one collection pass.
+ * Run one collection pass against this node.
  *
- * Metrics are refreshed first so the watermark decision uses the current
- * blockstore size rather than the value cached by the disk usage schedule.
+ * The pass itself lives in `collectStorage`, which takes what it works on; this
+ * is the wiring plus the guard that keeps two passes from overlapping.
  *
  * @param options.dryRun report the plan without unpinning or deleting anything
  * @param options.force collect even when the blockstore is below the high watermark
@@ -41,41 +35,26 @@ export async function collectGarbage(
 
   running = true
   try {
-    return await storageOperationLock.withExclusive(async () => {
-      // Hand copies over before collecting, so the blocks they free are reclaimed
-      // by the same pass instead of waiting for the next one.
-      //
-      // A dry run evaluates them too. A handover unpins a local copy, so a plan
-      // that leaves handovers out is not the plan the real run follows — and the
-      // pre-upgrade dry run is read precisely to see which local pins go. It asks
-      // the same peers the real pass would, and stops short of acting on the
-      // answer.
-      const demoted = (await demoteReleasableCopies({ dryRun: options.dryRun })).demoted
-
-      const metrics = await refreshStorageMetrics()
-
-      const report = await runGarbageCollection({
-        node: helia,
-        registry: fileRegistry,
-        watermarks: config.storage.gc,
-        blockstoreBytes: metrics.blockstoreBytes,
-        availableBytes: metrics.availableBytes,
-        reserveBytes: config.storage.diskReserveBytes,
-        dryRun: options.dryRun,
-        force: options.force,
-        pinTimeoutMs: config.replication.requestTimeoutMs,
-        log: (message) => logger.info(message)
-      })
-
-      const collection: CollectionReport = { ...report, demoted }
-
-      if (!collection.dryRun) {
-        lastReport = collection
-        await refreshStorageMetrics()
-      }
-
-      return collection
+    const collection = await collectStorage({
+      lock: storageOperationLock,
+      node: helia,
+      registry: fileRegistry,
+      watermarks: config.storage.gc,
+      reserveBytes: config.storage.diskReserveBytes,
+      pinTimeoutMs: config.replication.requestTimeoutMs,
+      demote: demoteReleasableCopies,
+      measure: refreshStorageMetrics,
+      dryRun: options.dryRun,
+      force: options.force,
+      log: (message) => logger.info(message)
     })
+
+    if (!collection.dryRun) {
+      lastReport = collection
+      await refreshStorageMetrics()
+    }
+
+    return collection
   } finally {
     running = false
   }
