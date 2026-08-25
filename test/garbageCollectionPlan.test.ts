@@ -83,6 +83,68 @@ describe('planGarbageCollection', () => {
     assert.equal(plan.estimatedBytesAfter, 600)
   })
 
+  it('evicts for the reserve even when the blockstore is below the low watermark', () => {
+    // The watermarks say nothing about free space. A small blockstore on a full
+    // volume is under no watermark pressure at all, and comparing against one
+    // would have this run reclaim nothing while the disk stayed full.
+    const plan = planGarbageCollection({
+      blockstoreBytes: 1000,
+      watermarks: { highWatermarkBytes: 4000, lowWatermarkBytes: 3000 },
+      availableBytes: 400,
+      reserveBytes: 500,
+      records: [record({ cid: 'a', state: 'temporary', expiresAt: 9000, storedBytes: 300 })],
+      now: 1000
+    })
+
+    assert.equal(plan.trigger, 'disk-reserve')
+    assert.deepEqual(
+      plan.evicted.map((item) => item.cid),
+      ['a']
+    )
+  })
+
+  it('keeps evicting until the reserve is honoured again, not until the first file', () => {
+    const plan = planGarbageCollection({
+      blockstoreBytes: 1000,
+      watermarks: { highWatermarkBytes: 4000, lowWatermarkBytes: 3000 },
+      availableBytes: 400,
+      reserveBytes: 500,
+      records: [
+        record({ cid: 'a', state: 'temporary', createdAt: 1, expiresAt: 9000, storedBytes: 100 }),
+        record({ cid: 'b', state: 'temporary', createdAt: 2, expiresAt: 9000, storedBytes: 100 }),
+        record({ cid: 'c', state: 'temporary', createdAt: 3, expiresAt: 9000, storedBytes: 100 }),
+        record({ cid: 'd', state: 'temporary', createdAt: 4, expiresAt: 9000, storedBytes: 100 })
+      ],
+      now: 1000
+    })
+
+    // 500 * 1.25 - 400 = 225 bytes short, so three files are needed
+    assert.deepEqual(
+      plan.evicted.map((item) => item.cid),
+      ['a', 'b', 'c']
+    )
+  })
+
+  it('counts what the expired files already free towards the reserve', () => {
+    const plan = planGarbageCollection({
+      blockstoreBytes: 1000,
+      watermarks: { highWatermarkBytes: 4000, lowWatermarkBytes: 3000 },
+      availableBytes: 400,
+      reserveBytes: 500,
+      records: [
+        record({ cid: 'gone', state: 'temporary', expiresAt: 500, storedBytes: 300 }),
+        record({ cid: 'alive', state: 'temporary', expiresAt: 9000, storedBytes: 300 })
+      ],
+      now: 1000
+    })
+
+    assert.deepEqual(
+      plan.expired.map((item) => item.cid),
+      ['gone']
+    )
+    assert.deepEqual(plan.evicted, [])
+  })
+
   it('stops evicting as soon as the estimate is below the low watermark', () => {
     const plan = planGarbageCollection({
       blockstoreBytes: 750,

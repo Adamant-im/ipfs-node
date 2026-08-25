@@ -94,7 +94,7 @@ export interface ReplicationHandlers {
    * The node can serve the file from now on, and gives up nothing: the blocks
    * live in the same tier as read cache and go when space is needed.
    */
-  cacheCopy(cid: string): Promise<number>
+  cacheCopy(cid: string, peerId: string): Promise<number>
   onError?(message: string): void
   /** Called when a peer asks for something it is not allowed to ask for. */
   onRefused?(peerId: string, op: string): void
@@ -195,22 +195,23 @@ async function respond(
   handlers: ReplicationHandlers
 ): Promise<void> {
   const request = parseRequest(await readMessage(stream))
+  const peerId = connection.remotePeer.toString()
 
   // Holding an extra copy is open to anyone, because it costs no more than a
   // read from the same peer would. Everything that makes this node responsible
-  // for content stays behind the authorization check.
+  // for content stays behind the authorization check. Open still means
+  // accountable: the handler charges the request to the peer that made it.
   if (request.op === 'cache') {
     if (!(await handlers.willAccept())) {
       sendMessage(stream, { ok: false, error: 'No room for another copy' })
       return
     }
 
-    const cachedBytes = await handlers.cacheCopy(request.cid)
+    const cachedBytes = await handlers.cacheCopy(request.cid, peerId)
     sendMessage(stream, { ok: true, op: 'cache', cachedBytes })
     return
   }
 
-  const peerId = connection.remotePeer.toString()
   if (!handlers.isAuthorized(peerId)) {
     handlers.onRefused?.(peerId, request.op)
     sendMessage(stream, { ok: false, error: 'Not authorized' })

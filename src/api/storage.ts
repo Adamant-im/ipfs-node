@@ -87,6 +87,7 @@ storageAdminRouter.post('/gc', async (req, res, next) => {
       removedBlocks: report.removedBlocks,
       removedCids: report.removedCids,
       repairedPins: report.repairedPins,
+      unprotected: report.unprotected,
       errors: report.errors
     })
   } catch (err) {

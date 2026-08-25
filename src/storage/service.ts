@@ -11,6 +11,7 @@ import type { FileRecord } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
+  requiredAcks,
   type PlacementOutcome,
   type ReplicationPeer,
   type ReplicationReport
@@ -24,7 +25,8 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
-import { claimedBytes, claimSpace } from './reservation.js'
+import { mayAcceptIntake, recordIntake } from './intakeBudget.js'
+import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter } from './state.js'
 import { nextSweepBatch } from './sweep.js'
 
@@ -205,6 +207,23 @@ export async function confirmFile(
 }
 
 /**
+ * Acknowledgements a file needs, given the network it actually lives in.
+ *
+ * The upload path caps the configured quorum by the copies that can exist, so
+ * reporting the raw configuration would show a file as permanently short of a
+ * quorum it was never asked to reach: `ackQuorum: 4` cannot be answered by more
+ * than three copies on a three-node network, and the upload that created the
+ * file already counted it as satisfied.
+ */
+export function effectiveQuorum(cid: string, createdAt: number): number {
+  if (!config.replication.enabled) {
+    return 1
+  }
+
+  return requiredAcks(config.replication, placementFor(cid, createdAt, getReplicationPeers()))
+}
+
+/**
  * Release a file so garbage collection may reclaim it.
  * Blocks stay on disk until the collector runs, which keeps the action
  * reversible until then.
@@ -216,6 +235,16 @@ export async function releaseFile(cid: string): Promise<FileRecord | undefined> 
 
 /** Store a copy requested by another ADAMANT node. */
 export async function acceptReplica(cid: string): Promise<FileRecord> {
+  // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
+  // with no limit on how many transfers run at once, how much space they may
+  // take together, or how large the content may be. The `accept` probe that
+  // normally precedes a `store` is an optimisation, not a guarantee: nothing in
+  // the protocol requires it, and several peers can pass their own probe and
+  // then transfer at the same time.
+  await pullUnderIntakeLimits(cid)
+
+  // Every block is local now, so pinning walks the blockstore rather than the
+  // network.
   return registerPinned(CID.parse(cid), cid)
 }
 
@@ -259,38 +288,44 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
 }
 
 /**
- * Pull a file into the blockstore without pinning or registering it.
+ * Pull a DAG into the blockstore under the limits a peer transfer carries: how
+ * many may run at once, how much space they may take together, and how large
+ * one may be.
  *
- * Draining the content is what fetches every block of the DAG, and it leaves
- * them exactly where a read would: unpinned, reclaimed when space is short. The
- * node can serve the file from now on without promising to keep it.
+ * The slot is taken before free space is measured, so everything after it lives
+ * in the guarded region — a filesystem error while reading capacity used to
+ * leave the slot taken, and enough of them disabled intake until restart.
+ *
+ * Draining the content is what both fetches every block and bounds the
+ * transfer, so this expects UnixFS file content. Every CID this node registers
+ * is one: uploads add byte streams rather than files, which is what keeps a
+ * directory wrapper out of the registry in the first place.
  *
  * @returns Bytes pulled
  */
-export async function cacheFileLocally(cid: string): Promise<number> {
-  // This is the one operation any peer may ask for, so it carries the limits an
-  // upload carries: how many may run at once, and how much space they may take
-  // together. The size is unknown before the transfer, so the aggregate request
-  // limit is claimed pessimistically and given back at the end.
+async function pullUnderIntakeLimits(cid: string): Promise<number> {
   if (!incomingCopyLimiter.tryAcquire()) {
     throw new Error('Too many copies are already being received')
   }
 
-  const claim = claimSpace({
-    bytes: config.storage.maxRequestSizeBytes,
-    availableBytes: Number(await availableStorageSize(blockstorePath)),
-    reserveBytes: config.storage.diskReserveBytes
-  })
-
-  if (claim === undefined) {
-    incomingCopyLimiter.release()
-    throw new Error('No room for another copy')
-  }
-
-  const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
-  let bytes = 0
+  let claim: Claim | undefined
 
   try {
+    // The size is unknown before the transfer, so the aggregate request limit
+    // is claimed pessimistically and given back at the end.
+    claim = claimSpace({
+      bytes: config.storage.maxRequestSizeBytes,
+      availableBytes: Number(await availableStorageSize(blockstorePath)),
+      reserveBytes: config.storage.diskReserveBytes
+    })
+
+    if (claim === undefined) {
+      throw new Error('No room for another copy')
+    }
+
+    const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
+    let bytes = 0
+
     for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
       bytes += chunk.byteLength
 
@@ -301,8 +336,37 @@ export async function cacheFileLocally(cid: string): Promise<number> {
 
     return bytes
   } finally {
-    claim.release()
+    claim?.release()
     incomingCopyLimiter.release()
+  }
+}
+
+/**
+ * Hold a file for a peer without pinning or registering it.
+ *
+ * Draining the content is what fetches every block of the DAG, and it leaves
+ * them exactly where a read would: unpinned, reclaimed when space is short. The
+ * node can serve the file from now on without promising to keep it.
+ *
+ * This is the one operation any peer may ask for, so it also spends a budget
+ * the caller cannot renew at will.
+ *
+ * @returns Bytes pulled
+ */
+export async function cacheFileLocally(cid: string, peerId: string): Promise<number> {
+  if (!mayAcceptIntake(peerId)) {
+    throw new Error('Cache budget for this peer is spent')
+  }
+
+  let bytes = 0
+
+  try {
+    bytes = await pullUnderIntakeLimits(cid)
+    return bytes
+  } finally {
+    // Recorded even when the transfer failed. Otherwise content that never
+    // arrives is free to ask for, and asking is most of the cost.
+    recordIntake(peerId, bytes)
   }
 }
 

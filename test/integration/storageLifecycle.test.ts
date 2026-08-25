@@ -383,6 +383,40 @@ describe('garbage collection against fixture data', () => {
     await registry.remove(unreachable)
   })
 
+  it('keeps every record when the collector could not delete everything', async () => {
+    const { registry, cids } = await createFixture()
+
+    // Helia resolves even after reporting a block it could not delete. Which
+    // file the survivor belongs to is unknowable, so nothing may be
+    // deregistered on the strength of a run that did not finish.
+    const flaky = new Proxy(node, {
+      get: (target, property) =>
+        property === 'gc'
+          ? (options?: { onProgress?: (event: unknown) => void }) => {
+              options?.onProgress?.({
+                type: 'helia:gc:error',
+                detail: new Error('blockstore I/O error')
+              })
+              return Promise.resolve()
+            }
+          : Reflect.get(target, property, target)
+    }) as IpfsNode
+
+    const report = await runGarbageCollection({
+      node: flaky,
+      registry,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    assert.equal(report.collected, false)
+    assert.equal(report.errors.length, 1)
+
+    // Released, so the next run retries it — but still there to be retried.
+    assert.equal((await registry.get(cids.abandoned))?.state, 'expired')
+  })
+
   it('restores a missing pin on confirmed content before deleting anything', async () => {
     const { registry, cids } = await createFixture()
     await unpinFile(node, CID.parse(cids.confirmed))
@@ -418,6 +452,26 @@ describe('registry backfill', () => {
     const second = await backfillRegistryFromPins({ node, unixfs: ifs, registry })
     assert.equal(second.registered, 0)
     assert.ok(second.known > 0)
+  })
+
+  it('reports a registry failure as an error rather than as incomplete content', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'unwritable'))
+    await pinFile(node, cid)
+
+    // A datastore that is unavailable says nothing about whether the DAG is
+    // local, and reporting it as incomplete sends an operator after the wrong
+    // problem entirely.
+    const failing = {
+      get: (value: string) => registry.get(value),
+      save: () => Promise.reject(new Error('datastore is unavailable'))
+    } as unknown as FileRegistry
+
+    const report = await backfillRegistryFromPins({ node, unixfs: ifs, registry: failing })
+
+    assert.equal(report.incomplete, 0)
+    assert.ok(report.errors.some((message) => message.includes(cid.toString())))
+    assert.equal(await registry.get(cid.toString()), undefined)
   })
 
   it('leaves an existing record untouched', async () => {

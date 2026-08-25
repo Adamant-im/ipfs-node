@@ -25,6 +25,17 @@ export const uploadLimiter = new ConcurrencyLimiter(config.storage.maxConcurrent
 export const COPY_INTAKE_SHARE = 4
 
 /**
+ * Copies a node accepts at once however small its upload limit is.
+ *
+ * A share alone collapses on a conservatively configured node: a quarter of
+ * four is one, and then a single peer sending a two-file upload has its second
+ * copy refused. The floor is what a fan-out needs to land, and the space claim
+ * still refuses copies the disk cannot take, so raising it does not weaken the
+ * reserve.
+ */
+export const COPY_INTAKE_FLOOR = 4
+
+/**
  * Guards how many copies peers may push into the blockstore at once.
  *
  * A copy is an upload as far as the disk is concerned, and it arrives over
@@ -32,5 +43,5 @@ export const COPY_INTAKE_SHARE = 4
  * own.
  */
 export const incomingCopyLimiter = new ConcurrencyLimiter(
-  Math.max(1, Math.floor(config.storage.maxConcurrentUploads / COPY_INTAKE_SHARE))
+  Math.max(COPY_INTAKE_FLOOR, Math.floor(config.storage.maxConcurrentUploads / COPY_INTAKE_SHARE))
 )

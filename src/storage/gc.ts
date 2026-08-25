@@ -6,6 +6,15 @@ import { FileRegistry, isExpired, type FileRecord } from './registry.js'
 
 export type Watermarks = Pick<GarbageCollectionConfig, 'highWatermarkBytes' | 'lowWatermarkBytes'>
 
+/**
+ * Free space restored beyond the reserve when a run is triggered by it.
+ *
+ * Stopping exactly at the reserve would leave the node one write away from
+ * collecting again, which is the same reason the watermarks keep a gap between
+ * them.
+ */
+export const RESERVE_RECOVERY_MARGIN = 0.25
+
 export interface GcPlanInput {
   /** Current blockstore size in bytes. */
   blockstoreBytes: number
@@ -82,13 +91,28 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
       : 'none'
   const evicted: FileRecord[] = []
 
+  // Bytes that have to come back for the reserve to be honoured again. The
+  // watermarks say nothing about free space: on a volume whose blockstore sits
+  // below the low watermark already, comparing against it selects nothing and a
+  // run triggered by a full disk would reclaim not a single byte.
+  const reserveTarget =
+    underReserve && input.availableBytes !== undefined && input.reserveBytes !== undefined
+      ? Math.ceil(input.reserveBytes * (1 + RESERVE_RECOVERY_MARGIN)) - input.availableBytes
+      : 0
+
+  // Expired files are released whatever the trigger, so what they free already
+  // counts towards it.
+  const stillShort = (): boolean =>
+    (overWatermark && estimatedBytesAfter > lowWatermarkBytes) ||
+    input.blockstoreBytes - estimatedBytesAfter < reserveTarget
+
   if (shouldCollect) {
     // Oldest first: the least recently accepted upload is evicted before newer
     // content that a client may still be waiting to confirm.
     const byAge = [...alive].sort((a, b) => a.createdAt - b.createdAt)
 
     for (const record of byAge) {
-      if (estimatedBytesAfter <= lowWatermarkBytes) {
+      if (!stillShort()) {
         break
       }
 
@@ -113,6 +137,12 @@ export interface GcReport {
   startedAt: number
   durationMs: number
   dryRun: boolean
+  /**
+   * True when the run deleted blocks and finished cleanly.
+   *
+   * False after a run that deleted some blocks but hit errors: what survived is
+   * unknown, so its records are kept and the next run retries them.
+   */
   collected: boolean
   /** What made this run delete blocks, or why it did not. */
   trigger: CollectionTrigger
@@ -281,6 +311,8 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
     return report
   }
 
+  let deletionErrors = 0
+
   await options.node.gc({
     onProgress: (event) => {
       if (event.type === 'helia:gc:deleted') {
@@ -291,10 +323,25 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
       }
 
       if (event.type === 'helia:gc:error') {
+        deletionErrors += 1
         errors.push(String(event.detail))
       }
     }
   })
+
+  // Helia resolves even when it could not delete everything. Which file a
+  // surviving block belongs to is unknowable — the blockstore addresses content
+  // by multihash and blocks are shared — so every record from this pass is kept
+  // and the run does not claim to have completed. The next one retries the
+  // release, which is why the records must still be there to retry.
+  if (deletionErrors > 0) {
+    log(
+      `Collection incomplete: ${deletionErrors} blocks could not be deleted; ` +
+        `${releasedCleanly.length} records kept for the next run`
+    )
+    report.durationMs = Date.now() - startedAt
+    return report
+  }
 
   // Only files whose release succeeded lose their record. One that failed to
   // unpin still has blocks and a pin, and dropping its record would hide it

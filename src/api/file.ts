@@ -7,6 +7,7 @@ import { multerStorage } from '../multer.js'
 import { pinFile, unpinFile } from '../storage/pinning.js'
 import {
   confirmFile,
+  effectiveQuorum,
   prepareFileRetrieval,
   releaseFile,
   replicateFile
@@ -65,16 +66,30 @@ router.post(
 
         const knownBefore = await fileRegistry.get(cid)
 
+        // Compensation runs in reverse of the order it is pushed, so the
+        // registry step goes first to run last. Undoing the pin before the
+        // record means a failure at worst leaves a record for a file that is
+        // still pinned — visible, and reclaimable by the collector. The other
+        // order leaves a pinned file nothing accounts for.
+        //
+        // A CID this node already knew is restored rather than removed:
+        // registering it again may move an expired or released record to
+        // confirmed, and dropping it would lose a lifecycle this request did
+        // not create.
+        undo.push(async () => {
+          if (knownBefore) {
+            await fileRegistry.save(knownBefore)
+          } else {
+            await fileRegistry.remove(cid)
+          }
+        })
+
         // Only a pin this request created may be removed again; content that
         // was already durable keeps the pin it had.
         if (await pinFile(helia, file.cid)) {
           undo.push(async () => {
             await unpinFile(helia, file.cid)
           })
-        }
-
-        if (!knownBefore) {
-          undo.push(() => fileRegistry.remove(cid))
         }
 
         records.push(
@@ -100,11 +115,17 @@ router.post(
       undo.length = 0
 
       const durable = records.filter((record) => record.state === 'confirmed')
-      const replication = await Promise.all(durable.map((record) => replicateFile(record.cid)))
+      const replication = await Promise.all(
+        durable.map(async (record) => ({
+          cid: record.cid,
+          report: await replicateFile(record.cid)
+        }))
+      )
+      const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
 
       if (
         config.replication.requireQuorumOnUpload &&
-        replication.some((report) => !report.satisfied)
+        replication.some((item) => !item.report.satisfied)
       ) {
         // The policy demands a quorum, so the upload is not durable. The files are
         // released instead of being kept as a copy nobody promised to hold.
@@ -120,9 +141,14 @@ router.post(
           cid: record.cid,
           name: record.name,
           state: record.state,
-          expiresAt: record.expiresAt
+          expiresAt: record.expiresAt,
+          // Placement is decided per CID, so one file of a request can meet its
+          // quorum while another does not, on different peers.
+          replication: replicationByCid.get(record.cid) ?? null
         })),
-        replication: replication[0] ?? null
+        // The first file's report, kept for clients written against it. New
+        // ones should read the per-file field above.
+        replication: replication[0]?.report ?? null
       })
     } catch (err) {
       // Undo first, then let the response listener reclaim the blocks: cleanup
@@ -167,7 +193,11 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
         // A file handed over to other nodes keeps its record but no longer
         // counts here, so the local copy is only added while it is still held.
         acknowledged: record.replicas.length + (record.heldLocally ? 1 : 0),
-        required: config.replication.enabled ? config.replication.ackQuorum : 1,
+        // What this file is actually held to, not what the configuration asks
+        // for in the abstract: a quorum larger than the network can answer is
+        // capped when the file is placed, and reporting the raw number would
+        // show every file as short of it forever.
+        required: effectiveQuorum(record.cid, record.createdAt),
         heldLocally: record.heldLocally
       }
     })

@@ -17,6 +17,15 @@ export interface BackfillReport {
    * claim more than the node can serve, so they are left alone.
    */
   incomplete: number
+  /**
+   * Registry reads and writes that failed, with the CID they were for.
+   *
+   * A pin left unrecorded by one of these keeps its Helia pin and the
+   * protection that comes with it, exactly as before this release, but stays
+   * invisible to repair and to the storage report until a later pass records
+   * it. It is not the same condition as incomplete content and must not be
+   * reported as one.
+   */
   errors: string[]
 }
 
@@ -55,11 +64,26 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
         report.known += 1
         continue
       }
+    } catch (err) {
+      report.errors.push(`Registry read failed for ${cid}: ${(err as Error).message}`)
+      continue
+    }
 
+    let stats
+
+    try {
       // Offline on purpose: a pin whose blocks are not all here must not send
       // the node looking for them on the network at startup.
-      const stats = await options.unixfs.stat(CID.parse(cid), { extended: true, offline: true })
+      stats = await options.unixfs.stat(CID.parse(cid), { extended: true, offline: true })
+    } catch {
+      // The only failure this catch may claim. A datastore that is unavailable
+      // says nothing about whether the DAG is complete, and reporting it as
+      // incomplete content would send an operator after the wrong problem.
+      report.incomplete += 1
+      continue
+    }
 
+    try {
       await options.registry.save({
         cid,
         // Nothing recorded the original name, and inventing one would be worse
@@ -79,15 +103,15 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
       })
 
       report.registered += 1
-    } catch {
-      report.incomplete += 1
+    } catch (err) {
+      report.errors.push(`Registry write failed for ${cid}: ${(err as Error).message}`)
     }
   }
 
-  if (report.registered > 0 || report.incomplete > 0) {
+  if (report.registered > 0 || report.incomplete > 0 || report.errors.length > 0) {
     log(
       `Registry backfill: ${report.registered} pins recorded, ${report.known} already known, ` +
-        `${report.incomplete} skipped as incomplete`
+        `${report.incomplete} skipped as incomplete, ${report.errors.length} failed`
     )
   }
 

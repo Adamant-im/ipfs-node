@@ -168,17 +168,38 @@ uploaded under.
 Collection takes the Helia blockstore write lock, so uploads wait while it runs.
 Schedule it accordingly.
 
+### What a run triggered by free space reclaims
+
+The two triggers have different targets. A run above the high watermark evicts
+until the blockstore estimate drops below the low watermark. A run caused by
+free space falling into `storage.diskReserveBytes` evicts until the reserve is
+honoured again with a 25% margin, because the watermarks say nothing about the
+volume: on a disk whose blockstore is already below the low watermark, aiming at
+the watermark would select nothing and reclaim not a byte while the disk stayed
+full.
+
+A collection that Helia could not complete keeps every record it released, and
+reports `collected: false` with the failures in `errors`. Which file a surviving
+block belongs to cannot be known — blocks are addressed by multihash and shared
+between files — so the records stay for the next run to retry.
+
 ## Replication and durability
 
-`replication.enabled` is `false` by default. The node then stores content
-**best effort**: one copy, on this node, pinned, with no promise that any other
-node holds it. `GET /api/storage/policy` reports `"mode": "best-effort"` so
-clients can see what they are getting.
+`replication.enabled` is `true` by default: placing copies needs no
+configuration beyond the `nodes` list a node already has, and a durability
+guarantee nobody switches on protects nothing.
 
-With replication enabled, a file is placed on a subset of the ADAMANT nodes. The
-peer pulls the DAG over libp2p and pins it before answering, so an
-acknowledgement means the copy exists and is protected there, not that a request
-was queued.
+A file is placed on a subset of the ADAMANT nodes. The peer pulls the DAG over
+libp2p and pins it before answering, so an acknowledgement means the copy exists
+and is protected there, not that a request was queued.
+
+Turning it off with `replication.enabled: false` makes the node store content
+**best effort** instead: one copy, on this node, pinned, with no promise that
+any other node holds it. `GET /api/storage/policy` reports
+`"mode": "best-effort"` so clients can see what they are getting. The node still
+answers the protocol and still accepts copies from peers — a node that only took
+part while it was also sending would have to be added to every other
+configuration before it could be useful.
 
 ### How many copies, and where
 
@@ -245,6 +266,15 @@ can already make a node fetch and cache those blocks by asking it to serve them;
 this is the same effect with a different trigger, bounded by the same disk
 reserve. What stays behind the configuration check is everything that makes a
 node responsible: pinning, registration, and being counted as a holder.
+
+Open is not the same as unbounded. A copy taken this way is charged to the peer
+that asked for it, against a per-peer and a node-wide budget over a rolling
+hour, and a request that fails still costs a request — otherwise asking for
+content that never arrives would be free, and asking is most of the cost. The
+node-wide budget is the one that matters while peer identities are free to mint;
+both sit far above ordinary traffic, where a node that just accepted an upload
+asks two peers to cache it. Operator-facing transfer limits are separate work
+(#29).
 
 It is a stopgap, not the answer. A file spread this way survives the loss of the
 node it was uploaded to, but only until its peers need the space, and no repair
@@ -406,6 +436,32 @@ registry so they appear in dry runs and in the storage report.
 Deletion also waits for pressure. Nothing is freed until the blockstore passes
 `storage.gc.highWatermarkBytes` or free space falls into
 `storage.diskReserveBytes`.
+
+### The first start after the upgrade
+
+Startup walks the pinset once and records anything the registry does not know as
+`confirmed`. It is idempotent, so a restart changes nothing, and a pin whose DAG
+is not fully local is skipped rather than recorded — calling it confirmed would
+claim more than the node can serve.
+
+It does not block the API. The walk is as long as the pinset, and holding reads
+back for the whole migration would penalise exactly the nodes with the most to
+serve. Reads, uploads and incoming copies do not need a complete registry; the
+collector and the repair sweep are started once the walk finishes, so neither
+acts on a half-built picture.
+
+Two consequences are worth planning for:
+
+- The original upload time is not recoverable, so a backfilled record is dated
+  at the backfill. Every legacy file therefore counts as **fresh**, which is the
+  widest tier: repair will place it on as many nodes as that tier asks for. On a
+  small node list that means historical content is eventually copied to
+  effectively every node. This is the durability guarantee arriving for content
+  that never had it, not a fault, but it is real disk and real transfer on every
+  node — plan capacity for the existing corpus, not just for new uploads.
+- Repair works through a bounded, advancing batch per pass rather than the whole
+  registry at once, so the copying is gradual. It is still the largest transfer
+  the upgrade causes.
 
 ### Before the first collection
 

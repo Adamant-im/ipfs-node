@@ -56,6 +56,7 @@ export const admitUpload: RequestHandler = (
 
   let released = false
   let claimed: { release(): void } | undefined
+  let session: UploadSession | undefined
   const release = (): void => {
     if (released) {
       return
@@ -64,6 +65,31 @@ export const admitUpload: RequestHandler = (
     claimed?.release()
     uploadLimiter.release()
   }
+
+  // Attached before anything is awaited, and it covers every way a request can
+  // end without a durable result: a parser abort, a route failure, or a client
+  // that disconnected mid-upload.
+  //
+  // A client that hangs up while free space is being measured fires `close`
+  // inside that window. A listener added afterwards would never run, and the
+  // upload slot and the space claim would stay taken until the process
+  // restarts — which anyone could trigger, repeatedly, just by disconnecting.
+  res.on('close', () => {
+    release()
+
+    if (session === undefined || session.isSettled) {
+      return
+    }
+
+    session
+      .cleanup()
+      .then((removed) => {
+        if (removed > 0) {
+          logger.info(`Removed ${removed} blocks left by an unfinished upload`)
+        }
+      })
+      .catch((err) => logger.error(`Upload cleanup failed: ${(err as Error).message}`))
+  })
 
   const declaredBytes = parseContentLength(req.headers['content-length'])
 
@@ -75,6 +101,12 @@ export const admitUpload: RequestHandler = (
 
   availableStorageSize(blockstorePath)
     .then((available) => {
+      // The client is already gone and the slot went back with it. Claiming
+      // space now would promise it to a request that no longer exists.
+      if (released) {
+        return
+      }
+
       // A chunked request declares no size, so the most it could write is what
       // its aggregate limit allows. Claiming that much keeps the reserve honest
       // for a request whose size is unknown, and claiming at all is what stops
@@ -95,7 +127,7 @@ export const admitUpload: RequestHandler = (
         return
       }
 
-      const session = new UploadSession({
+      session = new UploadSession({
         blockstore: helia.blockstore,
         isPinned: (cid) => helia.pins.isPinned(cid),
         deleteBlock: (cid) => blockstore.delete(cid),
@@ -105,25 +137,6 @@ export const admitUpload: RequestHandler = (
       })
       claimed = claim
       ;(req as RequestWithSession)[SESSION_KEY] = session
-
-      // Covers every way a request can end without a durable result: a parser
-      // abort, a route failure, or a client that disconnected mid-upload.
-      res.on('close', () => {
-        release()
-
-        if (session.isSettled) {
-          return
-        }
-
-        session
-          .cleanup()
-          .then((removed) => {
-            if (removed > 0) {
-              logger.info(`Removed ${removed} blocks left by an unfinished upload`)
-            }
-          })
-          .catch((err) => logger.error(`Upload cleanup failed: ${(err as Error).message}`))
-      })
 
       next()
     })
