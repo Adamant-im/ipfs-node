@@ -61,7 +61,9 @@ describe('rollbackUpload', () => {
   it('keeps the pin when a record survives the rollback', async () => {
     const registry = createRegistry()
     const unpinned: string[] = []
-    await registry.register(file, { confirmationRequired: false, temporaryTtlMs: TTL })
+    await registry.withExclusiveCids([CID_A], (locked) =>
+      locked.registerReplacing(file, { confirmationRequired: false, temporaryTtlMs: TTL })
+    )
 
     await registry.withExclusiveCids([CID_A], async (locked) => {
       const written = await locked.registerReplacing(file, {
@@ -87,8 +89,15 @@ describe('rollbackUpload', () => {
   it('restores an unpinned previous record and its real pin state', async () => {
     const registry = createRegistry()
     const unpinned: string[] = []
-    await registry.register(file, { confirmationRequired: false, temporaryTtlMs: TTL })
-    await registry.release(CID_A)
+    // What the storage service leaves behind when a file is released: the
+    // record survives, unpinned and reclaimable
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      const { record } = await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL
+      })
+      await locked.save({ ...record, state: 'expired', pinned: false, heldLocally: false })
+    })
 
     await registry.withExclusiveCids([CID_A], async (locked) => {
       const written = await locked.registerReplacing(file, {

@@ -12,6 +12,11 @@ import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
 import {
+  confirmStoredFile,
+  registerPinnedFile,
+  releaseStoredFile
+} from '../../src/storage/lifecycle.js'
+import {
   INTAKE_OVERSHOOT_BYTES,
   INTAKE_READ_CONCURRENCY,
   meteredBlocks
@@ -51,6 +56,18 @@ function createSession(maxRequestSizeBytes = 64 * 1024 * 1024): UploadSession {
     parseCid: (value) => CID.parse(value),
     onCleanupError: (err) => assert.fail(`unexpected cleanup error: ${err.message}`)
   })
+}
+
+/** Register a file the way an upload does: under the CID lock. */
+function registerFile(
+  registry: FileRegistry,
+  file: { cid: string; name: string; fileSize: number; storedBytes: number },
+  options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+): Promise<FileRecord> {
+  return registry.withExclusiveCids(
+    [file.cid],
+    async (locked) => (await locked.registerReplacing(file, options)).record
+  )
 }
 
 function record(overrides: Pick<FileRecord, 'cid' | 'state'> & Partial<FileRecord>): FileRecord {
@@ -429,7 +446,11 @@ describe('garbage collection against fixture data', () => {
     // The plan is made from a snapshot; an upload can re-register and confirm
     // the same CID before the run reaches the unpin
     const stale = await registry.all()
-    await registry.confirm(cids.abandoned)
+    await registerFile(
+      registry,
+      { cid: cids.abandoned, name: 'again.bin', fileSize: 1024, storedBytes: 1024 },
+      { confirmationRequired: false, temporaryTtlMs: 60_000 }
+    )
 
     const planned = new Proxy(registry, {
       get: (target, property) =>
@@ -455,13 +476,9 @@ describe('garbage collection against fixture data', () => {
   it('does not apply an expired plan to a new temporary upload', async () => {
     const { registry, cids } = await createFixture()
     const stale = await registry.all()
-    const fresh = await registry.register(
-      {
-        cid: cids.abandoned,
-        name: 'new-upload.bin',
-        fileSize: 1024,
-        storedBytes: 1024
-      },
+    const fresh = await registerFile(
+      registry,
+      { cid: cids.abandoned, name: 'new-upload.bin', fileSize: 1024, storedBytes: 1024 },
       { confirmationRequired: true, temporaryTtlMs: 60_000, now: 2000 }
     )
 
@@ -497,7 +514,8 @@ describe('garbage collection against fixture data', () => {
         property === 'gc'
           ? async (): Promise<void> => {
               await pinFile(node, CID.parse(cids.abandoned))
-              await registry.register(
+              await registerFile(
+                registry,
                 { cid: cids.abandoned, name: 'again.bin', fileSize: 1024, storedBytes: 1024 },
                 { confirmationRequired: false, temporaryTtlMs: 1000 }
               )
@@ -613,6 +631,139 @@ describe('block metering', () => {
       progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
       `metered ${progress.bytes} bytes, past the reserved ${limit + INTAKE_OVERSHOOT_BYTES}`
     )
+  })
+})
+
+describe('lifecycle transitions', () => {
+  const TTL = 60_000
+
+  /** A registry whose datastore write always fails, to exercise compensation. */
+  function unwritable(registry: FileRegistry): FileRegistry {
+    return new Proxy(registry, {
+      get: (target, property) =>
+        property === 'save'
+          ? async (): Promise<never> => {
+              throw new Error('datastore is unavailable')
+            }
+          : Reflect.get(target, property, target)
+    }) as FileRegistry
+  }
+
+  it('adopts an unknown CID only when asked to', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-unknown'))
+
+    const ignored = await confirmStoredFile({
+      node,
+      registry,
+      unixfs: ifs,
+      cid,
+      temporaryTtlMs: TTL
+    })
+
+    assert.equal(ignored, undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+
+    const adopted = await confirmStoredFile({
+      node,
+      registry,
+      unixfs: ifs,
+      cid,
+      registerUnknown: true,
+      temporaryTtlMs: TTL
+    })
+
+    assert.equal(adopted?.state, 'confirmed')
+    assert.equal(adopted?.pinned, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('confirms a temporary file, clears its expiry and pins it', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-temporary'))
+    await registry.save(
+      record({ cid: cid.toString(), state: 'temporary', expiresAt: 9000, pinned: false })
+    )
+
+    const confirmed = await confirmStoredFile({
+      node,
+      registry,
+      unixfs: ifs,
+      cid,
+      temporaryTtlMs: TTL,
+      now: 5000
+    })
+
+    assert.equal(confirmed?.state, 'confirmed')
+    assert.equal(confirmed?.expiresAt, null)
+    assert.equal(confirmed?.confirmedAt, 5000)
+    assert.equal(confirmed?.pinned, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('removes the pin it created when confirmation cannot be recorded', async () => {
+    // A record claiming durability for content the blockstore does not protect
+    // is the one outcome this must never leave behind
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-fails'))
+    await registry.save(
+      record({ cid: cid.toString(), state: 'temporary', expiresAt: 9000, pinned: false })
+    )
+
+    await assert.rejects(
+      () =>
+        confirmStoredFile({
+          node,
+          registry: unwritable(registry),
+          unixfs: ifs,
+          cid,
+          temporaryTtlMs: TTL
+        }),
+      /datastore is unavailable/
+    )
+
+    assert.equal(await isDirectlyPinned(node, cid), false)
+    assert.equal((await registry.get(cid.toString()))?.state, 'temporary')
+  })
+
+  it('releases a registered file and removes its pin', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'release-known'))
+    await registerPinnedFile({ node, registry, unixfs: ifs, cid, temporaryTtlMs: TTL })
+
+    const released = await releaseStoredFile({ node, registry, cid })
+
+    assert.equal(released?.state, 'expired')
+    assert.equal(released?.pinned, false)
+    assert.equal(released?.heldLocally, false)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('leaves a CID the registry does not know alone', async () => {
+    // Startup records every pin, so an unknown CID is either unpinned or not
+    // reconciled yet — and that window is exactly when unpinning would drop
+    // protection from content older than the registry
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'release-unknown'))
+    await pinFile(node, cid)
+
+    assert.equal(await releaseStoredFile({ node, registry, cid }), undefined)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('restores the pin when the release cannot be recorded', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'release-fails'))
+    await registerPinnedFile({ node, registry, unixfs: ifs, cid, temporaryTtlMs: TTL })
+
+    await assert.rejects(
+      () => releaseStoredFile({ node, registry: unwritable(registry), cid }),
+      /datastore is unavailable/
+    )
+
+    // The record still promises protection, so the protection has to be there
+    assert.equal((await registry.get(cid.toString()))?.pinned, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
   })
 })
 

@@ -350,36 +350,22 @@ export class FileRegistry {
   }
 
   /**
-   * Register a freshly uploaded file.
+   * Register a freshly uploaded file, and report the record it replaced.
+   *
+   * Reachable only through {@link withExclusiveCids}, because registering
+   * writes `pinned` and `heldLocally`: it describes protection it does not
+   * create. Whoever writes that has to hold the CID lock and pin the content in
+   * the same breath, or the record and the blockstore start disagreeing.
+   *
+   * A record read before the write is a guess by the time the write happens —
+   * another upload of the same file can adopt the CID in between — so what was
+   * replaced is captured here rather than by the caller.
    *
    * @param file Identity and size of the imported content
    * @param options `confirmationRequired` decides whether the upload becomes
    *   durable right away, which keeps the current client protocol working, or
    *   stays temporary until an authorized confirmation arrives
    */
-  async register(
-    file: NewFileRecord,
-    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
-  ): Promise<FileRecord> {
-    return (await this.registerReplacing(file, options)).record
-  }
-
-  /**
-   * Register an upload and report the record it replaced.
-   *
-   * A record read before the write is already a guess by the time the write
-   * happens: another upload of the same file can adopt the CID in between. A
-   * rollback restoring what the caller saw earlier would erase the lifecycle
-   * that upload owns, so the replaced record is captured inside the same
-   * serialised section as the write that replaced it.
-   */
-  async registerReplacing(
-    file: NewFileRecord,
-    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
-  ): Promise<{ record: FileRecord; previous: FileRecord | undefined }> {
-    return this.exclusive(file.cid, () => this.registerExclusively(file, options))
-  }
-
   private async registerExclusively(
     file: NewFileRecord,
     options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
@@ -418,64 +404,6 @@ export class FileRegistry {
     })
 
     return { record, previous: existing }
-  }
-
-  /** Move a temporary file to the durable state. Confirming twice is a no-op. */
-  async confirm(cid: string, now: number = Date.now()): Promise<FileRecord | undefined> {
-    return this.exclusive(cid, async () => {
-      const record = await this.get(cid)
-      if (!record) {
-        return undefined
-      }
-
-      if (record.state === 'confirmed') {
-        return record
-      }
-
-      return this.save({
-        ...record,
-        state: 'confirmed',
-        expiresAt: null,
-        confirmedAt: now,
-        pinned: true,
-        heldLocally: true
-      })
-    })
-  }
-
-  /**
-   * Release a file so that garbage collection may reclaim it.
-   * The blocks stay on disk until the collector runs.
-   */
-  async release(cid: string): Promise<FileRecord | undefined> {
-    return this.exclusive(cid, async () => {
-      const record = await this.get(cid)
-      if (!record) {
-        return undefined
-      }
-
-      return this.save({ ...record, state: 'expired', pinned: false, heldLocally: false })
-    })
-  }
-
-  /**
-   * Record that the file now lives on other nodes only.
-   *
-   * The file stays `confirmed` because it is still durable in the network; this
-   * node simply stopped being one of its holders.
-   */
-  async releaseLocalCopy(cid: string): Promise<FileRecord | undefined> {
-    return this.exclusive(cid, async () => {
-      const record = await this.get(cid)
-      return record ? this.save({ ...record, pinned: false, heldLocally: false }) : undefined
-    })
-  }
-
-  async setPinned(cid: string, pinned: boolean): Promise<FileRecord | undefined> {
-    return this.exclusive(cid, async () => {
-      const record = await this.get(cid)
-      return record ? this.save({ ...record, pinned }) : undefined
-    })
   }
 
   async setReplicas(cid: string, replicas: string[]): Promise<FileRecord | undefined> {

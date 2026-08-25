@@ -8,7 +8,13 @@ import { getNodesList } from '../utils/utils.js'
 import { blockstorePath } from '../store.js'
 import { mayDemote, placeFile, storageTargets, type Placement } from './placement.js'
 import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
-import type { FileRecord, LockedFileRegistry } from './registry.js'
+import {
+  confirmStoredFile,
+  registerPinnedFile,
+  releaseStoredFile,
+  type LifecycleTarget
+} from './lifecycle.js'
+import type { FileRecord } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
@@ -156,53 +162,19 @@ async function placeCopy(peer: ReplicationPeer, cid: string): Promise<PlacementO
   }
 }
 
-/**
- * Pin content that is not in the registry yet and record it as durable.
- *
- * The DAG is pulled over libp2p if it is missing locally, bounded by the
- * replication request timeout so an unreachable CID cannot hang the caller.
- *
- * @param name Display name recorded for the file; defaults to its CID
- */
-async function registerPinnedLocked(
-  registry: LockedFileRegistry,
-  cid: CID,
-  name: string,
-  previous: FileRecord | undefined
-): Promise<FileRecord> {
-  const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
-  const createdPin = await pinFile(helia, cid, signal)
+/** The node and registry every lifecycle transition on this node works against. */
+const lifecycleTarget = (): LifecycleTarget => ({ node: helia, registry: fileRegistry })
 
-  try {
-    // Everything is local after pinning, so the deduplicated DAG size is what
-    // this node actually holds on disk for the file.
-    const stats = await ifs.stat(cid, { extended: true, offline: true, signal })
-
-    return (
-      await registry.registerReplacing(
-        {
-          cid: cid.toString(),
-          name,
-          fileSize: Number(stats.size),
-          storedBytes: Number(stats.deduplicatedDagSize)
-        },
-        { confirmationRequired: false, temporaryTtlMs: config.storage.temporaryTtlMs }
-      )
-    ).record
-  } catch (err) {
-    // A failed stat or datastore write must not leave a pin no lifecycle owns.
-    if (createdPin && previous?.pinned !== true) {
-      await unpinFile(helia, cid)
-    }
-    throw err
-  }
-}
-
+/** Pin content that is not in the registry yet and record it as durable. */
 async function registerPinned(cid: CID, name: string): Promise<FileRecord> {
-  const key = cid.toString()
-  return fileRegistry.withExclusiveCids([key], async (registry) =>
-    registerPinnedLocked(registry, cid, name, await registry.get(key))
-  )
+  return registerPinnedFile({
+    ...lifecycleTarget(),
+    unixfs: ifs,
+    cid,
+    name,
+    temporaryTtlMs: config.storage.temporaryTtlMs,
+    pinTimeoutMs: config.replication.requestTimeoutMs
+  })
 }
 
 /**
@@ -216,33 +188,14 @@ export async function confirmFile(
   cid: string,
   options: { registerUnknown?: boolean } = {}
 ): Promise<FileRecord | undefined> {
-  const parsed = CID.parse(cid)
-  const confirmed = await fileRegistry.withExclusiveCids([cid], async (registry) => {
-    const current = await registry.get(cid)
-
-    if (!current) {
-      return options.registerUnknown === true
-        ? registerPinnedLocked(registry, parsed, cid, current)
-        : undefined
-    }
-
-    const createdPin = await pinFile(helia, parsed)
-
-    try {
-      return await registry.save({
-        ...current,
-        state: 'confirmed',
-        expiresAt: null,
-        confirmedAt: current.confirmedAt ?? Date.now(),
-        pinned: true,
-        heldLocally: true
-      })
-    } catch (err) {
-      if (createdPin && current.pinned !== true) {
-        await unpinFile(helia, parsed)
-      }
-      throw err
-    }
+  const confirmed = await confirmStoredFile({
+    ...lifecycleTarget(),
+    unixfs: ifs,
+    cid: CID.parse(cid),
+    name: cid,
+    registerUnknown: options.registerUnknown,
+    temporaryTtlMs: config.storage.temporaryTtlMs,
+    pinTimeoutMs: config.replication.requestTimeoutMs
   })
 
   if (!confirmed) {
@@ -276,39 +229,7 @@ export function effectiveQuorum(cid: string, createdAt: number): number {
  * reversible until then.
  */
 export async function releaseFile(cid: string): Promise<FileRecord | undefined> {
-  const parsed = CID.parse(cid)
-
-  return fileRegistry.withExclusiveCids([cid], async (registry) => {
-    const current = await registry.get(cid)
-
-    // Nothing is unpinned for a CID the registry does not know. Startup records
-    // every pin this node holds, so an unknown CID is either not pinned at all
-    // or has not been reconciled yet — and reconciliation is exactly the window
-    // in which removing a pin would drop protection from content that predates
-    // the registry. The caller is told it was unknown rather than that it was
-    // released.
-    if (!current) {
-      return undefined
-    }
-
-    const removedPin = await unpinFile(helia, parsed)
-
-    try {
-      return await registry.save({
-        ...current,
-        state: 'expired',
-        pinned: false,
-        heldLocally: false
-      })
-    } catch (err) {
-      // The lifecycle still promises protection when the datastore write did
-      // not land, so restore the pin before exposing the failure.
-      if (removedPin && current.pinned) {
-        await pinFile(helia, parsed)
-      }
-      throw err
-    }
-  })
+  return releaseStoredFile({ ...lifecycleTarget(), cid: CID.parse(cid) })
 }
 
 /** Store a copy requested by another ADAMANT node. */

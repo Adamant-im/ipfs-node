@@ -22,6 +22,25 @@ function createRegistry(): FileRegistry {
 
 const newFile = (cid = CID_A) => ({ cid, name: 'photo.jpg', fileSize: 100, storedBytes: 120 })
 
+/**
+ * Register a file the way production does.
+ *
+ * Registering writes `pinned` and `heldLocally`, so the registry only offers it
+ * under a held CID lock. Going through `withExclusiveCids` here is not
+ * ceremony: it is the path the upload route, replica intake and confirmation
+ * all take.
+ */
+function registerFile(
+  registry: FileRegistry,
+  file = newFile(),
+  options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number } = {
+    confirmationRequired: false,
+    temporaryTtlMs: TTL
+  }
+): Promise<{ record: FileRecord; previous: FileRecord | undefined }> {
+  return registry.withExclusiveCids([file.cid], (locked) => locked.registerReplacing(file, options))
+}
+
 before(async () => {
   storeDir = await mkdtemp(join(tmpdir(), 'ipfs-node-registry-'))
   datastore = new FsDatastore(join(storeDir, 'datastore'))
@@ -37,7 +56,7 @@ describe('FileRegistry', () => {
   it('registers an upload as confirmed when confirmation is not required', async () => {
     const registry = createRegistry()
 
-    const record = await registry.register(newFile(), {
+    const { record } = await registerFile(registry, newFile(), {
       confirmationRequired: false,
       temporaryTtlMs: TTL,
       now: 1000
@@ -52,7 +71,7 @@ describe('FileRegistry', () => {
   it('registers an upload as temporary with a TTL when confirmation is required', async () => {
     const registry = createRegistry()
 
-    const record = await registry.register(newFile(), {
+    const { record } = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL,
       now: 1000
@@ -65,13 +84,13 @@ describe('FileRegistry', () => {
 
   it('never downgrades content that is already confirmed', async () => {
     const registry = createRegistry()
-    await registry.register(newFile(), {
+    await registerFile(registry, newFile(), {
       confirmationRequired: false,
       temporaryTtlMs: TTL,
       now: 1000
     })
 
-    const reuploaded = await registry.register(newFile(), {
+    const { record: reuploaded } = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL,
       now: 2000
@@ -81,44 +100,37 @@ describe('FileRegistry', () => {
     assert.equal(reuploaded.expiresAt, null)
   })
 
-  it('confirms a temporary file and clears its expiry', async () => {
+  it('re-registering a temporary file confirms it and clears its expiry', async () => {
+    // This is what an upload of already-known content does. Confirming through
+    // the admin endpoint and releasing a file both changed the pin as well as
+    // the record, so they live in the storage service now, behind the same CID
+    // lock; the registry only decides what registration itself writes.
     const registry = createRegistry()
-    await registry.register(newFile(), {
+    await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL,
       now: 1000
     })
 
-    const confirmed = await registry.confirm(CID_A, 5000)
-
-    assert.equal(confirmed?.state, 'confirmed')
-    assert.equal(confirmed?.expiresAt, null)
-    assert.equal(confirmed?.confirmedAt, 5000)
-  })
-
-  it('reports an unknown CID instead of creating one on confirmation', async () => {
-    assert.equal(await createRegistry().confirm(CID_B), undefined)
-  })
-
-  it('releases a confirmed file so it becomes reclaimable', async () => {
-    const registry = createRegistry()
-    await registry.register(newFile(), {
+    const { record } = await registerFile(registry, newFile(), {
       confirmationRequired: false,
       temporaryTtlMs: TTL,
-      now: 1000
+      now: 5000
     })
 
-    const released = await registry.release(CID_A)
-
-    assert.equal(released?.state, 'expired')
-    assert.equal(released?.pinned, false)
-    assert.equal(isReclaimable(released as FileRecord, 1000), true)
+    assert.equal(record.state, 'confirmed')
+    assert.equal(record.expiresAt, null)
+    assert.equal(record.confirmedAt, 5000)
+    assert.equal(record.pinned, true)
   })
 
   it('lists every registered file and survives a reopen', async () => {
     const registry = createRegistry()
-    await registry.register(newFile(CID_A), { confirmationRequired: false, temporaryTtlMs: TTL })
-    await registry.register(newFile(CID_B), { confirmationRequired: true, temporaryTtlMs: TTL })
+    await registerFile(registry, newFile(CID_A))
+    await registerFile(registry, newFile(CID_B), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
 
     const cids = (await registry.all()).map((record) => record.cid)
 
@@ -127,7 +139,7 @@ describe('FileRegistry', () => {
 
   it('forgets a removed file and tolerates removing it twice', async () => {
     const registry = createRegistry()
-    await registry.register(newFile(), { confirmationRequired: false, temporaryTtlMs: TTL })
+    await registerFile(registry)
 
     await registry.remove(CID_A)
     await assert.doesNotReject(() => registry.remove(CID_A))
@@ -139,11 +151,11 @@ describe('FileRegistry', () => {
     // Read before the write, the baseline is a guess: another upload can adopt
     // the CID in between, and a rollback restoring the guess would erase it
     const registry = createRegistry()
-    const first = await registry.registerReplacing(newFile(), {
+    const first = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL
     })
-    const second = await registry.registerReplacing(newFile(), {
+    const second = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL
     })
@@ -156,26 +168,26 @@ describe('FileRegistry', () => {
     // Two concurrent uploads of the same file write records that match field
     // for field. The first must not roll back the lifecycle the second owns.
     const registry = createRegistry()
-    const first = await registry.register(newFile(), {
+    const first = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL
     })
-    const second = await registry.register(newFile(), {
+    const second = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL
     })
 
     await registry.transition(CID_A, async (current) =>
-      current?.revision === first.revision ? 'remove' : 'keep'
+      current?.revision === first.record.revision ? 'remove' : 'keep'
     )
 
-    assert.notEqual(first.revision, second.revision)
+    assert.notEqual(first.record.revision, second.record.revision)
     assert.notEqual(await registry.get(CID_A), undefined)
   })
 
   it('removes a record when the undo is still the last write', async () => {
     const registry = createRegistry()
-    const written = await registry.register(newFile(), {
+    const { record: written } = await registerFile(registry, newFile(), {
       confirmationRequired: true,
       temporaryTtlMs: TTL
     })
@@ -228,7 +240,10 @@ describe('FileRegistry', () => {
     }
 
     const [upload, backfilled] = await Promise.all([
-      registry.register(newFile(CID_B), { confirmationRequired: true, temporaryTtlMs: TTL }),
+      registerFile(registry, newFile(CID_B), {
+        confirmationRequired: true,
+        temporaryTtlMs: TTL
+      }).then(({ record }) => record),
       registry.createIfAbsent(legacy)
     ])
 
@@ -269,22 +284,20 @@ describe('FileRegistry', () => {
       await firstMayFinish
       await locked.remove(CID_A)
     })
-    const second = registry
-      .register(
-        { ...newFile(), name: 'second.jpg' },
-        { confirmationRequired: false, temporaryTtlMs: TTL }
-      )
-      .then(() => {
-        secondFinished = true
-      })
+    const second = registry.setReplicas(CID_A, ['n2']).then((record) => {
+      secondFinished = true
+      return record
+    })
 
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(secondFinished, false)
 
     releaseFirst()
-    await Promise.all([first, second])
+    const [, updated] = await Promise.all([first, second])
 
-    assert.equal((await registry.get(CID_A))?.name, 'second.jpg')
+    // It ran after the compound work removed the record, not in the middle of it
+    assert.equal(updated, undefined)
+    assert.equal(await registry.get(CID_A), undefined)
   })
 
   it('refuses a public mutator called from inside its own lock', async () => {
@@ -293,10 +306,10 @@ describe('FileRegistry', () => {
     // behind a lock its own caller holds. That used to hang with no error and
     // no timeout, so the request simply never answered.
     const registry = createRegistry()
-    await registry.register(newFile(), { confirmationRequired: false, temporaryTtlMs: TTL })
+    await registerFile(registry)
 
     await assert.rejects(
-      () => registry.withExclusiveCids([CID_A], async () => registry.setPinned(CID_A, false)),
+      () => registry.withExclusiveCids([CID_A], async () => registry.setReplicas(CID_A, ['n2'])),
       /Deadlock avoided/
     )
   })
@@ -315,13 +328,13 @@ describe('FileRegistry', () => {
 
   it('allows a public mutator for a CID the caller does not hold', async () => {
     const registry = createRegistry()
-    await registry.register(newFile(CID_B), { confirmationRequired: false, temporaryTtlMs: TTL })
+    await registerFile(registry, newFile(CID_B))
 
-    const pinned = await registry.withExclusiveCids([CID_A], async () =>
-      registry.setPinned(CID_B, false)
+    const updated = await registry.withExclusiveCids([CID_A], async () =>
+      registry.setReplicas(CID_B, ['n3'])
     )
 
-    assert.equal(pinned?.pinned, false)
+    assert.deepEqual(updated?.replicas, ['n3'])
   })
 
   it('takes overlapping multi-CID locks in one order', async () => {
