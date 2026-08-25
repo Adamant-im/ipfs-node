@@ -43,6 +43,16 @@ describe('nextSweepBatch', () => {
     assert.notDeepEqual(firstRepair[0], secondRepair[0])
   })
 
+  it('reports the next batch without taking it when asked to peek', () => {
+    const all = records(SWEEP_BATCHES.demote + 5)
+
+    const peeked = nextSweepBatch('demote', all, { advance: false })
+    const taken = nextSweepBatch('demote', all)
+
+    // A dry run must not move the position the real pass resumes from
+    assert.deepEqual(peeked, taken)
+  })
+
   it('starts over when the record it stopped at is gone', () => {
     const all = records(SWEEP_BATCHES.rescue + 3)
     nextSweepBatch('rescue', all)

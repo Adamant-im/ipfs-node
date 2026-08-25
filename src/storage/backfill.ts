@@ -84,7 +84,12 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
     }
 
     try {
-      await options.registry.save({
+      // Create-if-absent rather than a plain write: the API is serving while
+      // this runs, so an upload can register the same CID between the check
+      // above and this line. Overwriting it would replace a temporary record
+      // with a confirmed one that never expires, bypassing the confirmation an
+      // operator required and losing the file's name.
+      const created = await options.registry.createIfAbsent({
         cid,
         // Nothing recorded the original name, and inventing one would be worse
         // than admitting it is unknown.
@@ -102,7 +107,11 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
         replicas: []
       })
 
-      report.registered += 1
+      if (created === undefined) {
+        report.known += 1
+      } else {
+        report.registered += 1
+      }
     } catch (err) {
       report.errors.push(`Registry write failed for ${cid}: ${(err as Error).message}`)
     }

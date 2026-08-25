@@ -135,6 +135,65 @@ describe('FileRegistry', () => {
     assert.equal(await registry.get(CID_A), undefined)
   })
 
+  it('creates a record only while the registry does not know the CID', async () => {
+    const registry = createRegistry()
+    const legacy: FileRecord = {
+      cid: CID_A,
+      name: CID_A,
+      state: 'confirmed',
+      createdAt: 1,
+      expiresAt: null,
+      confirmedAt: 1,
+      fileSize: 10,
+      storedBytes: 10,
+      pinned: true,
+      heldLocally: true,
+      replicas: []
+    }
+
+    assert.notEqual(await registry.createIfAbsent(legacy), undefined)
+    assert.equal(await registry.createIfAbsent({ ...legacy, name: 'second' }), undefined)
+    assert.equal((await registry.get(CID_A))?.name, CID_A)
+  })
+
+  it('does not let a backfill overwrite an upload registered while it ran', async () => {
+    // Both read the registry, decide, and write. Startup backfill now runs
+    // while the API accepts uploads, and losing this race turns a temporary
+    // upload into a confirmed record that never expires.
+    const registry = createRegistry()
+    const legacy: FileRecord = {
+      cid: CID_B,
+      name: CID_B,
+      state: 'confirmed',
+      createdAt: 1,
+      expiresAt: null,
+      confirmedAt: 1,
+      fileSize: 10,
+      storedBytes: 10,
+      pinned: true,
+      heldLocally: true,
+      replicas: []
+    }
+
+    const [upload, backfilled] = await Promise.all([
+      registry.register(newFile(CID_B), { confirmationRequired: true, temporaryTtlMs: TTL }),
+      registry.createIfAbsent(legacy)
+    ])
+
+    const stored = await registry.get(CID_B)
+
+    if (backfilled === undefined) {
+      // The upload got there first, so its lifecycle is the one that survives
+      assert.equal(stored?.state, 'temporary')
+      assert.equal(stored?.name, upload.name)
+    } else {
+      // The backfill got there first, and the upload registered on top of it
+      assert.equal(stored?.name, upload.name)
+    }
+
+    assert.notEqual(stored, undefined)
+  })
+
   it('reports an empty registry for a store that does not exist yet', async () => {
     const missing = join(tmpdir(), `ipfs-node-registry-missing-${process.pid}`)
     const registry = new FileRegistry(new FsDatastore(missing))

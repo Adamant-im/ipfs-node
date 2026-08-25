@@ -43,7 +43,13 @@ export async function collectGarbage(
   try {
     // Hand copies over before collecting, so the blocks they free are reclaimed
     // by the same pass instead of waiting for the next one.
-    const demoted = options.dryRun === true ? [] : (await demoteReleasableCopies()).demoted
+    //
+    // A dry run evaluates them too. A handover unpins a local copy, so a plan
+    // that leaves handovers out is not the plan the real run follows — and the
+    // pre-upgrade dry run is read precisely to see which local pins go. It asks
+    // the same peers the real pass would, and stops short of acting on the
+    // answer.
+    const demoted = (await demoteReleasableCopies({ dryRun: options.dryRun })).demoted
 
     const metrics = await refreshStorageMetrics()
 

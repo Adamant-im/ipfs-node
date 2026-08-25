@@ -79,6 +79,59 @@ export class FileRegistry {
     return new Key(`${this.prefix}/${cid}`)
   }
 
+  /**
+   * Work already queued for a CID, so the next caller waits for it.
+   *
+   * Every compound operation here reads a record, decides from it, and writes
+   * the result. Two of those running at once for the same CID lose one of the
+   * decisions, and the datastore offers no compare-and-swap to prevent it. The
+   * registry is a single instance per process, so a queue per CID is enough.
+   *
+   * It stopped being theoretical when the startup backfill was moved off the
+   * critical path: it now runs while the API accepts uploads, and an upload
+   * registering a CID between the backfill's read and its write would be
+   * overwritten as confirmed — bypassing the confirmation an operator required
+   * and losing the uploaded file's name.
+   */
+  private readonly queued = new Map<string, Promise<unknown>>()
+
+  /** Run `work` with nothing else touching this CID. */
+  private async exclusive<T>(cid: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.queued.get(cid) ?? Promise.resolve()
+    // Runs whether or not the previous holder succeeded; its failure is its own.
+    const result = previous.then(work, work)
+    const settled = result.then(
+      () => undefined,
+      () => undefined
+    )
+
+    this.queued.set(cid, settled)
+
+    try {
+      return await result
+    } finally {
+      // The map must not keep an entry for every CID the node ever touched.
+      if (this.queued.get(cid) === settled) {
+        this.queued.delete(cid)
+      }
+    }
+  }
+
+  /**
+   * Record a file, but only while the registry does not know it.
+   *
+   * @returns The stored record, or `undefined` when one already existed
+   */
+  async createIfAbsent(record: FileRecord): Promise<FileRecord | undefined> {
+    return this.exclusive(record.cid, async () => {
+      if (await this.get(record.cid)) {
+        return undefined
+      }
+
+      return this.save(record)
+    })
+  }
+
   async get(cid: string): Promise<FileRecord | undefined> {
     try {
       return JSON.parse(decoder.decode(await this.datastore.get(this.key(cid)))) as FileRecord
@@ -160,6 +213,13 @@ export class FileRegistry {
     file: NewFileRecord,
     options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
   ): Promise<FileRecord> {
+    return this.exclusive(file.cid, () => this.registerExclusively(file, options))
+  }
+
+  private async registerExclusively(
+    file: NewFileRecord,
+    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+  ): Promise<FileRecord> {
     const now = options.now ?? Date.now()
     const existing = await this.get(file.cid)
 
@@ -194,22 +254,24 @@ export class FileRegistry {
 
   /** Move a temporary file to the durable state. Confirming twice is a no-op. */
   async confirm(cid: string, now: number = Date.now()): Promise<FileRecord | undefined> {
-    const record = await this.get(cid)
-    if (!record) {
-      return undefined
-    }
+    return this.exclusive(cid, async () => {
+      const record = await this.get(cid)
+      if (!record) {
+        return undefined
+      }
 
-    if (record.state === 'confirmed') {
-      return record
-    }
+      if (record.state === 'confirmed') {
+        return record
+      }
 
-    return this.save({
-      ...record,
-      state: 'confirmed',
-      expiresAt: null,
-      confirmedAt: now,
-      pinned: true,
-      heldLocally: true
+      return this.save({
+        ...record,
+        state: 'confirmed',
+        expiresAt: null,
+        confirmedAt: now,
+        pinned: true,
+        heldLocally: true
+      })
     })
   }
 
@@ -218,12 +280,14 @@ export class FileRegistry {
    * The blocks stay on disk until the collector runs.
    */
   async release(cid: string): Promise<FileRecord | undefined> {
-    const record = await this.get(cid)
-    if (!record) {
-      return undefined
-    }
+    return this.exclusive(cid, async () => {
+      const record = await this.get(cid)
+      if (!record) {
+        return undefined
+      }
 
-    return this.save({ ...record, state: 'expired', pinned: false, heldLocally: false })
+      return this.save({ ...record, state: 'expired', pinned: false, heldLocally: false })
+    })
   }
 
   /**
@@ -233,18 +297,24 @@ export class FileRegistry {
    * node simply stopped being one of its holders.
    */
   async releaseLocalCopy(cid: string): Promise<FileRecord | undefined> {
-    const record = await this.get(cid)
-    return record ? this.save({ ...record, pinned: false, heldLocally: false }) : undefined
+    return this.exclusive(cid, async () => {
+      const record = await this.get(cid)
+      return record ? this.save({ ...record, pinned: false, heldLocally: false }) : undefined
+    })
   }
 
   async setPinned(cid: string, pinned: boolean): Promise<FileRecord | undefined> {
-    const record = await this.get(cid)
-    return record ? this.save({ ...record, pinned }) : undefined
+    return this.exclusive(cid, async () => {
+      const record = await this.get(cid)
+      return record ? this.save({ ...record, pinned }) : undefined
+    })
   }
 
   async setReplicas(cid: string, replicas: string[]): Promise<FileRecord | undefined> {
-    const record = await this.get(cid)
-    return record ? this.save({ ...record, replicas }) : undefined
+    return this.exclusive(cid, async () => {
+      const record = await this.get(cid)
+      return record ? this.save({ ...record, replicas }) : undefined
+    })
   }
 }
 

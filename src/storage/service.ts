@@ -25,7 +25,7 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
-import { mayAcceptIntake, recordIntake } from './intakeBudget.js'
+import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter } from './state.js'
 import { nextSweepBatch } from './sweep.js'
@@ -287,6 +287,11 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
   }
 }
 
+/** How much of a transfer has arrived, readable while it is still running. */
+export interface TransferProgress {
+  bytes: number
+}
+
 /**
  * Pull a DAG into the blockstore under the limits a peer transfer carries: how
  * many may run at once, how much space they may take together, and how large
@@ -301,9 +306,15 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
  * is one: uploads add byte streams rather than files, which is what keeps a
  * directory wrapper out of the registry in the first place.
  *
+ * @param progress Updated as bytes arrive, so a caller can still see what a
+ *   failed transfer cost. A peer that sends almost everything and then aborts
+ *   has spent the bandwidth either way.
  * @returns Bytes pulled
  */
-async function pullUnderIntakeLimits(cid: string): Promise<number> {
+async function pullUnderIntakeLimits(
+  cid: string,
+  progress: TransferProgress = { bytes: 0 }
+): Promise<number> {
   if (!incomingCopyLimiter.tryAcquire()) {
     throw new Error('Too many copies are already being received')
   }
@@ -324,17 +335,16 @@ async function pullUnderIntakeLimits(cid: string): Promise<number> {
     }
 
     const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
-    let bytes = 0
 
     for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
-      bytes += chunk.byteLength
+      progress.bytes += chunk.byteLength
 
-      if (bytes > config.storage.maxRequestSizeBytes) {
+      if (progress.bytes > config.storage.maxRequestSizeBytes) {
         throw new Error('Copy is larger than this node accepts')
       }
     }
 
-    return bytes
+    return progress.bytes
   } finally {
     claim?.release()
     incomingCopyLimiter.release()
@@ -354,19 +364,30 @@ async function pullUnderIntakeLimits(cid: string): Promise<number> {
  * @returns Bytes pulled
  */
 export async function cacheFileLocally(cid: string, peerId: string): Promise<number> {
-  if (!mayAcceptIntake(peerId)) {
+  // Reserved before a block is fetched rather than counted afterwards. A check
+  // that only reads the counters lets every concurrent request see the same
+  // figure and pass, and a transfer charged on completion costs a peer nothing
+  // when it aborts after sending almost all of it.
+  // Capped at the budget itself: a node configured to accept requests larger
+  // than a peer's whole hourly allowance would otherwise refuse every copy
+  // outright instead of allowing one at a time. What the transfer really costs
+  // is settled afterwards either way.
+  const reservation = reserveIntake(
+    peerId,
+    Math.min(config.storage.maxRequestSizeBytes, PER_PEER_INTAKE_BYTES)
+  )
+
+  if (reservation === undefined) {
     throw new Error('Cache budget for this peer is spent')
   }
 
-  let bytes = 0
+  const progress: TransferProgress = { bytes: 0 }
 
   try {
-    bytes = await pullUnderIntakeLimits(cid)
-    return bytes
+    return await pullUnderIntakeLimits(cid, progress)
   } finally {
-    // Recorded even when the transfer failed. Otherwise content that never
-    // arrives is free to ask for, and asking is most of the cost.
-    recordIntake(peerId, bytes)
+    // What actually crossed the network, finished or not.
+    reservation.settle(progress.bytes)
   }
 }
 
@@ -544,7 +565,9 @@ export interface DemotionReport {
  * count: there is nowhere for the copy to go, and every node is expected to
  * hold it.
  */
-export async function demoteReleasableCopies(): Promise<DemotionReport> {
+export async function demoteReleasableCopies(
+  options: { dryRun?: boolean } = {}
+): Promise<DemotionReport> {
   const report: DemotionReport = { checked: 0, demoted: [], kept: [] }
 
   if (!config.replication.enabled) {
@@ -559,7 +582,10 @@ export async function demoteReleasableCopies(): Promise<DemotionReport> {
     'demote',
     (await fileRegistry.all()).filter(
       (record) => record.state === 'confirmed' && record.heldLocally
-    )
+    ),
+    // A dry run must not take the batch: the real pass that follows would then
+    // resume past the very files the operator was shown.
+    { advance: options.dryRun !== true }
   )
 
   report.checked = candidates.length
@@ -595,9 +621,14 @@ export async function demoteReleasableCopies(): Promise<DemotionReport> {
       continue
     }
 
+    report.demoted.push(record.cid)
+
+    if (options.dryRun === true) {
+      continue
+    }
+
     await unpinFile(helia, CID.parse(record.cid))
     await fileRegistry.releaseLocalCopy(record.cid)
-    report.demoted.push(record.cid)
     logger.info(`Released the local copy of ${record.cid}; ${holders.length} peers hold it`)
   }
 

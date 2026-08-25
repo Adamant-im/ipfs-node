@@ -268,13 +268,19 @@ reserve. What stays behind the configuration check is everything that makes a
 node responsible: pinning, registration, and being counted as a holder.
 
 Open is not the same as unbounded. A copy taken this way is charged to the peer
-that asked for it, against a per-peer and a node-wide budget over a rolling
-hour, and a request that fails still costs a request — otherwise asking for
-content that never arrives would be free, and asking is most of the cost. The
-node-wide budget is the one that matters while peer identities are free to mint;
-both sit far above ordinary traffic, where a node that just accepted an upload
-asks two peers to cache it. Operator-facing transfer limits are separate work
-(#29).
+that asked for it, against a per-peer and a node-wide budget over the last hour.
+The most a copy could cost is reserved before the first block is fetched and the
+unused part is given back at the end: counting on completion instead would let
+every concurrent request read the same figure and pass, and would charge nothing
+at all to a peer that sends almost a whole copy and then aborts. The request
+itself is charged and never refunded, because asking is most of the cost.
+
+The hour is measured in six slices that expire one at a time rather than as a
+counter reset on the hour, which would let a peer spend its whole allowance just
+before the boundary and again just after it. The node-wide budget is the one
+that matters while peer identities are free to mint; both sit far above ordinary
+traffic, where a node that just accepted an upload asks two peers to cache it.
+Operator-facing transfer limits are separate work (#29).
 
 It is a stopgap, not the answer. A file spread this way survives the loss of the
 node it was uploaded to, but only until its peers need the space, and no repair
@@ -444,6 +450,12 @@ Startup walks the pinset once and records anything the registry does not know as
 is not fully local is skipped rather than recorded — calling it confirmed would
 claim more than the node can serve.
 
+Records are created only while the CID is absent, and every read-modify-write on
+the registry is serialised per CID. Uploads are being served while this runs, so
+without that an upload registering a CID mid-walk would be overwritten as
+confirmed: an operator who required confirmation would find the file durable
+anyway, under its CID instead of its name.
+
 It does not block the API. The walk is as long as the pinset, and holding reads
 back for the whole migration would penalise exactly the nodes with the most to
 serve. Reads, uploads and incoming copies do not need a complete registry; the
@@ -465,8 +477,12 @@ Two consequences are worth planning for:
 
 ### Before the first collection
 
-1. Run `POST /api/storage/gc?dryRun=true` and review `releasedCids` and
-   `retainedCids`. Nothing is deleted by a dry run.
+1. Run `POST /api/storage/gc?dryRun=true` and review `releasedCids`,
+   `retainedCids`, and `demoted`. Nothing is unpinned and nothing is deleted by
+   a dry run. It does ask peers whether they hold the files it would hand over,
+   because a handover unpins a local copy and a plan without them is not the
+   plan the real run follows. The sweep position is left where it was, so the
+   real run starts on the same files.
 2. Confirm that every CID that must survive appears in `retainedCids`. If a CID
    is missing, it is not confirmed: pin it with `POST /api/helia/pin/:cid` or
    confirm it with `POST /api/file/:cid/confirm` first.

@@ -21,12 +21,22 @@ const cursors = new Map<SweepName, string>()
  *
  * @param sweep Which sweep is asking; each keeps its own position
  * @param records Every candidate, in a stable order
+ * @param options `advance: false` reports the next batch without taking it, for
+ *   a dry run that must not move the position the real pass resumes from
  */
-export function nextSweepBatch<T extends { cid: string }>(sweep: SweepName, records: T[]): T[] {
+export function nextSweepBatch<T extends { cid: string }>(
+  sweep: SweepName,
+  records: T[],
+  options: { advance?: boolean } = {}
+): T[] {
   const size = SWEEP_BATCHES[sweep]
+  const advance = options.advance !== false
 
   if (records.length <= size) {
-    cursors.delete(sweep)
+    if (advance) {
+      cursors.delete(sweep)
+    }
+
     return records
   }
 
@@ -36,7 +46,10 @@ export function nextSweepBatch<T extends { cid: string }>(sweep: SweepName, reco
   const start = resumeAt > 0 && resumeAt < records.length ? resumeAt : 0
 
   const batch = [...records.slice(start), ...records.slice(0, start)].slice(0, size)
-  cursors.set(sweep, batch[batch.length - 1].cid)
+
+  if (advance) {
+    cursors.set(sweep, batch[batch.length - 1].cid)
+  }
 
   return batch
 }
