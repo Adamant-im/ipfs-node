@@ -77,19 +77,16 @@ function placementFor(cid: string, createdAt: number, peers: ReplicationPeer[]):
 }
 
 /**
- * Place copies of a file on the nodes that should hold it, and record which of
- * them acknowledged.
+ * Place copies of a file on the nodes that should hold it.
  *
  * Failures are reported, never thrown: an upload that is already stored and
  * pinned locally stays valid when a peer is unavailable, and the repair job
  * retries later.
  */
-export async function replicateFile(cid: string): Promise<ReplicationReport> {
-  const record = await fileRegistry.get(cid)
-
-  const report = await replicate({
+async function placeReplicas(cid: string, createdAt: number): Promise<ReplicationReport> {
+  return replicate({
     cid,
-    ageMs: Math.max(0, Date.now() - (record?.createdAt ?? Date.now())),
+    ageMs: Math.max(0, Date.now() - createdAt),
     selfPeerId: selfPeerId(),
     peers: getReplicationPeers(),
     config: config.replication,
@@ -98,6 +95,24 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
       await requestCache(helia, peer.multiAddr, cid, callOptions())
     }
   })
+}
+
+/**
+ * Place copies for an upload without changing its lifecycle record.
+ *
+ * The upload handler owns the CID lock and records the report itself. Keeping
+ * network placement separate prevents the service from queuing a registry
+ * mutation behind the lock its caller already holds.
+ */
+export async function replicateUploadedFile(cid: string): Promise<ReplicationReport> {
+  const record = await fileRegistry.get(cid)
+  return placeReplicas(cid, record?.createdAt ?? Date.now())
+}
+
+/** Place copies of a known file and persist the peers that acknowledged it. */
+export async function replicateFile(cid: string): Promise<ReplicationReport> {
+  const record = await fileRegistry.get(cid)
+  const report = await placeReplicas(cid, record?.createdAt ?? Date.now())
 
   if (report.mode === 'quorum') {
     await fileRegistry.setReplicas(cid, report.replicas)

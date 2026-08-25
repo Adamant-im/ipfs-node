@@ -2,6 +2,8 @@ import * as fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import JSON5 from 'json5'
+import { peerIdFromString } from '@libp2p/peer-id'
+import { multiaddr } from '@multiformats/multiaddr'
 import { validateSecurityConfig } from './security/config.js'
 import type { RateLimitPolicy } from './security/rateLimit.js'
 import type { TrustProxySetting } from './security/trustProxy.js'
@@ -142,6 +144,26 @@ function requireStringArray(value: unknown, path: string): string[] {
   return value.map((item, index) => requireString(item, `${path}[${index}]`))
 }
 
+/** Validate a node multiaddr and return its authenticated peer identity. */
+function requireNodePeerId(value: string, path: string): string {
+  try {
+    const components = multiaddr(value).getComponents()
+    const peerComponent = components.filter((component) => component.name === 'p2p').at(-1)
+
+    if (peerComponent?.value === undefined) {
+      fail(path, 'must contain a /p2p/<peer-id> component')
+    }
+
+    return peerIdFromString(peerComponent.value).toString()
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+
+    fail(path, 'must be a valid multiaddr with a peer id')
+  }
+}
+
 /**
  * Validate a positive integer.
  *
@@ -175,11 +197,28 @@ export function validateConfig(raw: unknown): Config {
   }
   const nodes = root.nodes.map((node, index) => {
     const entry = requireObject(node, `nodes[${index}]`)
+    const multiAddr = requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+
     return {
       name: requireString(entry.name, `nodes[${index}].name`),
-      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+      multiAddr,
+      peerId: requireNodePeerId(multiAddr, `nodes[${index}].multiAddr`)
     }
   })
+
+  const peerIndexes = new Map<string, number>()
+  for (const [index, node] of nodes.entries()) {
+    const previousIndex = peerIndexes.get(node.peerId)
+
+    if (previousIndex !== undefined) {
+      fail(
+        `nodes[${index}].multiAddr`,
+        `must identify a unique peer; it duplicates nodes[${previousIndex}]`
+      )
+    }
+
+    peerIndexes.set(node.peerId, index)
+  }
 
   const logLevel = requireString(root.logLevel, 'logLevel')
   if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
@@ -215,7 +254,7 @@ export function validateConfig(raw: unknown): Config {
   const replication = resolveReplicationConfig(root.replication)
 
   return {
-    nodes,
+    nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
     storeFolder,
     logLevel: logLevel as LogLevel,
     peerDiscovery: { bootstrap, listen },

@@ -130,6 +130,7 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
         confirmedAt: now,
         fileSize: Number(stats.size),
         storedBytes: Number(stats.deduplicatedDagSize),
+        protectedBytes: Number(stats.deduplicatedDagSize),
         pinned: true,
         heldLocally: true,
         replicas: []

@@ -128,7 +128,8 @@ async function registerPinnedUnderLock(
           cid: options.cid.toString(),
           name: options.name ?? options.cid.toString(),
           fileSize: Number(stats.size),
-          storedBytes: Number(stats.deduplicatedDagSize)
+          storedBytes: Number(stats.deduplicatedDagSize),
+          protectedBytes: Number(stats.deduplicatedDagSize)
         },
         { confirmationRequired: false, temporaryTtlMs: options.temporaryTtlMs }
       )

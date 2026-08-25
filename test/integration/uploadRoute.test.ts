@@ -63,7 +63,10 @@ interface Harness {
  * really takes.
  */
 async function serveUpload(
-  overrides: { replicate?: (cid: string) => Promise<ReplicationReport> } = {}
+  overrides: {
+    replicate?: (cid: string) => Promise<ReplicationReport>
+    requireQuorumOnUpload?: boolean
+  } = {}
 ): Promise<Harness> {
   prefix += 1
   const registry = new FileRegistry(datastore, `/adm/route-${prefix}`)
@@ -93,14 +96,13 @@ async function serveUpload(
       getSession: getUploadSession,
       confirmationRequired: false,
       temporaryTtlMs: 60_000,
-      requireQuorumOnUpload: false,
+      requireQuorumOnUpload: overrides.requireQuorumOnUpload ?? false,
       replicate:
         overrides.replicate ??
         (async (cid) => {
           replicated.push(cid)
           return bestEffort()
         }),
-      release: async () => undefined,
       log: { info: () => undefined, error: () => undefined }
     })
   )
@@ -164,6 +166,7 @@ describe('the upload endpoint end to end', () => {
       assert.equal(record?.name, 'photo.jpg')
       assert.equal(record?.fileSize, payload.byteLength)
       assert.ok((record?.storedBytes ?? 0) > 0)
+      assert.ok((record?.protectedBytes ?? 0) >= (record?.storedBytes ?? 0))
       assert.equal(await isDirectlyPinned(node, CID.parse(body.cids[0])), true)
       assert.deepEqual(harness.replicated, [body.cids[0]])
     } finally {
@@ -229,11 +232,55 @@ describe('the upload endpoint end to end', () => {
 
       assert.equal(response.status, 500)
 
-      // The handler committed before replication, so the file stays: the blocks
-      // are pinned and the record describes them. What must not happen is a pin
-      // with no record, or a record with no pin.
+      // A replication failure rejects the transaction before the request gives
+      // its blocks to the registry.
       const record = await harness.registry.get(cid)
-      assert.equal(record !== undefined, await isDirectlyPinned(node, CID.parse(cid)))
+      assert.equal(record, undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('restores a pre-existing durable file when a re-upload misses strict quorum', async () => {
+    let satisfied = true
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => ({
+        mode: 'quorum',
+        desiredCopies: 2,
+        copies: 2,
+        required: 2,
+        acknowledged: satisfied ? 2 : 1,
+        replicas: satisfied ? ['peer'] : [],
+        cached: [],
+        satisfied,
+        networkTooSmall: false,
+        attempts: []
+      })
+    })
+    const payload = deterministicBytes(75_000, 'strict-reupload')
+
+    try {
+      const first = await post(harness.url, [{ name: 'original.bin', bytes: payload }])
+      const firstBody = (await first.json()) as { cids: string[] }
+      const cid = firstBody.cids[0]
+      const before = await harness.registry.get(cid)
+
+      assert.equal(first.status, 200)
+      assert.equal(before?.state, 'confirmed')
+      assert.deepEqual(before?.replicas, ['peer'])
+
+      satisfied = false
+      const second = await post(harness.url, [{ name: 'replacement.bin', bytes: payload }])
+      const after = await harness.registry.get(cid)
+
+      assert.equal(second.status, 503)
+      assert.equal(after?.state, 'confirmed')
+      assert.equal(after?.name, 'original.bin')
+      assert.deepEqual(after?.replicas, ['peer'])
+      assert.equal(after?.pinned, true)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
     } finally {
       harness.server.close()
     }

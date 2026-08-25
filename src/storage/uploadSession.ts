@@ -84,6 +84,50 @@ class RecordingBlockstore implements Pick<Blocks, 'get' | 'put' | 'has'> {
     return this.base.has(cid, options)
   }
 
+  /**
+   * Create a facade that also counts the unique DAG blocks of one file.
+   *
+   * The ordinary session counter only measures newly written bytes. This
+   * facade counts blocks even when they were already present, which is the
+   * amount the resulting pin protects and the collector must account for.
+   */
+  beginFile(): {
+    blockstore: Pick<Blocks, 'get' | 'put' | 'has'>
+    readonly storedBytes: number
+    readonly protectedBytes: number
+  } {
+    const before = this.bytesWritten
+    const referenced = new Set<string>()
+    let protectedBytes = 0
+    const storedBytes = (): number => this.bytesWritten - before
+
+    return {
+      blockstore: {
+        get: (cid, options) => this.get(cid, options),
+        has: (cid, options) => this.has(cid, options),
+        put: async (cid, block, options) => {
+          const result = await this.put(cid, block, options)
+          const key = cid.toString()
+
+          if (!referenced.has(key)) {
+            referenced.add(key)
+            // The UnixFS importer supplies complete blocks as Uint8Arrays.
+            // A streamed value cannot be measured without consuming it.
+            protectedBytes += block instanceof Uint8Array ? block.byteLength : 0
+          }
+
+          return result
+        }
+      },
+      get storedBytes() {
+        return storedBytes()
+      },
+      get protectedBytes() {
+        return protectedBytes
+      }
+    }
+  }
+
   /** Drop the in-flight references taken by `put`. */
   releaseAll(): string[] {
     const zeroed: string[] = []
@@ -155,15 +199,12 @@ export class UploadSession {
    * Parts of a multipart request are imported one after another, so the delta
    * of the session counter is the number of new bytes this part contributed.
    */
-  beginFile(): { readonly storedBytes: number } {
-    const before = this.blockstore.bytesWritten
-    const blockstore = this.blockstore
-
-    return {
-      get storedBytes() {
-        return blockstore.bytesWritten - before
-      }
-    }
+  beginFile(): {
+    blockstore: Pick<Blocks, 'get' | 'put' | 'has'>
+    readonly storedBytes: number
+    readonly protectedBytes: number
+  } {
+    return this.blockstore.beginFile()
   }
 
   /** Keep everything this session wrote. Called once the upload is durable. */

@@ -9,7 +9,7 @@ import {
   effectiveQuorum,
   prepareFileRetrieval,
   releaseFile,
-  replicateFile
+  replicateUploadedFile
 } from '../storage/service.js'
 import { fileRegistry } from '../storage/state.js'
 import { createUploadHandler } from './uploadRoute.js'
@@ -47,8 +47,7 @@ router.post(
     confirmationRequired: config.storage.confirmationRequired,
     temporaryTtlMs: config.storage.temporaryTtlMs,
     requireQuorumOnUpload: config.replication.requireQuorumOnUpload,
-    replicate: replicateFile,
-    release: releaseFile,
+    replicate: replicateUploadedFile,
     log: logger
   })
 )

@@ -458,8 +458,8 @@ operational cost.
 
 `GET /api/storage/metrics` reports:
 
-- `pinnedBytes` — content protected by a pin, estimated from the blocks this node
-  wrote for each registered file
+- `pinnedBytes` — content protected by a pin, estimated from the full DAG of
+  each registered file, including blocks that existed before its latest upload
 - `reclaimableBytes` — blockstore bytes that no pin protects
 - `availableBytes` — free space on the blockstore filesystem
 - `reservedBytes` and `usableBytes` — the disk reserve and what is left for uploads

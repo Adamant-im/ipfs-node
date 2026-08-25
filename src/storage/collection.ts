@@ -21,7 +21,12 @@ export interface CollectStorageOptions {
   /** Hands copies over to their designated holders, and reports which. */
   demote: (options: { dryRun?: boolean }) => Promise<{ demoted: string[] }>
   /** Measures the blockstore and the volume it sits on. */
-  measure: () => Promise<{ blockstoreBytes: number; availableBytes: number }>
+  measure: () => Promise<{
+    blockstoreBytes: number
+    availableBytes: number
+    /** Bytes already unpinned and removable without evicting another file. */
+    reclaimableBytes?: number
+  }>
   dryRun?: boolean
   force?: boolean
   log?: (message: string) => void
@@ -53,6 +58,7 @@ export async function collectStorage(options: CollectStorageOptions): Promise<Co
     registry: options.registry,
     watermarks: options.watermarks,
     blockstoreBytes: metrics.blockstoreBytes,
+    reclaimableBytes: metrics.reclaimableBytes,
     availableBytes: metrics.availableBytes,
     reserveBytes: options.reserveBytes,
     dryRun: options.dryRun,

@@ -161,4 +161,26 @@ describe('planGarbageCollection', () => {
       ['a']
     )
   })
+
+  it('collects already-unpinned bytes before evicting a live upload', () => {
+    const plan = planGarbageCollection({
+      blockstoreBytes: 1100,
+      reclaimableBytes: 600,
+      watermarks,
+      records: [
+        record({
+          cid: 'pending',
+          state: 'temporary',
+          expiresAt: 9000,
+          storedBytes: 400,
+          protectedBytes: 400
+        })
+      ],
+      now: 1000
+    })
+
+    assert.equal(plan.shouldCollect, true)
+    assert.deepEqual(plan.evicted, [])
+    assert.equal(plan.estimatedBytesAfter, 500)
+  })
 })

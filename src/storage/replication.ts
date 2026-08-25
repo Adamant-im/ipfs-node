@@ -91,6 +91,25 @@ export function requiredAcks(config: ReplicationConfig, placement: Placement): n
 }
 
 /**
+ * Keep one address for each remote peer identity.
+ *
+ * A peer can be reachable through several configured multiaddrs, but those
+ * addresses still lead to one durability domain. Counting them separately
+ * would let one machine satisfy several copies of the quorum.
+ */
+function distinctPeers(peers: ReplicationPeer[], selfPeerId: string): ReplicationPeer[] {
+  const byPeerId = new Map<string, ReplicationPeer>()
+
+  for (const peer of peers) {
+    if (peer.peerId !== selfPeerId && !byPeerId.has(peer.peerId)) {
+      byPeerId.set(peer.peerId, peer)
+    }
+  }
+
+  return [...byPeerId.values()]
+}
+
+/**
  * Place copies of a file on the nodes that should hold it.
  *
  * Copies go to a deterministic subset rather than to every peer: with a large
@@ -119,16 +138,18 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
     }
   }
 
+  const peers = distinctPeers(options.peers, options.selfPeerId)
+
   const placement = placeFile({
     cid,
     ageMs: options.ageMs,
     tiers: config.placement,
     selfPeerId: options.selfPeerId,
-    peerIds: options.peers.map((peer) => peer.peerId)
+    peerIds: peers.map((peer) => peer.peerId)
   })
 
   const targetIds = new Set(storageTargets(placement, options.selfPeerId))
-  const targets = options.peers.filter((peer) => targetIds.has(peer.peerId))
+  const targets = peers.filter((peer) => targetIds.has(peer.peerId))
 
   const attempts = await Promise.all(
     targets.map(async (peer): Promise<ReplicationAck> => {
@@ -156,12 +177,12 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
     const tried = new Set(targets.map((peer) => peer.peerId))
     const ranked = rankHolders(
       cid,
-      options.peers.map((peer) => peer.peerId)
+      peers.map((peer) => peer.peerId)
     )
     const extra = ranked
       .filter((peerId) => !tried.has(peerId))
       .slice(0, CACHE_WIDENING)
-      .map((peerId) => options.peers.find((peer) => peer.peerId === peerId))
+      .map((peerId) => peers.find((peer) => peer.peerId === peerId))
       .filter((peer): peer is ReplicationPeer => peer !== undefined)
 
     const widened = await Promise.all(

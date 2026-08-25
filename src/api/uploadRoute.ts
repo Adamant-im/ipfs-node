@@ -25,7 +25,6 @@ export interface UploadRouteDependencies {
   /** Whether an upload that missed its quorum is refused rather than kept. */
   requireQuorumOnUpload: boolean
   replicate: (cid: string) => Promise<ReplicationReport>
-  release: (cid: string) => Promise<FileRecord | undefined>
   log: UploadRouteLog
 }
 
@@ -57,13 +56,33 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       // Hold all involved CIDs until this request either commits or restores
       // every pin and lifecycle record it changed. Sorting happens inside the
       // registry, so overlapping multi-file requests cannot deadlock.
-      const records = await registry.withExclusiveCids(
+      const outcome = await registry.withExclusiveCids(
         files.map((file) => file.cid.toString()),
         async (locked) => {
           const undo: Array<() => Promise<void>> = []
 
+          const restoreBaselines = async (): Promise<void> => {
+            const failures: Error[] = []
+
+            while (undo.length > 0) {
+              const step = undo.pop()
+
+              try {
+                await step?.()
+              } catch (err) {
+                const failure = err as Error
+                failures.push(failure)
+                log.error(`Could not undo a failed upload: ${failure.message}`)
+              }
+            }
+
+            if (failures.length > 0) {
+              throw new AggregateError(failures, 'Could not fully restore the upload baseline')
+            }
+          }
+
           try {
-            const stored = []
+            const stored: FileRecord[] = []
 
             for (const file of files) {
               const cid = file.cid.toString()
@@ -79,7 +98,8 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
                     cid,
                     name: file.originalname,
                     fileSize: file.size,
-                    storedBytes: file.storedBytes
+                    storedBytes: file.storedBytes,
+                    protectedBytes: file.protectedBytes
                   },
                   {
                     confirmationRequired: dependencies.confirmationRequired,
@@ -117,42 +137,83 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
               stored.push(registration.record)
             }
 
-            // Every file is stored and pinned. Ownership passes from the
-            // request session to the registry before any CID lock is released.
-            session.commit()
-            return stored
-          } catch (err) {
-            for (const step of undo.reverse()) {
-              try {
-                await step()
-              } catch (undoError) {
-                log.error(`Could not undo a failed upload: ${(undoError as Error).message}`)
-              }
+            // One request may contain the same content more than once. Place
+            // each CID once, using the last registration stored above.
+            const durableByCid = new Map(
+              stored
+                .filter((record) => record.state === 'confirmed')
+                .map((record) => [record.cid, record] as const)
+            )
+            const durable = [...durableByCid.values()]
+            const replication = await Promise.all(
+              durable.map(async (record) => ({
+                cid: record.cid,
+                report: await dependencies.replicate(record.cid)
+              }))
+            )
+
+            if (
+              dependencies.requireQuorumOnUpload &&
+              replication.some((item) => !item.report.satisfied)
+            ) {
+              // The request is rejected as a transaction. Restoring the exact
+              // pre-request records and pins keeps a durable re-upload durable
+              // instead of turning it into an expired, unpinned file.
+              await restoreBaselines()
+              await session.cleanup()
+
+              return { records: stored, replication, quorumReached: false }
             }
-            throw err
+
+            // Replication performs network work only. Persist acknowledgements
+            // here under the same locks as registration, so a concurrent
+            // lifecycle action cannot be overwritten by a late report.
+            const finalized = new Map<string, FileRecord>()
+            for (const item of replication) {
+              const record = durableByCid.get(item.cid)
+
+              if (record === undefined || item.report.mode !== 'quorum') {
+                continue
+              }
+
+              finalized.set(
+                item.cid,
+                await locked.save({ ...record, replicas: item.report.replicas })
+              )
+            }
+
+            const records = stored.map((record) => finalized.get(record.cid) ?? record)
+
+            // Every file is stored, pinned, registered and—where enabled—has
+            // its replication report recorded. Ownership can now pass from the
+            // request session to the registry before the CID locks are released.
+            session.commit()
+
+            return { records, replication, quorumReached: true }
+          } catch (err) {
+            let failure = err as Error
+
+            try {
+              await restoreBaselines()
+            } catch (rollbackError) {
+              failure = new AggregateError(
+                [failure, rollbackError as Error],
+                'Upload failed and its previous lifecycle could not be fully restored'
+              )
+            }
+
+            await session.cleanup()
+            throw failure
           }
         }
       )
 
-      const durable = records.filter((record) => record.state === 'confirmed')
-      const replication = await Promise.all(
-        durable.map(async (record) => ({
-          cid: record.cid,
-          report: await dependencies.replicate(record.cid)
-        }))
-      )
-      const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
-
-      if (
-        dependencies.requireQuorumOnUpload &&
-        replication.some((item) => !item.report.satisfied)
-      ) {
-        // The policy demands a quorum, so the upload is not durable. The files
-        // are released instead of being kept as a copy nobody promised to hold.
-        await Promise.all(durable.map((record) => dependencies.release(record.cid)))
-
+      if (!outcome.quorumReached) {
         return res.status(503).send({ error: 'Replication quorum not reached' })
       }
+
+      const { records, replication } = outcome
+      const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
 
       res.send({
         filesNames: files.map((file) => file.originalname),

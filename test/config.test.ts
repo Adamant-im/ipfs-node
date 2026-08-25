@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { ConfigError, config, configFileName, validateConfig } from '../src/config.js'
 
+const PEER_ID = '12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
+
 /** A minimal config that passes validation; individual tests break one field. */
 function validRaw(): Record<string, unknown> {
   return {
-    nodes: [{ name: 'ipfs1', multiAddr: '/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWTest' }],
+    nodes: [{ name: 'ipfs1', multiAddr: `/ip4/127.0.0.1/tcp/4001/p2p/${PEER_ID}` }],
     storeFolder: '.adm-ipfs',
     logLevel: 'debug',
     peerDiscovery: {
@@ -51,6 +53,16 @@ describe('validateConfig', () => {
 
   it('ignores unknown keys so deployments can carry extras', () => {
     assert.doesNotThrow(() => validateConfig({ ...validRaw(), someFutureOption: 42 }))
+  })
+
+  it('rejects two configured addresses for the same peer identity', () => {
+    const raw = validRaw()
+    raw.nodes = [
+      { name: 'ipfs1', multiAddr: `/ip4/127.0.0.1/tcp/4001/p2p/${PEER_ID}` },
+      { name: 'ipfs1-alias', multiAddr: `/ip4/127.0.0.2/tcp/4001/p2p/${PEER_ID}` }
+    ]
+
+    assert.throws(() => validateConfig(raw), /must identify a unique peer/)
   })
 
   const invalidCases: Array<[string, (raw: Record<string, unknown>) => void, RegExp]> = [

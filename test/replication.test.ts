@@ -163,6 +163,39 @@ describe('replicate', () => {
     assert.equal(report.required, 2)
     assert.equal(report.satisfied, true)
   })
+
+  it('counts each peer identity once when it has several configured addresses', async () => {
+    const duplicate = {
+      ...peer('ipfs2-alias'),
+      peerId: PEERS[0].peerId,
+      multiAddr: multiaddr('/ip4/127.0.0.2/tcp/4001')
+    }
+    const uniquePeers = [PEERS[0], duplicate, PEERS[1]]
+    const contacted = new Set<string>()
+
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: uniquePeers,
+      config: {
+        ...baseConfig,
+        placement: [{ minAgeMs: 0, copies: 4 }],
+        ackQuorum: 4
+      },
+      store: async (target) => {
+        assert.equal(contacted.has(target.peerId), false, `${target.peerId} was contacted twice`)
+        contacted.add(target.peerId)
+        return 'stored'
+      }
+    })
+
+    assert.equal(contacted.size, 2)
+    assert.equal(report.copies, 3)
+    assert.equal(report.required, 3)
+    assert.equal(report.acknowledged, 3)
+    assert.equal(report.satisfied, true)
+  })
 })
 
 describe('placement outcomes', () => {

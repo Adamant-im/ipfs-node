@@ -87,14 +87,20 @@ export class UnixfsMulterStorage implements StorageEngine {
     const write = session.beginFile()
     const metered = budgeted(file.stream, session.budget)
 
-    unixfs({ blockstore: session.blockstore })
+    unixfs({ blockstore: write.blockstore })
       .addByteStream(metered.stream)
       .then((cid) => {
         // `size` is what multer would have set for a disk engine, and what the
         // lifecycle record stores as the file's size. Leaving it unset wrote
         // records without one, which nothing noticed until the registry began
         // validating what it reads.
-        callback(undefined, { ...file, cid, size: metered.bytes, storedBytes: write.storedBytes })
+        callback(undefined, {
+          ...file,
+          cid,
+          size: metered.bytes,
+          storedBytes: write.storedBytes,
+          protectedBytes: write.protectedBytes
+        })
       })
       .catch((err) => {
         callback(err, undefined)

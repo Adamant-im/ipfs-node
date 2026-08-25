@@ -2,7 +2,7 @@ import { config } from '../config.js'
 import { blockstorePath, datastorePath } from '../store.js'
 import { logger } from '../utils/logger.js'
 import { availableStorageSize, dirSize } from '../utils/utils.js'
-import { countByState, type FileState } from './registry.js'
+import { countByState, protectedStorageBytes, type FileState } from './registry.js'
 import { fileRegistry } from './state.js'
 
 export interface StorageMetrics {
@@ -13,7 +13,7 @@ export interface StorageMetrics {
   /**
    * Bytes of content protected by a pin.
    *
-   * Estimated from the blocks this node wrote for each registered file. Blocks
+   * Estimated from the full DAG protected by each registered file. Blocks
    * shared between files are counted once per file, so the value is an upper
    * bound for deduplicated content.
    */
@@ -63,7 +63,7 @@ export async function refreshStorageMetrics(): Promise<StorageMetrics> {
 
   const pinnedBytes = records
     .filter((record) => record.pinned)
-    .reduce((total, record) => total + record.storedBytes, 0)
+    .reduce((total, record) => total + protectedStorageBytes(record), 0)
 
   const reservedBytes = config.storage.diskReserveBytes
 

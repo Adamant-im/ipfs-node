@@ -2,7 +2,7 @@ import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 import type { GarbageCollectionConfig } from './config.js'
 import { isProtected, pinFile, unpinFile } from './pinning.js'
-import { FileRegistry, isExpired, type FileRecord } from './registry.js'
+import { FileRegistry, isExpired, protectedStorageBytes, type FileRecord } from './registry.js'
 
 export type Watermarks = Pick<GarbageCollectionConfig, 'highWatermarkBytes' | 'lowWatermarkBytes'>
 
@@ -18,6 +18,8 @@ export const RESERVE_RECOVERY_MARGIN = 0.25
 export interface GcPlanInput {
   /** Current blockstore size in bytes. */
   blockstoreBytes: number
+  /** Bytes already unpinned and removable without releasing another file. */
+  reclaimableBytes?: number
   watermarks: Watermarks
   /** Free bytes on the blockstore filesystem, when known. */
   availableBytes?: number
@@ -69,9 +71,17 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
   const expired = releasable.filter((record) => isExpired(record, now))
   const alive = releasable.filter((record) => !isExpired(record, now))
 
-  let estimatedBytesAfter = input.blockstoreBytes
+  // Helia GC removes every unpinned block, including read cache and files a
+  // previous handover already released. Count that space before selecting a
+  // live temporary upload, or the planner evicts protected content to solve
+  // pressure that the existing cache alone would have relieved.
+  let estimatedBytesAfter =
+    input.blockstoreBytes -
+    Math.min(input.blockstoreBytes, Math.max(0, input.reclaimableBytes ?? 0))
   for (const record of expired) {
-    estimatedBytesAfter -= record.storedBytes
+    if (record.pinned) {
+      estimatedBytesAfter -= protectedStorageBytes(record)
+    }
   }
 
   // Space is short when the blockstore passed its ceiling, or when the volume
@@ -117,7 +127,7 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
       }
 
       evicted.push(record)
-      estimatedBytesAfter -= record.storedBytes
+      estimatedBytesAfter -= protectedStorageBytes(record)
     }
   }
 
@@ -178,6 +188,8 @@ export interface GcRunOptions {
   registry: FileRegistry
   watermarks: Watermarks
   blockstoreBytes: number
+  /** Bytes already unpinned and removable by this run. */
+  reclaimableBytes?: number
   /** Free bytes on the blockstore filesystem. */
   availableBytes?: number
   /** Free bytes uploads must never consume. */
@@ -217,6 +229,7 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
 
   const plan = planGarbageCollection({
     blockstoreBytes: options.blockstoreBytes,
+    reclaimableBytes: options.reclaimableBytes,
     watermarks: options.watermarks,
     availableBytes: options.availableBytes,
     reserveBytes: options.reserveBytes,

@@ -905,6 +905,10 @@ describe('multipart import', () => {
     // No new blocks, but the file still has a size
     assert.equal(imported.storedBytes, 0)
     assert.equal(imported.size, payload.byteLength)
+    assert.ok(
+      (imported.protectedBytes ?? 0) > 0,
+      'an existing DAG still contributes bytes protected by its pin'
+    )
   })
 })
 

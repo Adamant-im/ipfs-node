@@ -28,6 +28,14 @@ export interface FileRecord {
   fileSize: number
   /** Bytes of blocks this node actually wrote for the file. */
   storedBytes: number
+  /**
+   * Deduplicated bytes in the file's DAG, whether or not they already existed.
+   *
+   * Optional for records written before this field was introduced. Callers
+   * that need a protection estimate must use {@link protectedStorageBytes} so
+   * those records remain usable after an in-place upgrade.
+   */
+  protectedBytes?: number
   /** True while the root CID is pinned and therefore protected from collection. */
   pinned: boolean
   /**
@@ -87,6 +95,7 @@ function isFileRecord(value: unknown): value is FileRecord {
     isNullableTimestamp(record.confirmedAt) &&
     isFiniteNonNegative(record.fileSize) &&
     isFiniteNonNegative(record.storedBytes) &&
+    (record.protectedBytes === undefined || isFiniteNonNegative(record.protectedBytes)) &&
     typeof record.pinned === 'boolean' &&
     typeof record.heldLocally === 'boolean' &&
     Array.isArray(record.replicas) &&
@@ -113,6 +122,8 @@ export interface NewFileRecord {
   name: string
   fileSize: number
   storedBytes: number
+  /** Full DAG size when the importer or UnixFS stat can provide it. */
+  protectedBytes?: number
 }
 
 /**
@@ -452,6 +463,10 @@ export class FileRegistry {
       const record = await this.save({
         ...existing,
         storedBytes: Math.max(existing.storedBytes, file.storedBytes),
+        protectedBytes: Math.max(
+          protectedStorageBytes(existing),
+          file.protectedBytes ?? Math.max(file.storedBytes, file.fileSize)
+        ),
         fileSize: file.fileSize > 0 ? file.fileSize : existing.fileSize,
         pinned: true,
         heldLocally: true
@@ -471,6 +486,7 @@ export class FileRegistry {
       confirmedAt: confirmed ? now : null,
       fileSize: file.fileSize,
       storedBytes: file.storedBytes,
+      protectedBytes: file.protectedBytes ?? Math.max(file.storedBytes, file.fileSize),
       pinned: true,
       heldLocally: true,
       replicas: existing?.replicas ?? []
@@ -485,6 +501,19 @@ export class FileRegistry {
       return record ? this.save({ ...record, replicas }) : undefined
     })
   }
+}
+
+/**
+ * Estimate how many blockstore bytes a record's pin protects.
+ *
+ * Older records did not persist the full DAG size. Their write delta is exact
+ * for a first import, while the logical file size prevents a cached re-upload
+ * from being treated as zero bytes until it is registered again.
+ */
+export function protectedStorageBytes(
+  record: Pick<FileRecord, 'fileSize' | 'storedBytes' | 'protectedBytes'>
+): number {
+  return record.protectedBytes ?? Math.max(record.storedBytes, record.fileSize)
 }
 
 /**
