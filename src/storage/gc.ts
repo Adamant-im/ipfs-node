@@ -296,13 +296,36 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
 
   for (const record of released) {
     try {
-      await unpinFile(options.node, CID.parse(record.cid))
-      await options.registry.release(record.cid)
-      releasedCleanly.push(record)
+      let acted = false
+
+      // The plan was made from a snapshot, and the guard rail ran since. An
+      // upload can re-register and confirm the same CID in between, and
+      // applying the stale decision would take away the pin it just got. The
+      // record is re-read and the unpin performed with nothing else touching
+      // the CID.
+      await options.registry.transition(record.cid, async (current) => {
+        if (current === undefined || current.state === 'confirmed') {
+          return 'keep'
+        }
+
+        await unpinFile(options.node, CID.parse(record.cid))
+        acted = true
+
+        return { ...current, state: 'expired', pinned: false, heldLocally: false }
+      })
+
+      if (acted) {
+        releasedCleanly.push(record)
+      } else {
+        log(`Skipped ${record.cid}: its lifecycle changed after the plan was made`)
+      }
     } catch (err) {
       errors.push(`Release failed for ${record.cid}: ${(err as Error).message}`)
     }
   }
+
+  // What the run actually released, rather than what it set out to release.
+  report.releasedCids = releasedCleanly.map((item) => item.cid)
 
   if (!collect) {
     // Nothing is deleted while there is room. The released blocks stay on disk,

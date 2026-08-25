@@ -62,10 +62,19 @@ interface Bucket {
 class Spend {
   private buckets: Bucket[] = []
 
-  /** Buckets the window still covers; the rest are dropped as they age out. */
+  /**
+   * Buckets the window still covers; the rest are dropped as they age out.
+   *
+   * A bucket is kept until its *end* is an hour old, not its start. Expiring by
+   * the start drops a charge made late in a bucket after roughly fifty minutes,
+   * which lets a peer spend about a sixth more than the stated limit in a real
+   * trailing hour. Keeping it counts every charge for a full hour and for at
+   * most seventy minutes — over-counting rather than under-counting, which is
+   * the safe direction for a limit.
+   */
   private live(now: number): Bucket[] {
     const oldest = now - INTAKE_WINDOW_MS
-    this.buckets = this.buckets.filter((bucket) => bucket.startedAt > oldest)
+    this.buckets = this.buckets.filter((bucket) => bucket.startedAt + BUCKET_MS > oldest)
     return this.buckets
   }
 

@@ -30,10 +30,35 @@ export interface BackfillReport {
 }
 
 export interface BackfillOptions {
-  node: IpfsNode
+  /** Pins to reconcile, from {@link snapshotPins}. */
+  cids: string[]
   unixfs: UnixFS
   registry: FileRegistry
   log?: (message: string) => void
+}
+
+/**
+ * List the pins that exist right now.
+ *
+ * This has to happen before the node accepts its first upload, and it is why
+ * enumeration is separate from the work that follows. A pin created after this
+ * point belongs to an upload with a lifecycle of its own; if the backfill saw
+ * it, it would record it as legacy content — `confirmed`, with no expiry, named
+ * by its CID — in the window between the upload pinning the file and
+ * registering it. An operator who required confirmation would find the file
+ * durable without ever confirming it.
+ *
+ * Listing pins is cheap next to what the backfill then does with them, so the
+ * part that must be ordered is also the part that costs almost nothing.
+ */
+export async function snapshotPins(node: IpfsNode): Promise<string[]> {
+  const cids: string[] = []
+
+  for await (const pin of node.pins.ls()) {
+    cids.push(pin.cid.toString())
+  }
+
+  return cids
 }
 
 /**
@@ -46,19 +71,22 @@ export interface BackfillOptions {
  * from a dry run's retained list, and from replication repair. In other words
  * the new guarantees would quietly apply to new uploads only.
  *
- * This walks the pinset once and records what is missing, as `confirmed`, which
- * is what a pinned file is. It is idempotent: a pin already in the registry is
- * left exactly as it is, so running it again after a restart changes nothing.
+ * This records what is missing from a pin snapshot, as `confirmed`, which is
+ * what a pinned file is. It is idempotent: a pin already in the registry is left
+ * exactly as it is, so running it again after a restart changes nothing.
  */
 export async function backfillRegistryFromPins(options: BackfillOptions): Promise<BackfillReport> {
   const log = options.log ?? ((): void => {})
-  const report: BackfillReport = { pins: 0, registered: 0, known: 0, incomplete: 0, errors: [] }
+  const report: BackfillReport = {
+    pins: options.cids.length,
+    registered: 0,
+    known: 0,
+    incomplete: 0,
+    errors: []
+  }
   const now = Date.now()
 
-  for await (const pin of options.node.pins.ls()) {
-    report.pins += 1
-    const cid = pin.cid.toString()
-
+  for (const cid of options.cids) {
     try {
       if (await options.registry.get(cid)) {
         report.known += 1

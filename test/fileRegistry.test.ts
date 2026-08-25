@@ -135,6 +135,41 @@ describe('FileRegistry', () => {
     assert.equal(await registry.get(CID_A), undefined)
   })
 
+  it('undoes a write only while it is still the last one', async () => {
+    // Two concurrent uploads of the same file write records that match field
+    // for field. The first must not roll back the lifecycle the second owns.
+    const registry = createRegistry()
+    const first = await registry.register(newFile(), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
+    const second = await registry.register(newFile(), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
+
+    await registry.transition(CID_A, async (current) =>
+      current?.revision === first.revision ? 'remove' : 'keep'
+    )
+
+    assert.notEqual(first.revision, second.revision)
+    assert.notEqual(await registry.get(CID_A), undefined)
+  })
+
+  it('removes a record when the undo is still the last write', async () => {
+    const registry = createRegistry()
+    const written = await registry.register(newFile(), {
+      confirmationRequired: true,
+      temporaryTtlMs: TTL
+    })
+
+    await registry.transition(CID_A, async (current) =>
+      current?.revision === written.revision ? 'remove' : 'keep'
+    )
+
+    assert.equal(await registry.get(CID_A), undefined)
+  })
+
   it('creates a record only while the registry does not know the CID', async () => {
     const registry = createRegistry()
     const legacy: FileRecord = {

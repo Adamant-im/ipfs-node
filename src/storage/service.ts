@@ -1,3 +1,4 @@
+import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import { config } from '../config.js'
 import { helia, ifs } from '../helia.js'
@@ -26,6 +27,7 @@ import {
 } from './replicationProtocol.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
+import { meteredBlocks, type TransferProgress } from './meter.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter } from './state.js'
 import { nextSweepBatch } from './sweep.js'
@@ -287,11 +289,6 @@ export async function hasRoomForAnotherCopy(): Promise<boolean> {
   }
 }
 
-/** How much of a transfer has arrived, readable while it is still running. */
-export interface TransferProgress {
-  bytes: number
-}
-
 /**
  * Pull a DAG into the blockstore under the limits a peer transfer carries: how
  * many may run at once, how much space they may take together, and how large
@@ -309,11 +306,15 @@ export interface TransferProgress {
  * @param progress Updated as bytes arrive, so a caller can still see what a
  *   failed transfer cost. A peer that sends almost everything and then aborts
  *   has spent the bandwidth either way.
+ * @param limitBytes Most this transfer may bring in. Defaults to the aggregate
+ *   request limit; a caller working against a budget passes what it reserved,
+ *   so a transfer cannot outgrow the allowance that admitted it.
  * @returns Bytes pulled
  */
 async function pullUnderIntakeLimits(
   cid: string,
-  progress: TransferProgress = { bytes: 0 }
+  progress: TransferProgress = { bytes: 0 },
+  limitBytes: number = config.storage.maxRequestSizeBytes
 ): Promise<number> {
   if (!incomingCopyLimiter.tryAcquire()) {
     throw new Error('Too many copies are already being received')
@@ -336,12 +337,15 @@ async function pullUnderIntakeLimits(
 
     const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
 
-    for await (const chunk of ifs.cat(CID.parse(cid), { signal })) {
-      progress.bytes += chunk.byteLength
+    // Draining the stream is what walks the DAG; the meter under UnixFS is what
+    // counts and bounds the blocks that walk pulls in, including the structural
+    // ones the stream never yields.
+    const metered = unixfs({
+      blockstore: meteredBlocks(helia.blockstore, progress, limitBytes)
+    })
 
-      if (progress.bytes > config.storage.maxRequestSizeBytes) {
-        throw new Error('Copy is larger than this node accepts')
-      }
+    for await (const chunk of metered.cat(CID.parse(cid), { signal })) {
+      void chunk
     }
 
     return progress.bytes
@@ -370,12 +374,9 @@ export async function cacheFileLocally(cid: string, peerId: string): Promise<num
   // when it aborts after sending almost all of it.
   // Capped at the budget itself: a node configured to accept requests larger
   // than a peer's whole hourly allowance would otherwise refuse every copy
-  // outright instead of allowing one at a time. What the transfer really costs
-  // is settled afterwards either way.
-  const reservation = reserveIntake(
-    peerId,
-    Math.min(config.storage.maxRequestSizeBytes, PER_PEER_INTAKE_BYTES)
-  )
+  // outright instead of allowing one at a time.
+  const allowance = Math.min(config.storage.maxRequestSizeBytes, PER_PEER_INTAKE_BYTES)
+  const reservation = reserveIntake(peerId, allowance)
 
   if (reservation === undefined) {
     throw new Error('Cache budget for this peer is spent')
@@ -384,7 +385,11 @@ export async function cacheFileLocally(cid: string, peerId: string): Promise<num
   const progress: TransferProgress = { bytes: 0 }
 
   try {
-    return await pullUnderIntakeLimits(cid, progress)
+    // The transfer is bounded by what was reserved, not by the request limit.
+    // Otherwise a node configured to accept requests larger than the allowance
+    // lets a peer reserve part of a transfer and complete all of it, and the
+    // budget only learns of the excess once it has already arrived.
+    return await pullUnderIntakeLimits(cid, progress, allowance)
   } finally {
     // What actually crossed the network, finished or not.
     reservation.settle(progress.bytes)

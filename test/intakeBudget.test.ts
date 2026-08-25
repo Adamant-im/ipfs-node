@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { beforeEach, describe, it } from 'node:test'
 import {
+  INTAKE_BUCKETS,
   INTAKE_WINDOW_MS,
   PER_PEER_INTAKE_BYTES,
   PER_PEER_INTAKE_REQUESTS,
@@ -94,10 +95,21 @@ describe('cache intake budget', () => {
     assert.equal(reserveIntake('peer-a', 1, late + 120_000), undefined)
   })
 
-  it('opens the budget again once the spend is really an hour old', () => {
+  it('still counts a spend a full hour after it happened', () => {
+    // Expiring a bucket by its start would drop a charge made late in it after
+    // roughly fifty minutes, and the real trailing-hour limit would be a sixth
+    // higher than the stated one
     const late = NOW + INTAKE_WINDOW_MS - 60_000
     reserveIntake('peer-a', PER_PEER_INTAKE_BYTES, late)?.settle(PER_PEER_INTAKE_BYTES)
 
-    assert.notEqual(reserveIntake('peer-a', COPY, late + INTAKE_WINDOW_MS), undefined)
+    assert.equal(reserveIntake('peer-a', 1, late + INTAKE_WINDOW_MS), undefined)
+  })
+
+  it('opens the budget again once the whole bucket is behind the window', () => {
+    const bucketMs = INTAKE_WINDOW_MS / INTAKE_BUCKETS
+    const late = NOW + INTAKE_WINDOW_MS - 60_000
+    reserveIntake('peer-a', PER_PEER_INTAKE_BYTES, late)?.settle(PER_PEER_INTAKE_BYTES)
+
+    assert.notEqual(reserveIntake('peer-a', COPY, late + INTAKE_WINDOW_MS + bucketMs), undefined)
   })
 })

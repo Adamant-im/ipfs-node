@@ -12,6 +12,7 @@ import {
   releaseFile,
   replicateFile
 } from '../storage/service.js'
+import type { FileRecord } from '../storage/registry.js'
 import { fileRegistry } from '../storage/state.js'
 import { parseCid } from '../utils/cid.js'
 import { sendDownloadStream } from '../utils/downloadResponse.js'
@@ -66,6 +67,13 @@ router.post(
 
         const knownBefore = await fileRegistry.get(cid)
 
+        // What this request wrote, so its compensation can tell that write
+        // apart from an identical one made by a concurrent upload of the same
+        // file. Undoing the other request's record would take away a lifecycle
+        // it committed to. It is filled in below, after the compensation that
+        // reads it has been registered.
+        const write: { record?: FileRecord } = {}
+
         // Compensation runs in reverse of the order it is pushed, so the
         // registry step goes first to run last. Undoing the pin before the
         // record means a failure at worst leaves a record for a file that is
@@ -77,35 +85,48 @@ router.post(
         // confirmed, and dropping it would lose a lifecycle this request did
         // not create.
         undo.push(async () => {
-          if (knownBefore) {
-            await fileRegistry.save(knownBefore)
-          } else {
-            await fileRegistry.remove(cid)
-          }
+          await fileRegistry.transition(cid, async (current) => {
+            if (write.record === undefined || current?.revision !== write.record.revision) {
+              return 'keep'
+            }
+
+            return knownBefore ?? 'remove'
+          })
         })
 
         // Only a pin this request created may be removed again; content that
         // was already durable keeps the pin it had.
         if (await pinFile(helia, file.cid)) {
           undo.push(async () => {
-            await unpinFile(helia, file.cid)
+            // Under the same lock as the registry, and only while nothing
+            // claims the CID. A second upload of the same file finds it pinned
+            // already, creates no pin of its own, and would lose its content to
+            // this compensation.
+            await fileRegistry.transition(cid, async (current) => {
+              if (current !== undefined) {
+                return 'keep'
+              }
+
+              await unpinFile(helia, file.cid)
+              return 'keep'
+            })
           })
         }
 
-        records.push(
-          await fileRegistry.register(
-            {
-              cid,
-              name: file.originalname,
-              fileSize: file.size,
-              storedBytes: file.storedBytes
-            },
-            {
-              confirmationRequired: config.storage.confirmationRequired,
-              temporaryTtlMs: config.storage.temporaryTtlMs
-            }
-          )
+        write.record = await fileRegistry.register(
+          {
+            cid,
+            name: file.originalname,
+            fileSize: file.size,
+            storedBytes: file.storedBytes
+          },
+          {
+            confirmationRequired: config.storage.confirmationRequired,
+            temporaryTtlMs: config.storage.temporaryTtlMs
+          }
         )
+
+        records.push(write.record)
       }
 
       // Every file is stored and pinned: the blocks written by this request must

@@ -40,7 +40,11 @@ admitted only when
 `freeSpace - alreadyClaimed - requestSize >= storage.diskReserveBytes`.
 
 Copies arriving from peers are uploads as far as the disk is concerned, so they
-take the same claim and the same aggregate limit. Their concurrency is a quarter
+take the same claim and the same aggregate limit. Their size is measured in
+blocks rather than in file content: the structural nodes of a DAG are fetched
+and written like any other block, and a limit counting only what a reader would
+see reads zero for a DAG whose content is empty and whose structure is
+megabytes. Their concurrency is a quarter
 of `storage.maxConcurrentUploads`, because a copy cannot declare its size and so
 claims the aggregate limit for its whole transfer, and because refusing one
 costs nothing a person can see: the sender still holds the file, and repair
@@ -178,6 +182,12 @@ volume: on a disk whose blockstore is already below the low watermark, aiming at
 the watermark would select nothing and reclaim not a byte while the disk stayed
 full.
 
+A run applies its plan only to records that still match it. The plan is made
+from a snapshot, and an upload can re-register and confirm one of those CIDs
+before the release reaches it; the record is re-read and the unpin performed with
+nothing else touching the CID, so a file that gained a pin in the meantime keeps
+it. `releasedCids` reports what was released rather than what was planned.
+
 A collection that Helia could not complete keeps every record it released, and
 reports `collected: false` with the failures in `errors`. Which file a surviving
 block belongs to cannot be known — blocks are addressed by multihash and shared
@@ -277,7 +287,10 @@ itself is charged and never refunded, because asking is most of the cost.
 
 The hour is measured in six slices that expire one at a time rather than as a
 counter reset on the hour, which would let a peer spend its whole allowance just
-before the boundary and again just after it. The node-wide budget is the one
+before the boundary and again just after it. A slice is kept until its end is an
+hour old, so a charge counts for at least a full hour and at most seventy
+minutes — over-counting rather than under-counting, which is the safe direction
+for a limit. The node-wide budget is the one
 that matters while peer identities are free to mint; both sit far above ordinary
 traffic, where a node that just accepted an upload asks two peers to cache it.
 Operator-facing transfer limits are separate work (#29).
@@ -450,11 +463,17 @@ Startup walks the pinset once and records anything the registry does not know as
 is not fully local is skipped rather than recorded — calling it confirmed would
 claim more than the node can serve.
 
-Records are created only while the CID is absent, and every read-modify-write on
-the registry is serialised per CID. Uploads are being served while this runs, so
-without that an upload registering a CID mid-walk would be overwritten as
-confirmed: an operator who required confirmation would find the file durable
-anyway, under its CID instead of its name.
+Which pins count as legacy is decided before the API accepts anything, by
+listing the pinset once. Anything pinned after that belongs to a request with a
+lifecycle of its own. Listing is cheap; reconciling each pin is not, which is
+why only the first part is ordered against the listener.
+
+Records are then created only while the CID is absent, and every
+read-modify-write on the registry is serialised per CID. Both are needed:
+without the snapshot the backfill could record a file between an upload pinning
+it and registering it, and without the serialisation two writers could lose one
+another's decision. Either would leave an operator who required confirmation
+with a file that is durable and named by its CID.
 
 It does not block the API. The walk is as long as the pinset, and holding reads
 back for the whole migration would penalise exactly the nodes with the most to

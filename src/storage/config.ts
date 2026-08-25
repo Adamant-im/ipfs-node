@@ -234,11 +234,6 @@ export function resolveStorageConfig(raw: unknown, uploadLimitSizeBytes: number)
 }
 
 /**
- * Resolve the `replication` section.
- *
- * @param raw Value of the `replication` key from a parsed config file
- */
-/**
  * Validate the placement tiers.
  *
  * The tiers must start at age zero and never go backwards, so that exactly one
@@ -276,6 +271,11 @@ function resolvePlacement(raw: unknown, defaults: PlacementTier[]): PlacementTie
   return tiers
 }
 
+/**
+ * Resolve the `replication` section.
+ *
+ * @param raw Value of the `replication` key from a parsed config file
+ */
 export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
   const input = section(raw, 'replication')
   const defaults = DEFAULT_REPLICATION_CONFIG

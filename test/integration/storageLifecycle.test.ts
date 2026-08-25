@@ -8,8 +8,9 @@ import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
-import { backfillRegistryFromPins } from '../../src/storage/backfill.js'
+import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
 import { runGarbageCollection } from '../../src/storage/gc.js'
+import { meteredBlocks } from '../../src/storage/meter.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
 import { UploadSession } from '../../src/storage/uploadSession.js'
@@ -417,6 +418,35 @@ describe('garbage collection against fixture data', () => {
     assert.equal((await registry.get(cids.abandoned))?.state, 'expired')
   })
 
+  it('does not apply a plan the registry has moved past', async () => {
+    const { registry, cids } = await createFixture()
+
+    // The plan is made from a snapshot; an upload can re-register and confirm
+    // the same CID before the run reaches the unpin
+    const stale = await registry.all()
+    await registry.confirm(cids.abandoned)
+
+    const planned = new Proxy(registry, {
+      get: (target, property) =>
+        property === 'all'
+          ? async (): Promise<FileRecord[]> => stale
+          : Reflect.get(target, property, target)
+    }) as FileRegistry
+
+    const report = await runGarbageCollection({
+      node,
+      registry: planned,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 1000
+    })
+
+    assert.deepEqual(report.releasedCids, [])
+    assert.equal((await registry.get(cids.abandoned))?.state, 'confirmed')
+    assert.equal(await isProtected(node, CID.parse(cids.abandoned)), true)
+    assert.equal((await storedDigests()).has(digestOf(cids.abandoned)), true)
+  })
+
   it('restores a missing pin on confirmed content before deleting anything', async () => {
     const { registry, cids } = await createFixture()
     await unpinFile(node, CID.parse(cids.confirmed))
@@ -435,13 +465,64 @@ describe('garbage collection against fixture data', () => {
   })
 })
 
+describe('block metering', () => {
+  it('charges the structural blocks a UnixFS stream never yields', async () => {
+    // Counting the stream measures the file; counting blocks measures what
+    // crossed the network. A DAG-PB root and its links are real bytes that a
+    // reader of the content alone never sees. Large enough to be chunked, so
+    // the DAG has a root above its leaves at all.
+    const payload = deterministicBytes(4 * 1024 * 1024, 'metered')
+    const cid = await ifs.addBytes(payload)
+
+    const progress = { bytes: 0 }
+    const metered = unixfs({
+      blockstore: meteredBlocks(node.blockstore, progress, 16 * 1024 * 1024)
+    })
+
+    let streamed = 0
+    for await (const chunk of metered.cat(cid)) {
+      streamed += chunk.byteLength
+    }
+
+    assert.equal(streamed, payload.byteLength)
+    assert.ok(
+      progress.bytes > streamed,
+      `metered ${progress.bytes} bytes, which must exceed the ${streamed} bytes of content`
+    )
+  })
+
+  it('stops a walk that outgrows the limit instead of finishing it', async () => {
+    const payload = deterministicBytes(4 * 1024 * 1024, 'metered-limit')
+    const cid = await ifs.addBytes(payload)
+    const progress = { bytes: 0 }
+    const metered = unixfs({
+      blockstore: meteredBlocks(node.blockstore, progress, 2 * 1024 * 1024)
+    })
+
+    await assert.rejects(async () => {
+      for await (const chunk of metered.cat(cid)) {
+        void chunk
+      }
+    }, /larger than this node accepts/)
+
+    assert.ok(
+      progress.bytes < payload.byteLength,
+      `metered ${progress.bytes} bytes, so the walk ran further than the limit allowed`
+    )
+  })
+})
+
 describe('registry backfill', () => {
   it('records a pin that predates the registry, and does so only once', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(2048, 'legacy-pin'))
     await pinFile(node, cid)
 
-    const first = await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+    const first = await backfillRegistryFromPins({
+      cids: await snapshotPins(node),
+      unixfs: ifs,
+      registry
+    })
     const recorded = await registry.get(cid.toString())
 
     assert.ok(first.registered > 0)
@@ -449,9 +530,31 @@ describe('registry backfill', () => {
     assert.equal(recorded?.heldLocally, true)
     assert.ok((recorded?.storedBytes ?? 0) > 0)
 
-    const second = await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+    const second = await backfillRegistryFromPins({
+      cids: await snapshotPins(node),
+      unixfs: ifs,
+      registry
+    })
     assert.equal(second.registered, 0)
     assert.ok(second.known > 0)
+  })
+
+  it('ignores a pin created after the snapshot was taken', async () => {
+    // A pin made once the API is serving belongs to a request with a lifecycle
+    // of its own, and must not be recorded as legacy content
+    const registry = createRegistry()
+    const before = await ifs.addBytes(deterministicBytes(2048, 'snapshot-before'))
+    await pinFile(node, before)
+
+    const cids = await snapshotPins(node)
+
+    const after = await ifs.addBytes(deterministicBytes(2048, 'snapshot-after'))
+    await pinFile(node, after)
+
+    await backfillRegistryFromPins({ cids, unixfs: ifs, registry })
+
+    assert.notEqual(await registry.get(before.toString()), undefined)
+    assert.equal(await registry.get(after.toString()), undefined)
   })
 
   it('reports a registry failure as an error rather than as incomplete content', async () => {
@@ -467,7 +570,11 @@ describe('registry backfill', () => {
       save: () => Promise.reject(new Error('datastore is unavailable'))
     } as unknown as FileRegistry
 
-    const report = await backfillRegistryFromPins({ node, unixfs: ifs, registry: failing })
+    const report = await backfillRegistryFromPins({
+      cids: await snapshotPins(node),
+      unixfs: ifs,
+      registry: failing
+    })
 
     assert.equal(report.incomplete, 0)
     assert.ok(report.errors.some((message) => message.includes(cid.toString())))
@@ -480,7 +587,7 @@ describe('registry backfill', () => {
     await pinFile(node, cid)
     await registry.save(record({ cid: cid.toString(), state: 'confirmed', name: 'mine.bin' }))
 
-    await backfillRegistryFromPins({ node, unixfs: ifs, registry })
+    await backfillRegistryFromPins({ cids: await snapshotPins(node), unixfs: ifs, registry })
 
     assert.equal((await registry.get(cid.toString()))?.name, 'mine.bin')
   })

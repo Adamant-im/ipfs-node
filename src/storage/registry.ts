@@ -10,6 +10,15 @@ export const REGISTRY_PREFIX = '/adm/files'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+/**
+ * Stamps every stored record, so two writes are never mistaken for one.
+ *
+ * A counter carried on the record itself would reset whenever a writer builds a
+ * fresh record rather than editing the stored one, which is exactly what
+ * registering an already-known CID does.
+ */
+let writes = 0
+
 /** Lifecycle state of a file known to this node. */
 export type FileState = 'temporary' | 'confirmed' | 'expired'
 
@@ -38,7 +47,24 @@ export interface FileRecord {
   heldLocally: boolean
   /** Names of peer nodes that acknowledged holding a copy. */
   replicas: string[]
+  /**
+   * Opaque stamp of the write that stored this record.
+   *
+   * It exists so a caller can tell its own write apart from an identical one
+   * made by somebody else. Two concurrent uploads of the same file produce
+   * records that match field for field, so without this the compensation of a
+   * failed upload cannot see that another request has since adopted the CID —
+   * and would undo work that succeeded.
+   *
+   * It is unique within a process run and means nothing across restarts, which
+   * is all it is compared over: a caller only ever checks a record against a
+   * stamp it was handed by its own write.
+   */
+  revision?: number
 }
+
+/** What {@link FileRegistry.transition} should do with a record. */
+export type Transition = 'keep' | 'remove'
 
 export interface NewFileRecord {
   cid: string
@@ -132,6 +158,40 @@ export class FileRegistry {
     })
   }
 
+  /**
+   * Decide a record's next state from what it is now, with nothing else
+   * touching the CID meanwhile.
+   *
+   * A decision taken from a record read earlier is stale by the time it is
+   * applied: the collector plans a release and an upload may re-register the
+   * same CID before the unpin runs, and a failed upload may try to undo a
+   * lifecycle another request has since adopted. `work` is handed the record as
+   * it is at that moment, may perform whatever must not be interleaved — an
+   * unpin belongs here — and returns the record to store, `'remove'`, or
+   * `'keep'` to leave it alone.
+   *
+   * @returns The stored record, or `undefined` when nothing was stored
+   */
+  async transition(
+    cid: string,
+    work: (current: FileRecord | undefined) => Promise<FileRecord | Transition>
+  ): Promise<FileRecord | undefined> {
+    return this.exclusive(cid, async () => {
+      const outcome = await work(await this.get(cid))
+
+      if (outcome === 'keep') {
+        return undefined
+      }
+
+      if (outcome === 'remove') {
+        await this.removeRecord(cid)
+        return undefined
+      }
+
+      return this.save(outcome)
+    })
+  }
+
   async get(cid: string): Promise<FileRecord | undefined> {
     try {
       return JSON.parse(decoder.decode(await this.datastore.get(this.key(cid)))) as FileRecord
@@ -144,11 +204,17 @@ export class FileRegistry {
   }
 
   async save(record: FileRecord): Promise<FileRecord> {
-    await this.datastore.put(this.key(record.cid), encoder.encode(JSON.stringify(record)))
-    return record
+    writes += 1
+    const stored: FileRecord = { ...record, revision: writes }
+    await this.datastore.put(this.key(stored.cid), encoder.encode(JSON.stringify(stored)))
+    return stored
   }
 
   async remove(cid: string): Promise<void> {
+    return this.exclusive(cid, () => this.removeRecord(cid))
+  }
+
+  private async removeRecord(cid: string): Promise<void> {
     try {
       await this.datastore.delete(this.key(cid))
     } catch (err) {

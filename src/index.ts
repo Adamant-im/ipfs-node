@@ -4,7 +4,7 @@ import { config, CONFIG_FILE_NAME } from './config.js'
 import { diskUsageCron } from './disk-usage.cron.js'
 import { peeringCron, peerWithKnownNodes } from './peering.cron.js'
 import { helia, ifs } from './helia.js'
-import { backfillRegistryFromPins } from './storage/backfill.js'
+import { backfillRegistryFromPins, snapshotPins } from './storage/backfill.js'
 import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
@@ -63,13 +63,18 @@ function startLifecycleJobs(): void {
 // it out of the storage report, out of dry runs, and out of replication repair.
 // Recording it is idempotent.
 //
-// It is deliberately not awaited. The walk is as long as the pinset, and
-// blocking here would keep the whole API — reads included — unavailable for the
-// entire migration on exactly the nodes that have the most to serve. Reads,
+// Which pins are legacy is decided here, before the API can accept an upload:
+// anything pinned after this line belongs to a request with a lifecycle of its
+// own. Listing them is cheap; reconciling them is not.
+const legacyPins = await snapshotPins(helia)
+
+// The reconciliation is deliberately not awaited. It is as long as the pinset,
+// and blocking here would keep the whole API — reads included — unavailable for
+// the entire migration on exactly the nodes that have the most to serve. Reads,
 // uploads and incoming copies do not need the registry to be complete; the jobs
 // that do are started once it is.
 void backfillRegistryFromPins({
-  node: helia,
+  cids: legacyPins,
   unixfs: ifs,
   registry: fileRegistry,
   log: (message) => logger.info(message)
