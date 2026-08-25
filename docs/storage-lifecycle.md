@@ -78,6 +78,14 @@ pinned, and registered. Any other outcome removes the recorded blocks:
 - the route failed after some files were already imported
 - the client disconnected mid-upload
 
+Pinning and lifecycle registration are one transaction for concurrency
+purposes. Before changing either, a request locks every CID it contains in
+lexical order and holds those locks through commit or rollback. Another upload,
+confirmation, release, collector or handover therefore sees either the state
+before the request or the state after it, never a pin from one side and a
+registry record from the other. Ordering the locks also keeps two overlapping
+multi-file requests from deadlocking.
+
 A recorded block is deleted only when no other in-flight upload references it and
 no pin protects it. Anything that survives cleanup is unpinned and therefore
 reclaimable by the next collection.

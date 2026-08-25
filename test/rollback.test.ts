@@ -35,20 +35,21 @@ describe('rollbackUpload', () => {
   it('removes the record and the pin this request created', async () => {
     const registry = createRegistry()
     const unpinned: string[] = []
-    const written = await registry.registerReplacing(file, {
-      confirmationRequired: false,
-      temporaryTtlMs: TTL
-    })
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      const written = await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL
+      })
 
-    await rollbackUpload({
-      registry,
-      cid: CID_A,
-      written: written.record,
-      previous: written.previous,
-      createdPin: true,
-      unpin: async () => {
-        unpinned.push(CID_A)
-      }
+      await rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        previous: written.previous,
+        createdPin: true,
+        unpin: async () => {
+          unpinned.push(CID_A)
+        }
+      })
     })
 
     // Session cleanup skips pinned blocks, so a pin left behind here would keep
@@ -62,71 +63,103 @@ describe('rollbackUpload', () => {
     const unpinned: string[] = []
     await registry.register(file, { confirmationRequired: false, temporaryTtlMs: TTL })
 
-    const written = await registry.registerReplacing(file, {
-      confirmationRequired: false,
-      temporaryTtlMs: TTL
-    })
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      const written = await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL
+      })
 
-    await rollbackUpload({
-      registry,
-      cid: CID_A,
-      written: written.record,
-      previous: written.previous,
-      createdPin: true,
-      unpin: async () => {
-        unpinned.push(CID_A)
-      }
+      await rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        previous: written.previous,
+        createdPin: true,
+        unpin: async () => {
+          unpinned.push(CID_A)
+        }
+      })
     })
 
     assert.notEqual(await registry.get(CID_A), undefined)
     assert.deepEqual(unpinned, [])
   })
 
-  it('leaves a concurrent upload of the same file alone', async () => {
+  it('restores an unpinned previous record and its real pin state', async () => {
     const registry = createRegistry()
     const unpinned: string[] = []
+    await registry.register(file, { confirmationRequired: false, temporaryTtlMs: TTL })
+    await registry.release(CID_A)
 
-    // This request writes first and fails later; another one adopts the CID in
-    // between and is the reason both the record and the pin must stay
-    const mine = await registry.registerReplacing(file, {
-      confirmationRequired: false,
-      temporaryTtlMs: TTL
-    })
-    const theirs = await registry.register(
-      { ...file, name: 'theirs.jpg' },
-      { confirmationRequired: false, temporaryTtlMs: TTL }
-    )
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      const written = await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL
+      })
 
-    await rollbackUpload({
-      registry,
-      cid: CID_A,
-      written: mine.record,
-      previous: mine.previous,
-      createdPin: true,
-      unpin: async () => {
-        unpinned.push(CID_A)
-      }
+      await rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        previous: written.previous,
+        createdPin: true,
+        unpin: async () => {
+          unpinned.push(CID_A)
+        }
+      })
     })
 
-    assert.equal((await registry.get(CID_A))?.revision, theirs.revision)
-    assert.deepEqual(unpinned, [])
+    assert.equal((await registry.get(CID_A))?.state, 'expired')
+    assert.equal((await registry.get(CID_A))?.pinned, false)
+    assert.deepEqual(unpinned, [CID_A])
   })
 
-  it('does nothing when the request never wrote a record', async () => {
+  it('removes a created pin when registration never wrote a record', async () => {
     const registry = createRegistry()
     const unpinned: string[] = []
 
-    await rollbackUpload({
-      registry,
-      cid: CID_A,
-      written: undefined,
-      previous: undefined,
-      createdPin: true,
-      unpin: async () => {
-        unpinned.push(CID_A)
-      }
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      await rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        previous: undefined,
+        createdPin: true,
+        unpin: async () => {
+          unpinned.push(CID_A)
+        }
+      })
     })
 
-    assert.deepEqual(unpinned, [])
+    assert.equal(await registry.get(CID_A), undefined)
+    assert.deepEqual(unpinned, [CID_A])
+  })
+
+  it('serializes two failed uploads so neither lifecycle survives', async () => {
+    const registry = createRegistry()
+    let pinned = false
+
+    const failUpload = (name: string): Promise<void> =>
+      registry.withExclusiveCids([CID_A], async (locked) => {
+        const previous = await locked.get(CID_A)
+        const createdPin = !pinned
+        pinned = true
+        await locked.registerReplacing(
+          { ...file, name },
+          { confirmationRequired: false, temporaryTtlMs: TTL }
+        )
+
+        await rollbackUpload({
+          registry: locked,
+          cid: CID_A,
+          previous,
+          createdPin,
+          unpin: async () => {
+            pinned = false
+          }
+        })
+      })
+
+    await Promise.all([failUpload('first.jpg'), failUpload('second.jpg')])
+
+    assert.equal(await registry.get(CID_A), undefined)
+    assert.equal(pinned, false)
   })
 })

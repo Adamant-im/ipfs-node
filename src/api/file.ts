@@ -12,7 +12,6 @@ import {
   releaseFile,
   replicateFile
 } from '../storage/service.js'
-import type { FileRecord } from '../storage/registry.js'
 import { rollbackUpload } from '../storage/rollback.js'
 import { fileRegistry } from '../storage/state.js'
 import { parseCid } from '../utils/cid.js'
@@ -52,73 +51,89 @@ router.post(
 
     const session = getUploadSession(req)
 
-    // A pin protects blocks from the session cleanup, and a registry entry
-    // claims disk in the storage report. Both are created before the request is
-    // known to succeed, so both have to be undone if it does not.
-    const undo: Array<() => Promise<void>> = []
-
     try {
       const files = flatFiles(req.files as UnixFsMulterFile[])
       logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
-      const records = []
-      for (const file of files) {
-        const cid = file.cid.toString()
-        logger.info(`Successfully added file ${cid}`)
+      // Hold all involved CIDs until this request either commits or restores
+      // every pin and lifecycle record it changed. Sorting happens inside the
+      // registry, so overlapping multi-file requests cannot deadlock.
+      const records = await fileRegistry.withExclusiveCids(
+        files.map((file) => file.cid.toString()),
+        async (registry) => {
+          const undo: Array<() => Promise<void>> = []
 
-        // Only a pin this request created may be removed again; content that
-        // was already durable keeps the pin it had.
-        const createdPin = await pinFile(helia, file.cid)
+          try {
+            const stored = []
 
-        // What this request wrote, and what it replaced. Both are filled in
-        // below, after the compensation that reads them is registered.
-        //
-        // The baseline cannot be read before the write: another upload of the
-        // same file can adopt the CID in between, and restoring what this
-        // request saw earlier would erase the lifecycle that upload owns. The
-        // registration reports what it actually replaced, from inside the same
-        // serialised section.
-        const write: { record?: FileRecord; previous?: FileRecord } = {}
+            for (const file of files) {
+              const cid = file.cid.toString()
+              logger.info(`Successfully added file ${cid}`)
 
-        // One compensation rather than two: the pin and the record have to be
-        // undone under the same lock and in that order.
-        undo.push(() =>
-          rollbackUpload({
-            registry: fileRegistry,
-            cid,
-            written: write.record,
-            previous: write.previous,
-            createdPin,
-            unpin: async () => {
-              await unpinFile(helia, file.cid)
+              const previous = await registry.get(cid)
+              const createdPin = await pinFile(helia, file.cid)
+
+              let registration
+              try {
+                registration = await registry.registerReplacing(
+                  {
+                    cid,
+                    name: file.originalname,
+                    fileSize: file.size,
+                    storedBytes: file.storedBytes
+                  },
+                  {
+                    confirmationRequired: config.storage.confirmationRequired,
+                    temporaryTtlMs: config.storage.temporaryTtlMs
+                  }
+                )
+              } catch (err) {
+                // A datastore failure can happen before or after it touches the
+                // key. Restore both sides from the baseline captured under the
+                // same CID lock, so neither outcome leaks a pin or a record.
+                await rollbackUpload({
+                  registry,
+                  cid,
+                  previous,
+                  createdPin,
+                  unpin: async () => {
+                    await unpinFile(helia, file.cid)
+                  }
+                })
+                throw err
+              }
+
+              undo.push(() =>
+                rollbackUpload({
+                  registry,
+                  cid,
+                  previous: registration.previous,
+                  createdPin,
+                  unpin: async () => {
+                    await unpinFile(helia, file.cid)
+                  }
+                })
+              )
+
+              stored.push(registration.record)
             }
-          })
-        )
 
-        const registration = await fileRegistry.registerReplacing(
-          {
-            cid,
-            name: file.originalname,
-            fileSize: file.size,
-            storedBytes: file.storedBytes
-          },
-          {
-            confirmationRequired: config.storage.confirmationRequired,
-            temporaryTtlMs: config.storage.temporaryTtlMs
+            // Every file is stored and pinned. Ownership passes from the
+            // request session to the registry before any CID lock is released.
+            session.commit()
+            return stored
+          } catch (err) {
+            for (const step of undo.reverse()) {
+              try {
+                await step()
+              } catch (undoError) {
+                logger.error(`Could not undo a failed upload: ${(undoError as Error).message}`)
+              }
+            }
+            throw err
           }
-        )
-
-        write.record = registration.record
-        write.previous = registration.previous
-
-        records.push(registration.record)
-      }
-
-      // Every file is stored and pinned: the blocks written by this request must
-      // now survive, so ownership passes from the session to the registry and
-      // there is nothing left to undo.
-      session.commit()
-      undo.length = 0
+        }
+      )
 
       const durable = records.filter((record) => record.state === 'confirmed')
       const replication = await Promise.all(
@@ -157,17 +172,6 @@ router.post(
         replication: replication[0]?.report ?? null
       })
     } catch (err) {
-      // Undo first, then let the response listener reclaim the blocks: cleanup
-      // deliberately skips anything pinned, so a pin left behind here would
-      // keep the failed upload on disk forever.
-      for (const step of undo.reverse()) {
-        try {
-          await step()
-        } catch (undoError) {
-          logger.error(`Could not undo a failed upload: ${(undoError as Error).message}`)
-        }
-      }
-
       next(err)
     }
   }

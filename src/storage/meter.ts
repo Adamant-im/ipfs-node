@@ -9,12 +9,14 @@ export interface TransferProgress {
 export type ReadableBlocks = Pick<Blockstore, 'get' | 'put' | 'has'>
 
 /**
- * Largest block a transfer is assumed to bring in at once.
+ * Largest block the configured Bitswap transport can bring in at once.
  *
  * A block is fetched and written whole before any of its bytes can be counted,
- * so a limit can only be noticed once it has already been passed.
+ * so a limit can only be noticed once it has already been passed. Bitswap's
+ * encoded-message overhead leaves its actual block maximum just under 4 MiB;
+ * reserving the full 4 MiB keeps the bound conservative.
  */
-export const MAX_BLOCK_BYTES = 2 * 1024 ** 2
+export const MAX_BLOCK_BYTES = 4 * 1024 ** 2
 
 /**
  * Blocks an intake reads at a time.

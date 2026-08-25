@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { CID } from 'multiformats/cid'
-import { MAX_BLOCK_BYTES, meteredBlocks, type ReadableBlocks } from '../src/storage/meter.js'
+import {
+  INTAKE_OVERSHOOT_BYTES,
+  INTAKE_READ_CONCURRENCY,
+  MAX_BLOCK_BYTES,
+  meteredBlocks,
+  type ReadableBlocks
+} from '../src/storage/meter.js'
 
 const CID_A = CID.parse('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku')
 
@@ -72,5 +78,10 @@ describe('meteredBlocks', () => {
 
     // A peer that sends almost everything and then aborts has spent it
     assert.ok(progress.bytes > 0, 'the bytes that arrived must still be charged')
+  })
+
+  it('reserves one transport-sized block for every in-flight read', () => {
+    assert.equal(MAX_BLOCK_BYTES, 4 * 1024 ** 2)
+    assert.equal(INTAKE_OVERSHOOT_BYTES, INTAKE_READ_CONCURRENCY * MAX_BLOCK_BYTES)
   })
 })

@@ -50,11 +50,10 @@ export interface FileRecord {
   /**
    * Opaque stamp of the write that stored this record.
    *
-   * It exists so a caller can tell its own write apart from an identical one
-   * made by somebody else. Two concurrent uploads of the same file produce
-   * records that match field for field, so without this the compensation of a
-   * failed upload cannot see that another request has since adopted the CID —
-   * and would undo work that succeeded.
+   * It exists so a caller can tell a planned lifecycle action apart from a
+   * newer write with identical fields. Garbage collection, handover and rescue
+   * all do network or blockstore work after selecting a record; without this
+   * stamp they could apply that stale decision to a re-uploaded CID.
    *
    * It is unique within a process run and means nothing across restarts, which
    * is all it is compared over: a caller only ever checks a record against a
@@ -71,6 +70,24 @@ export interface NewFileRecord {
   name: string
   fileSize: number
   storedBytes: number
+}
+
+/**
+ * Registry operations that are safe to compose while their CID locks are held.
+ *
+ * Calling the regular public mutators from inside {@link FileRegistry.withExclusiveCids}
+ * would queue behind the lock the caller already owns. This view deliberately
+ * bypasses that second acquisition while keeping the datastore operations and
+ * revision stamping in one place.
+ */
+export interface LockedFileRegistry {
+  get(cid: string): Promise<FileRecord | undefined>
+  save(record: FileRecord): Promise<FileRecord>
+  remove(cid: string): Promise<void>
+  registerReplacing(
+    file: NewFileRecord,
+    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+  ): Promise<{ record: FileRecord; previous: FileRecord | undefined }>
 }
 
 function isNotFound(err: unknown): boolean {
@@ -141,6 +158,36 @@ export class FileRegistry {
         this.queued.delete(cid)
       }
     }
+  }
+
+  /**
+   * Hold every requested CID lock until `work` finishes.
+   *
+   * Locks are acquired in lexical order, so two multi-file uploads cannot take
+   * the same locks in opposite orders and deadlock. The callback receives
+   * mutators that operate under those already-held locks.
+   *
+   * @param cids CIDs whose lifecycle and pin state must not be interleaved
+   * @param work Compound operation to run while all locks are held
+   */
+  async withExclusiveCids<T>(
+    cids: Iterable<string>,
+    work: (registry: LockedFileRegistry) => Promise<T>
+  ): Promise<T> {
+    const ordered = [...new Set(cids)].sort()
+    const locked: LockedFileRegistry = {
+      get: (cid) => this.get(cid),
+      save: (record) => this.save(record),
+      remove: (cid) => this.removeRecord(cid),
+      registerReplacing: (file, options) => this.registerExclusively(file, options)
+    }
+
+    const acquire = (index: number): Promise<T> => {
+      const cid = ordered[index]
+      return cid === undefined ? work(locked) : this.exclusive(cid, () => acquire(index + 1))
+    }
+
+    return acquire(0)
   }
 
   /**

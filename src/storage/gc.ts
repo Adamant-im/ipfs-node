@@ -250,27 +250,47 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
 
   for (const record of heldConfirmed) {
     try {
-      const cid = CID.parse(record.cid)
-      if (await isProtected(options.node, cid)) {
-        continue
-      }
-
-      log(`Restoring the missing pin of the confirmed file ${record.cid}`)
-
       if (options.dryRun === true) {
-        report.repairedPins.push(record.cid)
+        const cid = CID.parse(record.cid)
+        if (!(await isProtected(options.node, cid))) {
+          report.repairedPins.push(record.cid)
+        }
         continue
       }
 
-      const signal =
-        options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
+      const repaired = await options.registry.withExclusiveCids([record.cid], async (registry) => {
+        const current = await registry.get(record.cid)
 
-      await pinFile(options.node, cid, signal)
-      await options.registry.setPinned(record.cid, true)
+        if (current === undefined || current.state !== 'confirmed' || !current.heldLocally) {
+          return false
+        }
+
+        const cid = CID.parse(record.cid)
+        if (await isProtected(options.node, cid)) {
+          return false
+        }
+
+        log(`Restoring the missing pin of the confirmed file ${record.cid}`)
+        const signal =
+          options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
+        const createdPin = await pinFile(options.node, cid, signal)
+
+        try {
+          await registry.save({ ...current, pinned: true })
+          return true
+        } catch (err) {
+          if (createdPin && current.pinned !== true) {
+            await unpinFile(options.node, cid)
+          }
+          throw err
+        }
+      })
 
       // Recorded only once the pin is actually back, so the field cannot claim
       // a repair that did not happen.
-      report.repairedPins.push(record.cid)
+      if (repaired) {
+        report.repairedPins.push(record.cid)
+      }
     } catch (err) {
       report.unprotected.push(record.cid)
       errors.push(`Pin check failed for ${record.cid}: ${(err as Error).message}`)
@@ -304,15 +324,36 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
       // applying the stale decision would take away the pin it just got. The
       // record is re-read and the unpin performed with nothing else touching
       // the CID.
-      const releasedRecord = await options.registry.transition(record.cid, async (current) => {
-        if (current === undefined || current.state === 'confirmed') {
-          return 'keep'
+      const releasedRecord = await options.registry.withExclusiveCids(
+        [record.cid],
+        async (registry) => {
+          const current = await registry.get(record.cid)
+          if (
+            current === undefined ||
+            current.revision !== record.revision ||
+            current.state === 'confirmed'
+          ) {
+            return undefined
+          }
+
+          const cid = CID.parse(record.cid)
+          const removedPin = await unpinFile(options.node, cid)
+
+          try {
+            return await registry.save({
+              ...current,
+              state: 'expired',
+              pinned: false,
+              heldLocally: false
+            })
+          } catch (err) {
+            if (removedPin && current.pinned) {
+              await pinFile(options.node, cid)
+            }
+            throw err
+          }
         }
-
-        await unpinFile(options.node, CID.parse(record.cid))
-
-        return { ...current, state: 'expired', pinned: false, heldLocally: false }
-      })
+      )
 
       if (releasedRecord) {
         releasedCleanly.push(releasedRecord)

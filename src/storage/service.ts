@@ -8,7 +8,7 @@ import { getNodesList } from '../utils/utils.js'
 import { blockstorePath } from '../store.js'
 import { mayDemote, placeFile, storageTargets, type Placement } from './placement.js'
 import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
-import type { FileRecord } from './registry.js'
+import type { FileRecord, LockedFileRegistry } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
@@ -164,23 +164,44 @@ async function placeCopy(peer: ReplicationPeer, cid: string): Promise<PlacementO
  *
  * @param name Display name recorded for the file; defaults to its CID
  */
-async function registerPinned(cid: CID, name: string): Promise<FileRecord> {
+async function registerPinnedLocked(
+  registry: LockedFileRegistry,
+  cid: CID,
+  name: string,
+  previous: FileRecord | undefined
+): Promise<FileRecord> {
   const signal = AbortSignal.timeout(config.replication.requestTimeoutMs)
+  const createdPin = await pinFile(helia, cid, signal)
 
-  await pinFile(helia, cid, signal)
+  try {
+    // Everything is local after pinning, so the deduplicated DAG size is what
+    // this node actually holds on disk for the file.
+    const stats = await ifs.stat(cid, { extended: true, offline: true, signal })
 
-  // Everything is local after pinning, so the deduplicated DAG size is what
-  // this node actually holds on disk for the file.
-  const stats = await ifs.stat(cid, { extended: true, offline: true, signal })
+    return (
+      await registry.registerReplacing(
+        {
+          cid: cid.toString(),
+          name,
+          fileSize: Number(stats.size),
+          storedBytes: Number(stats.deduplicatedDagSize)
+        },
+        { confirmationRequired: false, temporaryTtlMs: config.storage.temporaryTtlMs }
+      )
+    ).record
+  } catch (err) {
+    // A failed stat or datastore write must not leave a pin no lifecycle owns.
+    if (createdPin && previous?.pinned !== true) {
+      await unpinFile(helia, cid)
+    }
+    throw err
+  }
+}
 
-  return fileRegistry.register(
-    {
-      cid: cid.toString(),
-      name,
-      fileSize: Number(stats.size),
-      storedBytes: Number(stats.deduplicatedDagSize)
-    },
-    { confirmationRequired: false, temporaryTtlMs: config.storage.temporaryTtlMs }
+async function registerPinned(cid: CID, name: string): Promise<FileRecord> {
+  const key = cid.toString()
+  return fileRegistry.withExclusiveCids([key], async (registry) =>
+    registerPinnedLocked(registry, cid, name, await registry.get(key))
   )
 }
 
@@ -196,17 +217,36 @@ export async function confirmFile(
   options: { registerUnknown?: boolean } = {}
 ): Promise<FileRecord | undefined> {
   const parsed = CID.parse(cid)
-  const known = await fileRegistry.get(cid)
+  const confirmed = await fileRegistry.withExclusiveCids([cid], async (registry) => {
+    const current = await registry.get(cid)
 
-  if (!known && options.registerUnknown !== true) {
+    if (!current) {
+      return options.registerUnknown === true
+        ? registerPinnedLocked(registry, parsed, cid, current)
+        : undefined
+    }
+
+    const createdPin = await pinFile(helia, parsed)
+
+    try {
+      return await registry.save({
+        ...current,
+        state: 'confirmed',
+        expiresAt: null,
+        confirmedAt: current.confirmedAt ?? Date.now(),
+        pinned: true,
+        heldLocally: true
+      })
+    } catch (err) {
+      if (createdPin && current.pinned !== true) {
+        await unpinFile(helia, parsed)
+      }
+      throw err
+    }
+  })
+
+  if (!confirmed) {
     return undefined
-  }
-
-  if (known) {
-    await pinFile(helia, parsed)
-    await fileRegistry.confirm(cid)
-  } else {
-    await registerPinned(parsed, cid)
   }
 
   await replicateFile(cid)
@@ -236,8 +276,32 @@ export function effectiveQuorum(cid: string, createdAt: number): number {
  * reversible until then.
  */
 export async function releaseFile(cid: string): Promise<FileRecord | undefined> {
-  await unpinFile(helia, CID.parse(cid))
-  return fileRegistry.release(cid)
+  const parsed = CID.parse(cid)
+
+  return fileRegistry.withExclusiveCids([cid], async (registry) => {
+    const current = await registry.get(cid)
+    const removedPin = await unpinFile(helia, parsed)
+
+    if (!current) {
+      return undefined
+    }
+
+    try {
+      return await registry.save({
+        ...current,
+        state: 'expired',
+        pinned: false,
+        heldLocally: false
+      })
+    } catch (err) {
+      // The lifecycle still promises protection when the datastore write did
+      // not land, so restore the pin before exposing the failure.
+      if (removedPin && current.pinned) {
+        await pinFile(helia, parsed)
+      }
+      throw err
+    }
+  })
 }
 
 /** Store a copy requested by another ADAMANT node. */
@@ -484,14 +548,28 @@ async function rescueOrphanedFiles(
       // the file meanwhile — a re-upload, a release, an updated replica list —
       // so the pin and the state change happen together, against the record as
       // it is now.
-      const kept = await fileRegistry.transition(record.cid, async (current) => {
-        if (current === undefined) {
-          return 'keep'
+      const kept = await fileRegistry.withExclusiveCids([record.cid], async (registry) => {
+        const current = await registry.get(record.cid)
+
+        if (
+          current === undefined ||
+          current.revision !== record.revision ||
+          current.state !== 'confirmed' ||
+          current.heldLocally
+        ) {
+          return undefined
         }
 
-        await pinFile(helia, cid)
+        const createdPin = await pinFile(helia, cid)
 
-        return { ...current, pinned: true, heldLocally: true }
+        try {
+          return await registry.save({ ...current, pinned: true, heldLocally: true })
+        } catch (err) {
+          if (createdPin && current.pinned !== true) {
+            await unpinFile(helia, cid)
+          }
+          throw err
+        }
       })
 
       if (kept === undefined) {
@@ -662,15 +740,41 @@ export async function demoteReleasableCopies(
       continue
     }
 
-    report.demoted.push(record.cid)
-
     if (options.dryRun === true) {
+      report.demoted.push(record.cid)
       continue
     }
 
-    await unpinFile(helia, CID.parse(record.cid))
-    await fileRegistry.releaseLocalCopy(record.cid)
-    logger.info(`Released the local copy of ${record.cid}; ${holders.length} peers hold it`)
+    const demoted = await fileRegistry.withExclusiveCids([record.cid], async (registry) => {
+      const current = await registry.get(record.cid)
+
+      if (
+        current === undefined ||
+        current.revision !== record.revision ||
+        current.state !== 'confirmed' ||
+        !current.heldLocally
+      ) {
+        return false
+      }
+
+      const parsed = CID.parse(record.cid)
+      const removedPin = await unpinFile(helia, parsed)
+
+      try {
+        await registry.save({ ...current, pinned: false, heldLocally: false })
+        return true
+      } catch (err) {
+        if (removedPin && current.pinned) {
+          await pinFile(helia, parsed)
+        }
+        throw err
+      }
+    })
+
+    if (demoted) {
+      report.demoted.push(record.cid)
+      logger.info(`Released the local copy of ${record.cid}; ${holders.length} peers hold it`)
+    }
   }
 
   return report

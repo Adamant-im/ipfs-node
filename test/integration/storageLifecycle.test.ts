@@ -6,6 +6,7 @@ import { after, before, describe, it } from 'node:test'
 import { unixfs, type UnixFS } from '@helia/unixfs'
 import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
+import { fixedSize } from 'ipfs-unixfs-importer/chunker'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { backfillRegistryFromPins, snapshotPins } from '../../src/storage/backfill.js'
@@ -451,6 +452,41 @@ describe('garbage collection against fixture data', () => {
     assert.equal((await storedDigests()).has(digestOf(cids.abandoned)), true)
   })
 
+  it('does not apply an expired plan to a new temporary upload', async () => {
+    const { registry, cids } = await createFixture()
+    const stale = await registry.all()
+    const fresh = await registry.register(
+      {
+        cid: cids.abandoned,
+        name: 'new-upload.bin',
+        fileSize: 1024,
+        storedBytes: 1024
+      },
+      { confirmationRequired: true, temporaryTtlMs: 60_000, now: 2000 }
+    )
+
+    const planned = new Proxy(registry, {
+      get: (target, property) =>
+        property === 'all'
+          ? async (): Promise<FileRecord[]> => stale
+          : Reflect.get(target, property, target)
+    }) as FileRegistry
+
+    const report = await runGarbageCollection({
+      node,
+      registry: planned,
+      watermarks: TIGHT,
+      blockstoreBytes: 4096,
+      now: 2000
+    })
+
+    const current = await registry.get(cids.abandoned)
+    assert.deepEqual(report.releasedCids, [])
+    assert.equal(current?.revision, fresh.revision)
+    assert.equal(current?.state, 'temporary')
+    assert.equal(await isProtected(node, CID.parse(cids.abandoned)), true)
+  })
+
   it('does not remove a record re-created while blocks were being deleted', async () => {
     const { registry, cids } = await createFixture()
 
@@ -551,6 +587,31 @@ describe('block metering', () => {
     assert.ok(
       progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
       `metered ${progress.bytes} bytes, past the ${limit + INTAKE_OVERSHOOT_BYTES} the reservation covers`
+    )
+  })
+
+  it('covers large in-flight blocks with the advertised overshoot', async () => {
+    const limit = 1024 * 1024
+    const payload = deterministicBytes(15 * 1024 * 1024, 'large-metered-blocks')
+    const cid = await ifs.addBytes(payload, {
+      chunker: fixedSize({ chunkSize: 3 * 1024 * 1024 })
+    })
+    const progress = { bytes: 0 }
+    const metered = unixfs({ blockstore: meteredBlocks(node.blockstore, progress, limit) })
+    const readOptions = {
+      signal: AbortSignal.timeout(30_000),
+      blockReadConcurrency: INTAKE_READ_CONCURRENCY
+    }
+
+    await assert.rejects(async () => {
+      for await (const chunk of metered.cat(cid, readOptions)) {
+        void chunk
+      }
+    }, /larger than this node accepts/)
+
+    assert.ok(
+      progress.bytes <= limit + INTAKE_OVERSHOOT_BYTES,
+      `metered ${progress.bytes} bytes, past the reserved ${limit + INTAKE_OVERSHOOT_BYTES}`
     )
   })
 })

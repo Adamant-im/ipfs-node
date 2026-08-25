@@ -252,6 +252,54 @@ describe('FileRegistry', () => {
 
     assert.deepEqual(await registry.all(), [])
   })
+
+  it('serializes compound work with regular CID mutations', async () => {
+    const registry = createRegistry()
+    let releaseFirst!: () => void
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let secondFinished = false
+
+    const first = registry.withExclusiveCids([CID_A], async (locked) => {
+      await locked.registerReplacing(newFile(), {
+        confirmationRequired: true,
+        temporaryTtlMs: TTL
+      })
+      await firstMayFinish
+      await locked.remove(CID_A)
+    })
+    const second = registry
+      .register(
+        { ...newFile(), name: 'second.jpg' },
+        { confirmationRequired: false, temporaryTtlMs: TTL }
+      )
+      .then(() => {
+        secondFinished = true
+      })
+
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(secondFinished, false)
+
+    releaseFirst()
+    await Promise.all([first, second])
+
+    assert.equal((await registry.get(CID_A))?.name, 'second.jpg')
+  })
+
+  it('takes overlapping multi-CID locks in one order', async () => {
+    const registry = createRegistry()
+
+    await Promise.race([
+      Promise.all([
+        registry.withExclusiveCids([CID_A, CID_B], async () => undefined),
+        registry.withExclusiveCids([CID_B, CID_A], async () => undefined)
+      ]),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('opposite CID order deadlocked')), 1000)
+      )
+    ])
+  })
 })
 
 describe('expiry rules', () => {
