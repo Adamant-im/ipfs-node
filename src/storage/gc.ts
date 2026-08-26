@@ -389,6 +389,7 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
               pinned: false,
               heldLocally: false,
               admissionId: undefined,
+              admissionSettledAt: undefined,
               replicaStage: undefined
             })
           } catch (err) {

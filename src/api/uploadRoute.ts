@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { NextFunction, Request, RequestHandler, Response } from 'express'
 import type { IpfsNode } from '../ipfs-node.js'
 import { pinFile, unpinFile } from '../storage/pinning.js'
@@ -6,6 +5,7 @@ import type { FileRecord, FileRegistry } from '../storage/registry.js'
 import type { ReplicationReport } from '../storage/replication.js'
 import { rollbackUpload } from '../storage/rollback.js'
 import type { UploadSession } from '../storage/uploadSession.js'
+import { createAdmissionId } from '../storage/admission.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 
@@ -90,11 +90,11 @@ async function rollbackAdmitted(
 /**
  * Commit every local record as one guarded decision after network placement.
  *
- * Replica metadata is written first while the admission token is retained on
- * every CID. If any write fails, every record can still be compensated under
- * the same set of locks. Clearing the internal tokens afterwards is best effort:
- * the durable upload decision has already been made, and a cleanup write must
- * not turn an accepted upload into an ambiguous failure.
+ * Replica metadata is written while the admission token is retained on every
+ * CID. If any write fails, every record can still be compensated under the
+ * same set of locks. `admissionSettledAt` makes the successful local decision
+ * irreversible before remote commit starts; clearing the internal token is a
+ * separate best-effort cleanup.
  */
 async function finalizeAdmitted(
   registry: FileRegistry,
@@ -153,15 +153,66 @@ async function finalizeAdmitted(
       })
     }
 
+    // All local records are now durable and no later path rolls them back.
+    // Publish that fact only after the whole request crossed the boundary, so a
+    // concurrent `have` cannot observe one file as settled while another write
+    // still has the power to compensate the complete request.
+    const settledAt = Date.now()
     for (const [cid, stored] of finalized) {
       try {
-        finalized.set(cid, await locked.save({ ...stored, admissionId: undefined }))
+        finalized.set(cid, await locked.save({ ...stored, admissionSettledAt: settledAt }))
       } catch (err) {
-        log.error(`Could not clear settled upload ownership for ${cid}: ${(err as Error).message}`)
+        // Token cleanup below makes a second independent write attempt. If the
+        // datastore remains unavailable, restart recovery clears this process's
+        // now-stale token before lifecycle jobs resume.
+        log.error(`Could not mark local upload settlement for ${cid}: ${(err as Error).message}`)
       }
     }
 
     return finalized
+  })
+}
+
+/**
+ * Remove admission tokens after remote settlement and persist the verified
+ * replica set. A failed cleanup does not change durability:
+ * `admissionSettledAt` keeps the record visible to `have`, repair and handover.
+ */
+async function clearSettledAdmissions(
+  registry: FileRegistry,
+  finalized: Map<string, FileRecord>,
+  reports: Map<string, ReplicationReport>,
+  admissionId: string,
+  log: UploadRouteLog
+): Promise<void> {
+  await registry.withExclusiveCids(finalized.keys(), async (locked) => {
+    for (const [cid] of finalized) {
+      let current: FileRecord | undefined
+
+      try {
+        current = await locked.get(cid)
+      } catch (err) {
+        log.error(`Could not read settled upload ownership for ${cid}: ${(err as Error).message}`)
+        continue
+      }
+
+      if (current?.admissionId !== admissionId) {
+        throw new Error(`Upload lifecycle changed during replica commit for ${cid}`)
+      }
+
+      try {
+        const report = reports.get(cid)
+        const stored = await locked.save({
+          ...current,
+          replicas: report?.mode === 'quorum' ? report.replicas : current.replicas,
+          admissionId: undefined,
+          admissionSettledAt: undefined
+        })
+        finalized.set(cid, stored)
+      } catch (err) {
+        log.error(`Could not clear settled upload ownership for ${cid}: ${(err as Error).message}`)
+      }
+    }
   })
 }
 
@@ -185,7 +236,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
     }
 
     const session = dependencies.getSession(req)
-    const admissionId = randomUUID()
+    const admissionId = createAdmissionId()
 
     try {
       const files = flatFiles(req.files as UnixFsMulterFile[])
@@ -415,17 +466,29 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       }
 
       if (dependencies.requireQuorumOnUpload) {
-        for (const item of replication) {
-          try {
-            await dependencies.commitReplicas(item.cid, admissionId, item.report)
-          } catch (err) {
-            // The local decision is already durable. A prepared remote copy is
-            // pinned until its TTL, and repair promotes it with permanent store.
-            log.error(
-              `Could not commit prepared replicas for ${item.cid}: ${(err as Error).message}`
-            )
-          }
+        const commits = await Promise.allSettled(
+          replication.map((item) => dependencies.commitReplicas(item.cid, admissionId, item.report))
+        )
+        const failures = commits.flatMap((result, index) =>
+          result.status === 'rejected'
+            ? [
+                new Error(
+                  `Could not commit a durable quorum for ${replication[index]?.cid}: ${result.reason}`
+                )
+              ]
+            : []
+        )
+
+        await clearSettledAdmissions(registry, finalized, reportByCid, admissionId, log)
+
+        if (failures.length > 0) {
+          // The local decision is durable and must not be rolled back after a
+          // peer may have committed. A 500 reports the uncertain network
+          // outcome; the normal repair sweep restores any missing copies.
+          throw new AggregateError(failures, 'Could not commit every required replica')
         }
+      } else {
+        await clearSettledAdmissions(registry, finalized, reportByCid, admissionId, log)
       }
 
       const records = outcome.records.map((record) => finalized.get(record.cid) ?? record)

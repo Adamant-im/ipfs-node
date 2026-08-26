@@ -5,6 +5,7 @@ import { diskUsageCron } from './disk-usage.cron.js'
 import { peeringCron, peerWithKnownNodes } from './peering.cron.js'
 import { helia, ifs } from './helia.js'
 import { backfillRegistryFromPins, snapshotPins } from './storage/backfill.js'
+import { recoverInterruptedAdmissions } from './storage/admission.js'
 import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
@@ -73,21 +74,30 @@ const legacyPins = await snapshotPins(helia)
 // the entire migration on exactly the nodes that have the most to serve. Reads,
 // uploads and incoming copies do not need the registry to be complete; the jobs
 // that do are started once it is.
-void backfillRegistryFromPins({
-  cids: legacyPins,
-  unixfs: ifs,
-  registry: fileRegistry,
-  log: (message) => logger.info(message)
-})
-  .then((report) => {
-    for (const error of report.errors) {
+void Promise.all([
+  backfillRegistryFromPins({
+    cids: legacyPins,
+    unixfs: ifs,
+    registry: fileRegistry,
+    log: (message) => logger.info(message)
+  }),
+  recoverInterruptedAdmissions(fileRegistry)
+])
+  .then(([backfill, admissions]) => {
+    for (const error of backfill.errors) {
       logger.warn(`Registry backfill: ${error}`)
     }
+    for (const error of admissions.errors) {
+      logger.warn(`Admission recovery: ${error}`)
+    }
+    if (admissions.recovered > 0) {
+      logger.info(`Admission recovery: cleared ${admissions.recovered} interrupted uploads`)
+    }
   })
-  .catch((err: Error) => logger.error(`Registry backfill failed: ${err.message}`))
-  // Even a failed backfill must not leave the node without a collector: it
-  // reclaims nothing that is unregistered, so an incomplete registry makes it
-  // do less, never more.
+  .catch((err: Error) => logger.error(`Startup storage reconciliation failed: ${err.message}`))
+  // Even a failed reconciliation must not leave the node without a collector:
+  // it reclaims nothing that is unregistered, so an incomplete registry makes
+  // it do less, never more.
   .finally(startLifecycleJobs)
 
 const PORT = config.serverPort

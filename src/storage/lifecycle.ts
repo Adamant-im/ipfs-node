@@ -2,7 +2,12 @@ import type { UnixFS } from '@helia/unixfs'
 import type { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
-import type { FileRecord, FileRegistry, LockedFileRegistry } from './registry.js'
+import {
+  FileLifecycleBusyError,
+  type FileRecord,
+  type FileRegistry,
+  type LockedFileRegistry
+} from './registry.js'
 
 /**
  * The lifecycle transitions that change a pin and a record together.
@@ -181,6 +186,10 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         : undefined
     }
 
+    if (current.replicaStage !== undefined || current.admissionId !== undefined) {
+      throw new FileLifecycleBusyError(key)
+    }
+
     const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
     const signal = pinSignal(options.pinTimeoutMs)
 
@@ -195,6 +204,7 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         pinned: true,
         heldLocally: true,
         admissionId: undefined,
+        admissionSettledAt: undefined,
         replicaStage: undefined
       })
     } catch (err) {
@@ -239,6 +249,10 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
       return undefined
     }
 
+    if (current.replicaStage !== undefined || current.admissionId !== undefined) {
+      throw new FileLifecycleBusyError(key)
+    }
+
     const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
 
     try {
@@ -250,6 +264,7 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
         pinned: false,
         heldLocally: false,
         admissionId: undefined,
+        admissionSettledAt: undefined,
         replicaStage: undefined
       })
     } catch (err) {

@@ -8,7 +8,48 @@ import type {
   LockedFileRegistry,
   ReplicaStageBaseline
 } from './registry.js'
-import { protectedStorageBytes } from './registry.js'
+import { isAdmissionSettled, protectedStorageBytes } from './registry.js'
+
+/**
+ * Abort markers close the race where an abort reaches the peer while its stage
+ * request is still pulling blocks and has not written transaction ownership.
+ * They only need to survive that in-process request; a restart cancels both
+ * sides of the race.
+ */
+const abortedTransactions = new Map<string, number>()
+const DEFAULT_ABORT_TOMBSTONE_TTL_MS = 5 * 60 * 1000
+const MAX_ABORT_TOMBSTONES = 10_000
+
+function transactionKey(cid: string, transactionId: string): string {
+  return `${cid}\0${transactionId}`
+}
+
+function pruneAbortTombstones(now: number): void {
+  for (const [key, expiresAt] of abortedTransactions) {
+    if (expiresAt <= now) {
+      abortedTransactions.delete(key)
+    }
+  }
+
+  while (abortedTransactions.size > MAX_ABORT_TOMBSTONES) {
+    const oldest = abortedTransactions.keys().next().value as string | undefined
+    if (oldest === undefined) {
+      break
+    }
+    abortedTransactions.delete(oldest)
+  }
+}
+
+function rememberAbort(cid: string, transactionId: string, expiresAt: number, now: number): void {
+  pruneAbortTombstones(now)
+  abortedTransactions.set(transactionKey(cid, transactionId), expiresAt)
+  pruneAbortTombstones(now)
+}
+
+function wasAborted(cid: string, transactionId: string, now: number): boolean {
+  pruneAbortTombstones(now)
+  return (abortedTransactions.get(transactionKey(cid, transactionId)) ?? 0) > now
+}
 
 export interface ReplicaStageTarget {
   node: IpfsNode
@@ -101,6 +142,7 @@ async function registerStableReplica(
       heldLocally: true,
       replicas: previous?.replicas ?? [],
       admissionId: previous?.admissionId,
+      admissionSettledAt: previous?.admissionSettledAt,
       replicaStage: undefined
     })
 
@@ -124,6 +166,10 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
   const signal = stageSignal(options.pinTimeoutMs)
 
   return options.registry.withExclusiveCids([key], async (registry) => {
+    if (wasAborted(key, options.transactionId, now)) {
+      throw new Error(`Replica transaction ${options.transactionId} for ${key} was already aborted`)
+    }
+
     const previous = await registry.get(key)
 
     if (previous?.replicaStage !== undefined) {
@@ -154,6 +200,10 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
     // request must not silently confirm it, nor can it safely undo it later.
     if (previous?.state === 'temporary') {
       throw new Error(`CID ${key} already has an unrelated temporary lifecycle`)
+    }
+
+    if (previous !== undefined && !isAdmissionSettled(previous)) {
+      throw new Error(`CID ${key} belongs to an unsettled local upload`)
     }
 
     const wasDirectlyPinned = await isDirectlyPinned(options.node, options.cid)
@@ -200,6 +250,7 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
         heldLocally: true,
         replicas: previous?.replicas ?? [],
         admissionId: previous?.admissionId,
+        admissionSettledAt: previous?.admissionSettledAt,
         replicaStage: { transactionIds: [options.transactionId], previous: baseline }
       })
 
@@ -216,6 +267,8 @@ export interface SettleReplicaOptions {
   cid: CID
   transactionId: string
   now?: number
+  /** How long a missing-stage abort rejects a stage request still in flight. */
+  tombstoneTtlMs?: number
 }
 
 /** Make a prepared copy durable. One commit settles every transaction sharing it. */
@@ -228,7 +281,18 @@ export async function commitReplica(
     const current = await registry.get(key)
 
     if (!current?.replicaStage?.transactionIds.includes(options.transactionId)) {
-      return current
+      if (
+        current?.state === 'confirmed' &&
+        current.pinned &&
+        current.heldLocally &&
+        isAdmissionSettled(current)
+      ) {
+        // Idempotent retry after this transaction (or a concurrent transaction
+        // sharing its stage) already committed the copy.
+        return current
+      }
+
+      throw new Error(`Replica transaction ${options.transactionId} for ${key} is not staged`)
     }
 
     return registry.save({
@@ -239,6 +303,7 @@ export async function commitReplica(
       pinned: true,
       heldLocally: true,
       admissionId: undefined,
+      admissionSettledAt: undefined,
       replicaStage: undefined
     })
   })
@@ -307,6 +372,13 @@ function currentCid(record: FileRecord): CID {
 /** Remove this transaction's claim, restoring the baseline after the last claim. */
 export async function abortReplica(options: SettleReplicaOptions): Promise<FileRecord | undefined> {
   const key = options.cid.toString()
+  const now = options.now ?? Date.now()
+  rememberAbort(
+    key,
+    options.transactionId,
+    now + (options.tombstoneTtlMs ?? DEFAULT_ABORT_TOMBSTONE_TTL_MS),
+    now
+  )
 
   return options.registry.withExclusiveCids([key], async (registry) => {
     const current = await registry.get(key)

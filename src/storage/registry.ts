@@ -74,6 +74,14 @@ export interface FileRecord {
    * update as a new owner.
    */
   admissionId?: string
+  /**
+   * When the local upload decision became irreversible.
+   *
+   * The admission id may survive a failed cleanup write. This timestamp lets
+   * repair and `have` distinguish that harmless residue from an upload that can
+   * still roll its local record back.
+   */
+  admissionSettledAt?: number
   /** A remote copy prepared for one or more strict upload transactions. */
   replicaStage?: ReplicaStage
   /**
@@ -140,6 +148,9 @@ function isFileRecord(value: unknown): value is FileRecord {
   const admissionIsValid =
     record.admissionId === undefined ||
     (typeof record.admissionId === 'string' && record.admissionId.length > 0)
+  const admissionSettlementIsValid =
+    record.admissionSettledAt === undefined ||
+    (record.admissionId !== undefined && isFiniteNonNegative(record.admissionSettledAt))
   const replicaStageIsValid =
     record.replicaStage === undefined ||
     (record.state === 'temporary' &&
@@ -166,6 +177,7 @@ function isFileRecord(value: unknown): value is FileRecord {
     record.replicas.every((peer) => typeof peer === 'string') &&
     revisionIsValid &&
     admissionIsValid &&
+    admissionSettlementIsValid &&
     replicaStageIsValid
   )
 }
@@ -198,6 +210,14 @@ export interface RegisterFileOptions {
   now?: number
   /** Request that owns the write until post-replication settlement. */
   admissionId?: string
+}
+
+/** A second lifecycle must not replace ownership held by an in-flight operation. */
+export class FileLifecycleBusyError extends Error {
+  constructor(cid: string) {
+    super(`CID ${cid} has an active lifecycle transaction`)
+    this.name = 'FileLifecycleBusyError'
+  }
 }
 
 /**
@@ -537,6 +557,10 @@ export class FileRegistry {
       return { record: existing, previous: existing }
     }
 
+    if (existing?.admissionId !== undefined && existing.admissionId !== options.admissionId) {
+      throw new FileLifecycleBusyError(file.cid)
+    }
+
     if (existing?.state === 'confirmed') {
       // Re-uploading already durable content must not weaken its state, and it
       // puts the blocks back on this node whether or not they were released.
@@ -551,6 +575,7 @@ export class FileRegistry {
         pinned: true,
         heldLocally: true,
         admissionId: options.admissionId,
+        admissionSettledAt: undefined,
         replicaStage: undefined
       })
 
@@ -573,6 +598,7 @@ export class FileRegistry {
       heldLocally: true,
       replicas: existing?.replicas ?? [],
       admissionId: options.admissionId,
+      admissionSettledAt: undefined,
       replicaStage: undefined
     })
 
@@ -624,12 +650,17 @@ export function isReclaimable(record: FileRecord, now: number = Date.now()): boo
 /**
  * Durable local copy that no in-flight upload still owns.
  *
- * Repair and handover skip records that still carry an admission token: those
- * writes are mid-transaction, and treating them as settled would let `store`
- * confirm a replica the upload can still abort.
+ * Repair and handover skip an admission token only until the request publishes
+ * `admissionSettledAt`. The token may remain after a failed cleanup write; once
+ * settled, no path can roll the local lifecycle back.
  */
 export function isSettledHeldFile(record: FileRecord): boolean {
-  return record.state === 'confirmed' && record.heldLocally && record.admissionId === undefined
+  return record.state === 'confirmed' && record.heldLocally && isAdmissionSettled(record)
+}
+
+/** Whether an upload can no longer roll this local lifecycle back. */
+export function isAdmissionSettled(record: FileRecord): boolean {
+  return record.admissionId === undefined || record.admissionSettledAt !== undefined
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {

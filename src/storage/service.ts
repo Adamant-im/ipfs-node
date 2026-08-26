@@ -14,7 +14,12 @@ import {
   releaseStoredFile,
   type LifecycleTarget
 } from './lifecycle.js'
-import { isSettledHeldFile, protectedStorageBytes, type FileRecord } from './registry.js'
+import {
+  isAdmissionSettled,
+  isSettledHeldFile,
+  protectedStorageBytes,
+  type FileRecord
+} from './registry.js'
 import {
   isUnderReplicated,
   replicate,
@@ -51,6 +56,9 @@ import { nextSweepBatch } from './sweep.js'
 const callOptions = (): ReplicationCallOptions => ({
   timeoutMs: config.replication.requestTimeoutMs
 })
+
+/** Lifetime of a prepared copy and of an abort marker for its request. */
+const settlementTtlMs = (): number => config.replication.requestTimeoutMs * 3
 
 function selfPeerId(): string {
   return helia.libp2p.peerId.toString()
@@ -139,12 +147,11 @@ function stagedPeers(
 }
 
 /**
- * Make every prepared copy permanent after the local upload decision commits.
+ * Make enough prepared copies permanent to preserve the strict upload quorum.
  *
- * A lost acknowledgement cannot turn an accepted upload into a rejection. The
- * copy remains pinned as temporary. Repair skips records that still carry an
- * `admissionId`; once that token is cleared it treats the staged copy as
- * missing and promotes it with the idempotent permanent `store` operation.
+ * A lost commit acknowledgement is followed by `have`: if the peer applied the
+ * decision, its durable state is authoritative. The upload response is withheld
+ * when fewer than `required` copies can be proved permanent.
  */
 export async function commitUploadedReplicas(
   cid: string,
@@ -153,15 +160,49 @@ export async function commitUploadedReplicas(
 ): Promise<void> {
   const peers = stagedPeers(report, { includeFailed: false })
   const results = await Promise.allSettled(
-    peers.map((peer) => requestCommit(helia, peer.multiAddr, cid, transactionId, callOptions()))
+    peers.map(async (peer) => {
+      try {
+        await requestCommit(helia, peer.multiAddr, cid, transactionId, callOptions())
+      } catch (commitError) {
+        try {
+          if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+            return peer.name
+          }
+        } catch (probeError) {
+          throw new AggregateError(
+            [commitError, probeError],
+            `Replica commit and verification failed on ${peer.name}`,
+            { cause: probeError }
+          )
+        }
+
+        throw commitError
+      }
+
+      return peer.name
+    })
   )
 
-  for (const [index, result] of results.entries()) {
-    if (result.status === 'rejected') {
-      logger.warn(
-        `Could not commit prepared replica ${cid} on ${peers[index]?.name}: ${result.reason}`
-      )
-    }
+  const stable = report.attempts
+    .filter((attempt) => attempt.ok && attempt.outcome === 'stored' && attempt.staged !== true)
+    .map((attempt) => attempt.node)
+  const committed = results.flatMap((result) =>
+    result.status === 'fulfilled' ? [result.value] : []
+  )
+  report.replicas = [...new Set([...stable, ...committed])]
+  report.acknowledged = report.replicas.length + 1
+  report.satisfied = report.acknowledged >= report.required
+
+  if (!report.satisfied) {
+    const failures = results.flatMap((result, index) =>
+      result.status === 'rejected'
+        ? [new Error(`Could not commit replica on ${peers[index]?.name}: ${result.reason}`)]
+        : []
+    )
+    throw new AggregateError(
+      failures,
+      `Committed replica quorum not reached for ${cid}: ${report.acknowledged}/${report.required}`
+    )
   }
 }
 
@@ -352,8 +393,9 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
 
     if (existing?.replicaStage !== undefined) {
       // A strict upload still owns this copy. Promoting it would make abort a
-      // no-op.
-      return existing
+      // no-op, while returning success would let repair count a temporary pin
+      // as durable.
+      throw new Error(`CID ${cid} has an active replica transaction`)
     }
 
     // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
@@ -366,7 +408,15 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
 
     // Every block is local now, so pinning walks the blockstore rather than the
     // network. The shared lease prevents collection between these two steps.
-    return registerPinned(CID.parse(cid), cid)
+    const stored = await registerPinned(CID.parse(cid), cid)
+
+    if (stored.replicaStage !== undefined) {
+      // A stage may have appeared while this request was pulling the DAG. The
+      // registry correctly kept it; do not turn that no-op into a durable ack.
+      throw new Error(`CID ${cid} has an active replica transaction`)
+    }
+
+    return stored
   })
 }
 
@@ -381,13 +431,12 @@ export async function acceptStagedReplica(
     // abort. The ordinary unconfirmed-upload TTL is a day; inheriting it would
     // pin an abandoned stage through watermark pressure for far longer than
     // settlement can take.
-    const settlementTtlMs = config.replication.requestTimeoutMs * 3
     const result = await stageReplica({
       ...lifecycleTarget(),
       unixfs: ifs,
       cid: CID.parse(cid),
       transactionId,
-      temporaryTtlMs: settlementTtlMs,
+      temporaryTtlMs: settlementTtlMs(),
       pinTimeoutMs: config.replication.requestTimeoutMs
     })
 
@@ -405,7 +454,12 @@ export async function commitStagedReplica(cid: string, transactionId: string): P
 /** Withdraw one source upload's claim on a prepared copy. */
 export async function abortStagedReplica(cid: string, transactionId: string): Promise<void> {
   await storageOperationLock.withShared(async () => {
-    await abortReplica({ ...lifecycleTarget(), cid: CID.parse(cid), transactionId })
+    await abortReplica({
+      ...lifecycleTarget(),
+      cid: CID.parse(cid),
+      transactionId,
+      tombstoneTtlMs: settlementTtlMs()
+    })
   })
 }
 
@@ -423,6 +477,7 @@ async function hasDurableReplica(cid: string): Promise<boolean> {
     record.state === 'confirmed' &&
     record.pinned &&
     record.heldLocally &&
+    isAdmissionSettled(record) &&
     record.replicaStage === undefined &&
     (await isDirectlyPinned(helia, parsed))
   )
@@ -608,6 +663,21 @@ export interface RepairReport {
   rescued: string[]
 }
 
+/** Ask the designated peers which durable copies exist right now. */
+async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise<string[]> {
+  const answers = await Promise.all(
+    holders.map(async (peer) => {
+      try {
+        return (await probeHave(helia, peer.multiAddr, cid, callOptions())) ? peer.name : undefined
+      } catch {
+        return undefined
+      }
+    })
+  )
+
+  return answers.filter((name): name is string => name !== undefined)
+}
+
 /**
  * Take a released file back when no other node is holding it.
  *
@@ -690,6 +760,7 @@ async function rescueOrphanedFiles(
               pinned: true,
               heldLocally: true,
               admissionId: undefined,
+              admissionSettledAt: undefined,
               replicaStage: undefined
             })
           } catch (err) {
@@ -755,19 +826,7 @@ export async function repairReplication(): Promise<RepairReport> {
       .map((peerId) => byPeerId.get(peerId))
       .filter((peer): peer is ReplicationPeer => peer !== undefined)
 
-    const answers = await Promise.all(
-      holders.map(async (peer) => {
-        try {
-          return (await probeHave(helia, peer.multiAddr, record.cid, callOptions()))
-            ? peer.name
-            : undefined
-        } catch {
-          return undefined
-        }
-      })
-    )
-
-    const live = answers.filter((name): name is string => name !== undefined)
+    const live = await liveHolderNames(holders, record.cid)
     await fileRegistry.setReplicas(record.cid, live)
 
     if (!isUnderReplicated(live.length, placement, self)) {
@@ -775,9 +834,11 @@ export async function repairReplication(): Promise<RepairReport> {
     }
 
     report.underReplicated += 1
-    const result = await replicateFile(record.cid)
+    await replicateFile(record.cid)
+    const verified = await liveHolderNames(holders, record.cid)
+    await fileRegistry.setReplicas(record.cid, verified)
 
-    if (isUnderReplicated(result.replicas.length, placement, self)) {
+    if (isUnderReplicated(verified.length, placement, self)) {
       report.stillMissing.push(record.cid)
     } else {
       report.repaired.push(record.cid)
@@ -890,6 +951,7 @@ export async function demoteReleasableCopies(
           pinned: false,
           heldLocally: false,
           admissionId: undefined,
+          admissionSettledAt: undefined,
           replicaStage: undefined
         })
         return true

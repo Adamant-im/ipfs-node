@@ -12,6 +12,7 @@ import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
 import { createMultipartLimits } from '../src/security/uploadLimits.js'
+import { FileLifecycleBusyError } from '../src/storage/registry.js'
 import { FileNotFoundError } from '../src/utils/fileErrors.js'
 
 describe('CORS origin policy', () => {
@@ -122,6 +123,13 @@ describe('public error mapping', () => {
         body: { error: 'Invalid peer identifier or multiaddress' }
       }
     )
+  })
+
+  it('reports an active lifecycle without exposing transaction details', () => {
+    assert.deepEqual(getPublicError(new FileLifecycleBusyError('secret-cid')), {
+      status: 409,
+      body: { error: 'File lifecycle is busy' }
+    })
   })
 })
 

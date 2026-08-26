@@ -1411,7 +1411,37 @@ describe('strict-upload replica staging', () => {
     assert.equal(await registry.get(cid.toString()), undefined)
   })
 
-  it('keeps a local upload token when the CID is already durable', async () => {
+  it('rejects manual confirm and release while a replica transaction is live', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_650, 'replica-stage-admin'))
+
+    await stage(registry, cid, 'tx-admin')
+
+    await assert.rejects(
+      () =>
+        confirmStoredFile({
+          node,
+          registry,
+          unixfs: ifs,
+          cid,
+          temporaryTtlMs: 60_000
+        }),
+      /active lifecycle transaction/
+    )
+    await assert.rejects(
+      () => releaseStoredFile({ node, registry, cid }),
+      /active lifecycle transaction/
+    )
+
+    assert.deepEqual((await registry.get(cid.toString()))?.replicaStage?.transactionIds, [
+      'tx-admin'
+    ])
+    assert.equal(await isDirectlyPinned(node, cid), true)
+
+    await abortReplica({ node, registry, cid, transactionId: 'tx-admin' })
+  })
+
+  it('does not count an unsettled local upload as a stable replica', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(21_700, 'replica-stage-admission'))
     await pinFile(node, cid)
@@ -1431,11 +1461,65 @@ describe('strict-upload replica staging', () => {
       admissionId: 'mine'
     })
 
+    await assert.rejects(() => stage(registry, cid, 'tx-other'), /unsettled local upload/)
+
+    assert.equal((await registry.get(cid.toString()))?.admissionId, 'mine')
+    assert.equal((await registry.get(cid.toString()))?.replicaStage, undefined)
+  })
+
+  it('accepts a settled upload whose admission token cleanup is pending', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_800, 'replica-stage-settled-admission'))
+    await pinFile(node, cid)
+    await registry.save({
+      cid: cid.toString(),
+      name: cid.toString(),
+      state: 'confirmed',
+      createdAt: 1000,
+      expiresAt: null,
+      confirmedAt: 1000,
+      fileSize: 21_800,
+      storedBytes: 21_800,
+      protectedBytes: 21_800,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      admissionId: 'settled',
+      admissionSettledAt: 2000
+    })
+
     const result = await stage(registry, cid, 'tx-other')
 
     assert.equal(result.staged, false)
-    assert.equal((await registry.get(cid.toString()))?.admissionId, 'mine')
-    assert.equal((await registry.get(cid.toString()))?.replicaStage, undefined)
+    assert.equal((await registry.get(cid.toString()))?.admissionId, 'settled')
+  })
+
+  it('rejects a stage that arrives after its abort', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_900, 'replica-stage-late'))
+
+    await abortReplica({
+      node,
+      registry,
+      cid,
+      transactionId: 'tx-late',
+      tombstoneTtlMs: 1000,
+      now: 1000
+    })
+
+    await assert.rejects(() => stage(registry, cid, 'tx-late', 1500), /already aborted/)
+    assert.equal(await registry.get(cid.toString()), undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('does not acknowledge commit after a stage disappeared', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_950, 'replica-stage-missing-commit'))
+
+    await assert.rejects(
+      () => commitReplica({ node, registry, cid, transactionId: 'tx-missing' }),
+      /is not staged/
+    )
   })
 
   it('restores an expired record after a prepared copy aborts', async () => {

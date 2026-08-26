@@ -579,6 +579,10 @@ describe('expiry rules', () => {
 
     assert.equal(isSettledHeldFile(held), true)
     assert.equal(isSettledHeldFile({ ...held, admissionId: 'upload-one' }), false)
+    assert.equal(
+      isSettledHeldFile({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
+      true
+    )
     assert.equal(isSettledHeldFile({ ...held, heldLocally: false }), false)
   })
 })

@@ -251,15 +251,30 @@ pre-upload pin and registry state before returning `503`. If any local or remote
 compensation fails, the route returns `500` instead: it must not describe an
 incomplete rollback as a clean rejection.
 
-After the local decision is durably recorded, the source commits the prepared
-copies. A lost commit acknowledgement does not turn an accepted request into a
-failure: the remote copy remains pinned and temporary, repair treats it as
-missing until it is promoted, and its TTL (three replication request timeouts)
-eventually restores the prior expired state or releases a newly created copy if
-the source never returns. Transaction owners and their restoration baselines
-live in the datastore, so restarting a peer does not turn a prepared copy into a
-permanent one. Live stages are kept through watermark pressure for that short
-window; `GET /api/storage/metrics` reports how many remain as `stagedReplicas`.
+After the local decision is durably recorded, the source commits every file's
+prepared copies concurrently. A commit acknowledgement proves the permanent
+write; when that acknowledgement is lost, the source asks `have` and accepts the
+peer only if it reports the copy as durable. The HTTP request returns success
+only while the verified permanent copies still satisfy `ackQuorum`. If they do
+not, the route returns `500`, keeps the local file pinned, and lets the ordinary
+repair sweep recreate the missing copies. It does not report `503`, because a
+peer may already have committed and the outcome is no longer safe to roll back.
+
+Extra prepared copies that were not needed for the verified quorum stay
+temporary. Their TTL (three replication request timeouts) eventually restores
+the prior expired state or releases a newly created copy. An abort marker kept
+for the same window prevents a slow `stage` from appearing after its coordinator
+already aborted it. Transaction owners and restoration baselines live in the
+datastore, so restarting a peer does not turn a prepared copy into a permanent
+one. Live stages are kept through watermark pressure for that short window;
+`GET /api/storage/metrics` reports how many remain as `stagedReplicas`.
+
+The local admission token remains until replica settlement finishes. A failed
+cleanup write is harmless because a settled timestamp keeps the record visible
+to `have`, repair, and handover. On startup, tokens belonging to a previous
+process are cleared in the background; no stopped request can still roll them
+back. Manual confirm, pin, and unpin operations return `409` while an upload or
+replica transaction owns that CID.
 
 Turning it off with `replication.enabled: false` makes the node store content
 **best effort** instead: one copy, on this node, pinned, with no promise that
@@ -545,6 +560,10 @@ back for the whole migration would penalise exactly the nodes with the most to
 serve. Reads, uploads and incoming copies do not need a complete registry; the
 collector and the repair sweep are started once the walk finishes, so neither
 acts on a half-built picture.
+
+The same startup phase clears admission tokens left by the previous process.
+Tokens created by the running process carry its own prefix and are skipped, so
+this background recovery cannot settle an upload that is still in flight.
 
 Two consequences are worth planning for:
 

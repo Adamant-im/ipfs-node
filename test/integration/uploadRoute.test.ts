@@ -413,8 +413,8 @@ describe('the upload endpoint end to end', () => {
     }
   })
 
-  it('does not accept a strict upload after another lifecycle releases its local copy', async () => {
-    const aborted: string[] = []
+  it('keeps the local lifecycle stable until strict settlement finishes', async () => {
+    let releaseRejected = false
     const report: ReplicationReport = {
       ...bestEffort(),
       mode: 'quorum',
@@ -438,11 +438,12 @@ describe('the upload endpoint end to end', () => {
     const harness = await serveUpload({
       requireQuorumOnUpload: true,
       replicate: async (cid) => {
-        await releaseStoredFile({ node, registry: harness.registry, cid: CID.parse(cid) })
+        await assert.rejects(
+          () => releaseStoredFile({ node, registry: harness.registry, cid: CID.parse(cid) }),
+          /active lifecycle transaction/
+        )
+        releaseRejected = true
         return report
-      },
-      abortReplicas: async (cid) => {
-        aborted.push(cid)
       }
     })
     const payload = deterministicBytes(77_000, 'route-lifecycle-race')
@@ -452,18 +453,18 @@ describe('the upload endpoint end to end', () => {
       const response = await post(harness.url, [{ name: 'released.bin', bytes: payload }])
       const record = await harness.registry.get(cid)
 
-      assert.equal(response.status, 500)
-      assert.deepEqual(aborted, [cid])
-      assert.equal(record?.state, 'expired')
-      assert.equal(record?.heldLocally, false)
+      assert.equal(response.status, 200)
+      assert.equal(releaseRejected, true)
+      assert.equal(record?.state, 'confirmed')
+      assert.equal(record?.heldLocally, true)
       assert.equal(record?.admissionId, undefined)
-      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
     } finally {
       harness.server.close()
     }
   })
 
-  it('keeps an accepted upload durable when a remote commit acknowledgement is lost', async () => {
+  it('does not report strict success when remote commit cannot be verified', async () => {
     let commitAttempts = 0
     const report: ReplicationReport = {
       ...bestEffort(),
@@ -494,17 +495,73 @@ describe('the upload endpoint end to end', () => {
       }
     })
     const payload = deterministicBytes(78_000, 'route-commit-ack-lost')
+    const cid = (await ifs.addBytes(payload)).toString()
 
     try {
       const response = await post(harness.url, [{ name: 'accepted.bin', bytes: payload }])
-      const body = (await response.json()) as { cids: string[] }
-      const record = await harness.registry.get(body.cids[0])
+      const record = await harness.registry.get(cid)
 
-      assert.equal(response.status, 200)
+      assert.equal(response.status, 500)
       assert.equal(commitAttempts, 1)
       assert.equal(record?.state, 'confirmed')
       assert.equal(record?.admissionId, undefined)
-      assert.equal(await isDirectlyPinned(node, CID.parse(body.cids[0])), true)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('commits every file in a strict request concurrently', async () => {
+    const started: string[] = []
+    let release!: () => void
+    const mayFinish = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const report = (): ReplicationReport => ({
+      ...bestEffort(),
+      mode: 'quorum',
+      desiredCopies: 2,
+      copies: 2,
+      required: 2,
+      acknowledged: 2,
+      replicas: ['holder'],
+      satisfied: true,
+      networkTooSmall: true,
+      attempts: [
+        {
+          node: 'holder',
+          peerId: 'holder-peer-id',
+          ok: true,
+          outcome: 'stored',
+          staged: true
+        }
+      ]
+    })
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => report(),
+      commitReplicas: async (cid) => {
+        started.push(cid)
+        if (started.length === 2) {
+          release()
+        }
+        await Promise.race([
+          mayFinish,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('commits were serialized')), 1000)
+          )
+        ])
+      }
+    })
+
+    try {
+      const response = await post(harness.url, [
+        { name: 'one.bin', bytes: deterministicBytes(79_000, 'route-concurrent-commit-one') },
+        { name: 'two.bin', bytes: deterministicBytes(80_000, 'route-concurrent-commit-two') }
+      ])
+
+      assert.equal(response.status, 200)
+      assert.equal(started.length, 2)
     } finally {
       harness.server.close()
     }

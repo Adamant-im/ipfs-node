@@ -172,7 +172,7 @@ describe('rollbackUpload', () => {
     assert.equal(pinned, false)
   })
 
-  it('rolls back after metadata changes but not after lifecycle adoption', async () => {
+  it('rolls back after metadata changes and blocks competing lifecycle adoption', async () => {
     const registry = createRegistry()
     let pinned = true
 
@@ -208,11 +208,16 @@ describe('rollbackUpload', () => {
         temporaryTtlMs: TTL,
         admissionId: 'mine'
       })
-      await locked.registerReplacing(file, {
-        confirmationRequired: false,
-        temporaryTtlMs: TTL,
-        admissionId: 'theirs'
-      })
+
+      await assert.rejects(
+        () =>
+          locked.registerReplacing(file, {
+            confirmationRequired: false,
+            temporaryTtlMs: TTL,
+            admissionId: 'theirs'
+          }),
+        /active lifecycle transaction/
+      )
 
       await rollbackUpload({
         registry: locked,
@@ -226,7 +231,7 @@ describe('rollbackUpload', () => {
       })
     })
 
-    assert.equal((await registry.get(CID_A))?.admissionId, 'theirs')
-    assert.equal(pinned, true)
+    assert.equal(await registry.get(CID_A), undefined)
+    assert.equal(pinned, false)
   })
 })

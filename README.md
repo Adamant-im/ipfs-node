@@ -138,7 +138,7 @@ This is an explicit compatibility decision, not an authorization guarantee. A de
 
 The multipart contract accepts `files` parts only. Text fields are rejected with a controlled `400 Bad Request` response.
 
-An interrupted upload no longer leaves blocks behind. Each request owns a session that records the blocks it created; a rejected, aborted, or partially failed request removes exactly those, skipping blocks that already existed, blocks a concurrent upload is still writing, and blocks a pin protects. Whatever survives cleanup is unpinned and reclaimable by garbage collection. Strict-quorum uploads prepare rollback-capable remote pins and commit them only after the local decision is durable. Blockstore growth is bounded by the disk reserve, the aggregate request size, the concurrency limit, and the collection watermarks — see [docs/storage-lifecycle.md](docs/storage-lifecycle.md).
+An interrupted upload no longer leaves blocks behind. Each request owns a session that records the blocks it created; a rejected, aborted, or partially failed request removes exactly those, skipping blocks that already existed, blocks a concurrent upload is still writing, and blocks a pin protects. Whatever survives cleanup is unpinned and reclaimable by garbage collection. Strict-quorum uploads prepare rollback-capable remote pins and commit them concurrently only after the local decision is durable; success is returned only after permanent copies still satisfy the quorum. Blockstore growth is bounded by the disk reserve, the aggregate request size, the concurrency limit, and the collection watermarks — see [docs/storage-lifecycle.md](docs/storage-lifecycle.md).
 
 ### CORS
 
