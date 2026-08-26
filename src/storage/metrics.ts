@@ -2,7 +2,7 @@ import { config } from '../config.js'
 import { blockstorePath, datastorePath } from '../store.js'
 import { logger } from '../utils/logger.js'
 import { availableStorageSize, dirSize } from '../utils/utils.js'
-import { countByState, protectedStorageBytes, type FileState } from './registry.js'
+import { countByState, protectedStorageBytes, type FileRecord, type FileState } from './registry.js'
 import { fileRegistry } from './state.js'
 
 export interface StorageMetrics {
@@ -53,6 +53,24 @@ let cached: StorageMetrics = {
  * Directory scans and a full registry sweep are too expensive for a request
  * path, so this runs on the disk usage schedule and the API serves the cache.
  */
+/**
+ * Bytes the pins on this node protect.
+ *
+ * Measured from the DAG each record protects, not from the blocks its upload
+ * happened to write: content that was already on disk writes none, and counting
+ * that as zero reports a pinned file as reclaimable space.
+ *
+ * Exported so the sum can be checked without a node behind it — the reduction
+ * is the part that decides what the report claims.
+ */
+export function pinnedStorageBytes(
+  records: Array<Pick<FileRecord, 'pinned' | 'fileSize' | 'storedBytes' | 'protectedBytes'>>
+): number {
+  return records
+    .filter((record) => record.pinned)
+    .reduce((total, record) => total + protectedStorageBytes(record), 0)
+}
+
 export async function refreshStorageMetrics(): Promise<StorageMetrics> {
   const [blockstoreBytes, datastoreBytes, availableBytes, records] = await Promise.all([
     dirSize(blockstorePath),
@@ -61,9 +79,7 @@ export async function refreshStorageMetrics(): Promise<StorageMetrics> {
     fileRegistry.all()
   ])
 
-  const pinnedBytes = records
-    .filter((record) => record.pinned)
-    .reduce((total, record) => total + protectedStorageBytes(record), 0)
+  const pinnedBytes = pinnedStorageBytes(records)
 
   const reservedBytes = config.storage.diskReserveBytes
 

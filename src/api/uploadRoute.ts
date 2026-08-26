@@ -28,6 +28,47 @@ export interface UploadRouteDependencies {
   log: UploadRouteLog
 }
 
+interface UploadBaseline {
+  cid: string
+  /** The record the CID had before this request, when it had one. */
+  previous?: FileRecord
+  /** Whether this request created the pin. */
+  createdPin: boolean
+  /** The record this request stored. */
+  written: FileRecord
+  unpin: () => Promise<void>
+}
+
+/**
+ * Undo an admitted request whose quorum was refused afterwards.
+ *
+ * Each CID is taken again on its own, because the locks were released for the
+ * network work. Only a record still carrying this request's write is rolled
+ * back; anything written since belongs to somebody else.
+ */
+async function rollbackAdmitted(
+  registry: FileRegistry,
+  baselines: UploadBaseline[],
+  log: UploadRouteLog
+): Promise<void> {
+  for (const baseline of [...baselines].reverse()) {
+    try {
+      await registry.withExclusiveCids([baseline.cid], (locked) =>
+        rollbackUpload({
+          registry: locked,
+          cid: baseline.cid,
+          previous: baseline.previous,
+          written: baseline.written,
+          createdPin: baseline.createdPin,
+          unpin: () => baseline.unpin()
+        })
+      )
+    } catch (err) {
+      log.error(`Could not undo a refused upload: ${(err as Error).message}`)
+    }
+  }
+}
+
 /**
  * Build the handler that turns imported parts into durable, registered files.
  *
@@ -53,22 +94,32 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       const files = flatFiles(req.files as UnixFsMulterFile[])
       log.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
-      // Hold all involved CIDs until this request either commits or restores
-      // every pin and lifecycle record it changed. Sorting happens inside the
-      // registry, so overlapping multi-file requests cannot deadlock.
-      const outcome = await registry.withExclusiveCids(
+      // Hold every CID this request touches while its pin and its record are
+      // written, and no longer than that. Sorting happens inside the registry,
+      // so overlapping multi-file requests cannot deadlock.
+      const admitted = await registry.withExclusiveCids(
         files.map((file) => file.cid.toString()),
         async (locked) => {
-          const undo: Array<() => Promise<void>> = []
+          const baselines: UploadBaseline[] = []
 
           const restoreBaselines = async (): Promise<void> => {
             const failures: Error[] = []
 
-            while (undo.length > 0) {
-              const step = undo.pop()
+            while (baselines.length > 0) {
+              const baseline = baselines.pop()
+
+              if (baseline === undefined) {
+                continue
+              }
 
               try {
-                await step?.()
+                await rollbackUpload({
+                  registry: locked,
+                  cid: baseline.cid,
+                  previous: baseline.previous,
+                  createdPin: baseline.createdPin,
+                  unpin: () => baseline.unpin()
+                })
               } catch (err) {
                 const failure = err as Error
                 failures.push(failure)
@@ -88,6 +139,9 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
               const cid = file.cid.toString()
               log.info(`Successfully added file ${cid}`)
 
+              const unpin = async (): Promise<void> => {
+                await unpinFile(node, file.cid)
+              }
               const previous = await locked.get(cid)
               const createdPin = await pinFile(node, file.cid)
 
@@ -110,86 +164,29 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
                 // A datastore failure can happen before or after it touches the
                 // key. Restore both sides from the baseline captured under the
                 // same CID lock, so neither outcome leaks a pin or a record.
-                await rollbackUpload({
-                  registry: locked,
-                  cid,
-                  previous,
-                  createdPin,
-                  unpin: async () => {
-                    await unpinFile(node, file.cid)
-                  }
-                })
+                await rollbackUpload({ registry: locked, cid, previous, createdPin, unpin })
                 throw err
               }
 
-              undo.push(() =>
-                rollbackUpload({
-                  registry: locked,
-                  cid,
-                  previous: registration.previous,
-                  createdPin,
-                  unpin: async () => {
-                    await unpinFile(node, file.cid)
-                  }
-                })
-              )
-
+              baselines.push({
+                cid,
+                previous,
+                createdPin,
+                written: registration.record,
+                unpin
+              })
               stored.push(registration.record)
             }
 
-            // One request may contain the same content more than once. Place
-            // each CID once, using the last registration stored above.
-            const durableByCid = new Map(
-              stored
-                .filter((record) => record.state === 'confirmed')
-                .map((record) => [record.cid, record] as const)
-            )
-            const durable = [...durableByCid.values()]
-            const replication = await Promise.all(
-              durable.map(async (record) => ({
-                cid: record.cid,
-                report: await dependencies.replicate(record.cid)
-              }))
-            )
-
-            if (
-              dependencies.requireQuorumOnUpload &&
-              replication.some((item) => !item.report.satisfied)
-            ) {
-              // The request is rejected as a transaction. Restoring the exact
-              // pre-request records and pins keeps a durable re-upload durable
-              // instead of turning it into an expired, unpinned file.
-              await restoreBaselines()
-              await session.cleanup()
-
-              return { records: stored, replication, quorumReached: false }
-            }
-
-            // Replication performs network work only. Persist acknowledgements
-            // here under the same locks as registration, so a concurrent
-            // lifecycle action cannot be overwritten by a late report.
-            const finalized = new Map<string, FileRecord>()
-            for (const item of replication) {
-              const record = durableByCid.get(item.cid)
-
-              if (record === undefined || item.report.mode !== 'quorum') {
-                continue
-              }
-
-              finalized.set(
-                item.cid,
-                await locked.save({ ...record, replicas: item.report.replicas })
-              )
-            }
-
-            const records = stored.map((record) => finalized.get(record.cid) ?? record)
-
-            // Every file is stored, pinned, registered and—where enabled—has
-            // its replication report recorded. Ownership can now pass from the
-            // request session to the registry before the CID locks are released.
+            // Every file is stored, pinned and registered, so nothing this
+            // request wrote is unprotected any more. Ownership passes from the
+            // session to the registry here rather than after replication: the
+            // session holds the shared storage lease, and keeping it across a
+            // network round would stop collection — and, behind it, every other
+            // upload — for as long as the slowest peer takes to answer.
             session.commit()
 
-            return { records, replication, quorumReached: true }
+            return { records: stored, baselines }
           } catch (err) {
             let failure = err as Error
 
@@ -208,11 +205,81 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
         }
       )
 
+      // One request may contain the same content more than once. Place each CID
+      // once, using the registration that stored it last.
+      const durableByCid = new Map(
+        admitted.records
+          .filter((record) => record.state === 'confirmed')
+          .map((record) => [record.cid, record] as const)
+      )
+
+      let replication
+      try {
+        replication = await Promise.all(
+          [...durableByCid.values()].map(async (record) => ({
+            cid: record.cid,
+            report: await dependencies.replicate(record.cid)
+          }))
+        )
+      } catch (err) {
+        // Placement reports failures rather than throwing, so this is something
+        // unforeseen. The request is undone rather than half-kept: the caller is
+        // told it failed, and nothing durable is left claiming otherwise.
+        await rollbackAdmitted(registry, admitted.baselines, log)
+        throw err
+      }
+
+      const outcome = {
+        records: admitted.records,
+        replication,
+        quorumReached:
+          !dependencies.requireQuorumOnUpload || replication.every((item) => item.report.satisfied)
+      }
+
+      if (!outcome.quorumReached) {
+        // The request is rejected as a transaction. Restoring the exact
+        // pre-request records and pins keeps a durable re-upload durable
+        // instead of turning it into an expired, unpinned file, and leaves a
+        // brand-new one with neither record nor pin.
+        //
+        // The blocks stay on disk, unprotected, until the collector runs. That
+        // is what releasing means everywhere else here, and it is the price of
+        // not holding the storage lease across replication.
+        await rollbackAdmitted(registry, admitted.baselines, log)
+
+        return res.status(503).send({ error: 'Replication quorum not reached' })
+      }
+
+      // Acknowledgements are written after the network work, each under its own
+      // CID lock and only while the record is still the one this request wrote.
+      // A late report must not overwrite a lifecycle somebody else has since
+      // changed.
+      const finalized = new Map<string, FileRecord>()
+      for (const item of replication) {
+        const written = durableByCid.get(item.cid)
+
+        if (written === undefined || item.report.mode !== 'quorum') {
+          continue
+        }
+
+        const updated = await registry.transition(item.cid, async (current) => {
+          if (current === undefined || current.revision !== written.revision) {
+            return 'keep'
+          }
+
+          return { ...current, replicas: item.report.replicas }
+        })
+
+        if (updated !== undefined) {
+          finalized.set(item.cid, updated)
+        }
+      }
+
       if (!outcome.quorumReached) {
         return res.status(503).send({ error: 'Replication quorum not reached' })
       }
 
-      const { records, replication } = outcome
+      const records = outcome.records.map((record) => finalized.get(record.cid) ?? record)
       const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
 
       res.send({

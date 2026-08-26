@@ -4,6 +4,14 @@ export interface UploadRollback {
   /** Registry view whose CID lock the caller already holds. */
   registry: LockedFileRegistry
   cid: string
+  /**
+   * The record this request stored, when the lock was released in between.
+   *
+   * A rollback decided while the lock was held needs no such check. One that
+   * runs after replication does: another request may have written to the CID
+   * meanwhile, and undoing its work would take away a lifecycle it owns.
+   */
+  written?: FileRecord
   /** What that write replaced, as reported by the write itself. */
   previous?: FileRecord
   /** Whether the pin on this CID was created by this request. */
@@ -23,6 +31,15 @@ export interface UploadRollback {
  * is not.
  */
 export async function rollbackUpload(options: UploadRollback): Promise<void> {
+  if (options.written !== undefined) {
+    const current = await options.registry.get(options.cid)
+
+    // Somebody else wrote after this request did; the CID is theirs now.
+    if (current?.revision !== options.written.revision) {
+      return
+    }
+  }
+
   // `pinFile` returns true only when there was no direct pin before this
   // request. Keep a newly repaired pin only when the earlier record expected
   // one; otherwise restore the real state as well as its metadata.

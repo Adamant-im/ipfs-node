@@ -242,6 +242,28 @@ describe('the upload endpoint end to end', () => {
     }
   })
 
+  it('leaves neither record nor pin when new content misses strict quorum', async () => {
+    // The other direction of the same rule. A pre-existing file must survive a
+    // refused re-upload, and content this request introduced must not survive
+    // the refusal — the caller was told it was rejected.
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => ({ ...bestEffort(), mode: 'quorum' as const, satisfied: false })
+    })
+    const payload = deterministicBytes(70_000, 'route-new-quorum')
+
+    try {
+      const response = await post(harness.url, [{ name: 'fresh.bin', bytes: payload }])
+      const cid = (await ifs.addBytes(payload)).toString()
+
+      assert.equal(response.status, 503)
+      assert.equal(await harness.registry.get(cid), undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
   it('restores a pre-existing durable file when a re-upload misses strict quorum', async () => {
     let satisfied = true
     const harness = await serveUpload({
