@@ -1633,6 +1633,52 @@ describe('strict-upload replica staging', () => {
 })
 
 describe('registry backfill', () => {
+  it('restores an interrupted pin as temporary after the registry reopens', async () => {
+    const cid = await ifs.addBytes(deterministicBytes(2048, 'interrupted-pin-intent'))
+    const restartDir = await mkdtemp(join(tmpdir(), 'ipfs-node-pin-intent-'))
+    const datastorePath = join(restartDir, 'datastore')
+    const prefix = '/adm/restart-pin-intent'
+    const ttl = 60_000
+    const initialStore = new FsDatastore(datastorePath)
+
+    try {
+      await initialStore.open()
+      const initialRegistry = new FileRegistry(initialStore, prefix)
+      await initialRegistry.markPinIntent(cid.toString())
+      await pinFile(node, cid)
+      await initialStore.close()
+
+      const restartedStore = new FsDatastore(datastorePath)
+
+      try {
+        await restartedStore.open()
+        const restartedRegistry = new FileRegistry(restartedStore, prefix)
+        const before = Date.now()
+        const report = await backfillRegistryFromPins({
+          cids: [cid.toString()],
+          unixfs: ifs,
+          registry: restartedRegistry,
+          confirmationRequired: true,
+          temporaryTtlMs: ttl
+        })
+        const after = Date.now()
+        const restored = await restartedRegistry.get(cid.toString())
+
+        assert.equal(report.registered, 1)
+        assert.equal(restored?.state, 'temporary')
+        assert.equal(restored?.confirmedAt, null)
+        assert.ok((restored?.expiresAt ?? 0) >= before + ttl)
+        assert.ok((restored?.expiresAt ?? 0) <= after + ttl)
+        assert.equal(await restartedRegistry.hasPinIntent(cid.toString()), false)
+      } finally {
+        await restartedStore.close()
+      }
+    } finally {
+      await unpinFile(node, cid)
+      await rm(restartDir, { recursive: true, force: true })
+    }
+  })
+
   it('records a pin that predates the registry, and does so only once', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(2048, 'legacy-pin'))
@@ -1707,10 +1753,14 @@ describe('registry backfill', () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(2048, 'already-known'))
     await pinFile(node, cid)
-    await registry.save(record({ cid: cid.toString(), state: 'confirmed', name: 'mine.bin' }))
+    const existing = await registry.save(
+      record({ cid: cid.toString(), state: 'confirmed', name: 'mine.bin' })
+    )
+    await registry.markPinIntent(cid.toString())
 
     await backfillRegistryFromPins({ cids: await snapshotPins(node), unixfs: ifs, registry })
 
-    assert.equal((await registry.get(cid.toString()))?.name, 'mine.bin')
+    assert.deepEqual(await registry.get(cid.toString()), existing)
+    assert.equal(await registry.hasPinIntent(cid.toString()), false)
   })
 })

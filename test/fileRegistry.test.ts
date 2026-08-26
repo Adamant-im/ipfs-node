@@ -14,6 +14,7 @@ import {
   type FileRecord
 } from '../src/storage/registry.js'
 import { beginAdmission, endAdmission } from '../src/storage/admission.js'
+import { claimRepairRecord, releaseRepairRecord } from '../src/storage/repairClaim.js'
 
 const CID_A = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
 const CID_B = 'bafkreihfzyt2g6pbd4rhk67deek7xh33xams74spn72eqq5qhx2ypphvii'
@@ -433,6 +434,57 @@ describe('FileRegistry', () => {
 
     assert.notEqual(refreshed?.revision, written.record.revision)
     assert.equal(refreshed?.admissionId, 'upload-one')
+  })
+
+  it('keeps a selected repair lifecycle exclusive until the repair releases it', async () => {
+    const registry = createRegistry()
+    const selected = (
+      await registry.withExclusiveCids([CID_A], (locked) =>
+        locked.registerReplacing(newFile(), {
+          confirmationRequired: false,
+          temporaryTtlMs: TTL
+        })
+      )
+    ).record
+
+    assert.equal(await claimRepairRecord(registry, selected), true)
+
+    try {
+      await assert.rejects(
+        () =>
+          registry.withExclusiveCids([CID_A], (locked) =>
+            locked.registerReplacing(newFile(), {
+              confirmationRequired: true,
+              temporaryTtlMs: TTL,
+              admissionId: 'later-upload'
+            })
+          ),
+        /active lifecycle transaction/
+      )
+      assert.equal(isLifecycleBusy(selected), true)
+      assert.equal(isSettledHeldFile(selected), false)
+    } finally {
+      releaseRepairRecord(CID_A)
+    }
+
+    const adopted = await registry.withExclusiveCids([CID_A], (locked) =>
+      locked.registerReplacing(newFile(), {
+        confirmationRequired: true,
+        temporaryTtlMs: TTL,
+        admissionId: 'later-upload'
+      })
+    )
+
+    assert.equal(adopted.record.admissionId, 'later-upload')
+  })
+
+  it('does not claim a repair candidate after its registry revision changed', async () => {
+    const registry = createRegistry()
+    const selected = (await registerFile(registry)).record
+    await registry.setReplicas(CID_A, ['n2'])
+
+    assert.equal(await claimRepairRecord(registry, selected), false)
+    assert.equal(isLifecycleBusy((await registry.get(CID_A)) as FileRecord), false)
   })
 
   it('does not confirm a live replica stage through a permanent store', async () => {

@@ -17,6 +17,7 @@ import {
 import {
   FileLifecycleBusyError,
   isAdmissionSettled,
+  isLifecycleBusy,
   isSettledHeldFile,
   protectedStorageBytes,
   type FileRecord
@@ -54,6 +55,7 @@ import {
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter, storageOperationLock } from './state.js'
 import { nextSweepBatch } from './sweep.js'
+import { claimRepairRecord, releaseRepairRecord } from './repairClaim.js'
 
 const callOptions = (): ReplicationCallOptions => ({
   timeoutMs: config.replication.requestTimeoutMs
@@ -891,33 +893,41 @@ export async function repairReplication(): Promise<RepairReport> {
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
   for (const record of candidates) {
-    const placement = placementFor(record.cid, record.createdAt, peers)
-
-    // `replicas` is a record of what peers once said. A holder that lost its
-    // blockstore, restarted empty, or left the configuration never changes that
-    // number, and the file would be considered healthy forever. Ask instead.
-    const holders = storageTargets(placement, self)
-      .map((peerId) => byPeerId.get(peerId))
-      .filter((peer): peer is ReplicationPeer => peer !== undefined)
-
-    const live = await liveHolderNames(holders, record.cid)
-    await fileRegistry.setReplicas(record.cid, live)
-
-    if (!isUnderReplicated(live.length, placement, self)) {
-      await clearSettledAdmission(fileRegistry, record)
+    if (!(await claimRepairRecord(fileRegistry, record))) {
       continue
     }
 
-    report.underReplicated += 1
-    await replicateFile(record.cid)
-    const verified = await liveHolderNames(holders, record.cid)
-    await fileRegistry.setReplicas(record.cid, verified)
+    try {
+      const placement = placementFor(record.cid, record.createdAt, peers)
 
-    if (isUnderReplicated(verified.length, placement, self)) {
-      report.stillMissing.push(record.cid)
-    } else {
-      report.repaired.push(record.cid)
-      await clearSettledAdmission(fileRegistry, record)
+      // `replicas` is a record of what peers once said. A holder that lost its
+      // blockstore, restarted empty, or left the configuration never changes that
+      // number, and the file would be considered healthy forever. Ask instead.
+      const holders = storageTargets(placement, self)
+        .map((peerId) => byPeerId.get(peerId))
+        .filter((peer): peer is ReplicationPeer => peer !== undefined)
+
+      const live = await liveHolderNames(holders, record.cid)
+      await fileRegistry.setReplicas(record.cid, live)
+
+      if (!isUnderReplicated(live.length, placement, self)) {
+        await clearSettledAdmission(fileRegistry, record)
+        continue
+      }
+
+      report.underReplicated += 1
+      await replicateFile(record.cid)
+      const verified = await liveHolderNames(holders, record.cid)
+      await fileRegistry.setReplicas(record.cid, verified)
+
+      if (isUnderReplicated(verified.length, placement, self)) {
+        report.stillMissing.push(record.cid)
+      } else {
+        report.repaired.push(record.cid)
+        await clearSettledAdmission(fileRegistry, record)
+      }
+    } finally {
+      releaseRepairRecord(record.cid)
     }
   }
 
@@ -1013,7 +1023,8 @@ export async function demoteReleasableCopies(
         current === undefined ||
         current.revision !== record.revision ||
         current.state !== 'confirmed' ||
-        !current.heldLocally
+        !current.heldLocally ||
+        isLifecycleBusy(current)
       ) {
         return false
       }

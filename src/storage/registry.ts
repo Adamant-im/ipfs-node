@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { Key } from 'interface-datastore'
 import type { Datastore, Pair } from 'interface-datastore'
 import { isActiveAdmission } from './admissionState.js'
+import { isActiveRepair } from './repairState.js'
 
 /**
  * Datastore namespace of the lifecycle registry.
@@ -606,6 +607,10 @@ export class FileRegistry {
     const now = options.now ?? Date.now()
     const existing = await this.get(file.cid)
 
+    if (isActiveRepair(file.cid)) {
+      throw new FileLifecycleBusyError(file.cid)
+    }
+
     // A permanent store or repair must not confirm a copy a strict upload can
     // still abort. A later local upload passes `admissionId` and takes over.
     if (existing?.replicaStage !== undefined && options.admissionId === undefined) {
@@ -719,7 +724,8 @@ export function isSettledHeldFile(record: FileRecord): boolean {
     record.state === 'confirmed' &&
     record.heldLocally &&
     isAdmissionSettled(record) &&
-    !isActiveAdmission(record.admissionId)
+    !isActiveAdmission(record.admissionId) &&
+    !isActiveRepair(record.cid)
   )
 }
 
@@ -737,15 +743,17 @@ export function isAdmissionInFlight(record: FileRecord): boolean {
 }
 
 /**
- * True while a replica stage, an unsettled upload, or an in-flight request still
- * owns this CID.
+ * True while a replica stage, upload request, or replication repair still owns
+ * this CID.
  *
  * `admissionSettledAt` is not enough: the HTTP handler writes it before remote
  * commit. A token still listed as active belongs to that request. A leftover
  * after the handler returns is not busy — repair uses it to retry `commit`.
  */
 export function isLifecycleBusy(record: FileRecord): boolean {
-  return record.replicaStage !== undefined || isAdmissionInFlight(record)
+  return (
+    record.replicaStage !== undefined || isAdmissionInFlight(record) || isActiveRepair(record.cid)
+  )
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {
