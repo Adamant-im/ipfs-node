@@ -22,8 +22,16 @@ const abortedTransactions = new Map<string, number>()
 const DEFAULT_ABORT_TOMBSTONE_TTL_MS = 5 * 60 * 1000
 const MAX_ABORT_TOMBSTONES = 10_000
 
-function transactionKey(cid: string, transactionId: string): string {
-  return `${cid}\0${transactionId}`
+function transactionPrefix(cid: string, transactionId: string): string {
+  return `${cid}\0${transactionId}\0`
+}
+
+function transactionKey(
+  cid: string,
+  transactionId: string,
+  originPeerId: string | undefined
+): string {
+  return `${transactionPrefix(cid, transactionId)}${originPeerId ?? ''}`
 }
 
 function pruneAbortTombstones(now: number): void {
@@ -42,15 +50,37 @@ function pruneAbortTombstones(now: number): void {
   }
 }
 
-function rememberAbort(cid: string, transactionId: string, expiresAt: number, now: number): void {
+function rememberAbort(
+  cid: string,
+  transactionId: string,
+  expiresAt: number,
+  now: number,
+  originPeerId?: string
+): void {
   pruneAbortTombstones(now)
-  abortedTransactions.set(transactionKey(cid, transactionId), expiresAt)
+  abortedTransactions.set(transactionKey(cid, transactionId, originPeerId), expiresAt)
   pruneAbortTombstones(now)
 }
 
-function wasAborted(cid: string, transactionId: string, now: number): boolean {
+function wasAborted(
+  cid: string,
+  transactionId: string,
+  originPeerId: string | undefined,
+  now: number
+): boolean {
   pruneAbortTombstones(now)
-  return (abortedTransactions.get(transactionKey(cid, transactionId)) ?? 0) > now
+  const prefix = transactionPrefix(cid, transactionId)
+
+  // Protocol calls always identify their peer. Keeping unknown legacy callers
+  // conservative preserves the old abort-before-stage behaviour.
+  if (originPeerId === undefined) {
+    return [...abortedTransactions.keys()].some((key) => key.startsWith(prefix))
+  }
+
+  return (
+    abortedTransactions.has(transactionKey(cid, transactionId, undefined)) ||
+    abortedTransactions.has(transactionKey(cid, transactionId, originPeerId))
+  )
 }
 
 function withOrigin(
@@ -194,17 +224,27 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
   const signal = stageSignal(options.pinTimeoutMs)
 
   return options.registry.withExclusiveCids([key], async (registry) => {
-    if (wasAborted(key, options.transactionId, now)) {
+    if (wasAborted(key, options.transactionId, options.originPeerId, now)) {
       throw new Error(`Replica transaction ${options.transactionId} for ${key} was already aborted`)
     }
 
     const previous = await registry.get(key)
 
     if (previous?.replicaStage !== undefined) {
+      const alreadyStaged = previous.replicaStage.transactionIds.includes(options.transactionId)
+
+      if (alreadyStaged) {
+        assertStageOwner(
+          options.transactionId,
+          previous.replicaStage.origins?.[options.transactionId],
+          options.originPeerId
+        )
+      }
+
       await pinFile(options.node, options.cid)
 
       try {
-        const transactionIds = previous.replicaStage.transactionIds.includes(options.transactionId)
+        const transactionIds = alreadyStaged
           ? previous.replicaStage.transactionIds
           : [...previous.replicaStage.transactionIds, options.transactionId]
         const record = await registry.save({
@@ -216,11 +256,13 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
           replicaStage: {
             ...previous.replicaStage,
             transactionIds,
-            origins: withOrigin(
-              previous.replicaStage.origins,
-              options.transactionId,
-              options.originPeerId
-            )
+            origins: alreadyStaged
+              ? previous.replicaStage.origins
+              : withOrigin(
+                  previous.replicaStage.origins,
+                  options.transactionId,
+                  options.originPeerId
+                )
           }
         })
 
@@ -432,12 +474,12 @@ export async function abortReplica(options: SettleReplicaOptions): Promise<FileR
       stage === undefined ||
       !stage.transactionIds.includes(options.transactionId)
     ) {
-      rememberAbort(key, options.transactionId, tombstoneUntil, now)
+      rememberAbort(key, options.transactionId, tombstoneUntil, now, options.peerId)
       return current
     }
 
     assertStageOwner(options.transactionId, stage.origins?.[options.transactionId], options.peerId)
-    rememberAbort(key, options.transactionId, tombstoneUntil, now)
+    rememberAbort(key, options.transactionId, tombstoneUntil, now, options.peerId)
 
     const transactionIds = stage.transactionIds.filter((id) => id !== options.transactionId)
     const origins = { ...stage.origins }

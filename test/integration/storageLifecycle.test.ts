@@ -1102,12 +1102,37 @@ describe('lifecycle transitions', () => {
       unixfs: ifs,
       cid,
       registerUnknown: true,
+      prepareForPin: async () => undefined,
       temporaryTtlMs: TTL
     })
 
     assert.equal(adopted?.state, 'confirmed')
     assert.equal(adopted?.pinned, true)
     assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('does not start pinning when bounded preparation of an unknown CID times out', async () => {
+    const registry = createRegistry()
+    const cid = CID.parse('bafkreiapv3pyvtsdmvcqcgzvvjmayksybgcgfvkbfbbccjnisz3ndnvcam')
+
+    await assert.rejects(
+      () =>
+        confirmStoredFile({
+          node,
+          registry,
+          unixfs: ifs,
+          cid,
+          registerUnknown: true,
+          prepareForPin: async () => {
+            throw new Error('bounded fetch timed out')
+          },
+          temporaryTtlMs: TTL
+        }),
+      /bounded fetch timed out/
+    )
+
+    assert.equal(await registry.get(cid.toString()), undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
   })
 
   it('confirms a temporary file, clears its expiry and pins it', async () => {
@@ -1369,6 +1394,88 @@ describe('strict-upload replica staging', () => {
       peerId: 'peer-origin'
     })
     assert.equal(committed?.state, 'confirmed')
+  })
+
+  it('does not let an idempotent stage replace the transaction owner', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_100, 'replica-stage-restage-owner'))
+
+    await stage(registry, cid, 'tx-owned', 1000, 'peer-origin')
+
+    await assert.rejects(
+      () => stage(registry, cid, 'tx-owned', 1100, 'peer-other'),
+      /staged by another peer/
+    )
+
+    assert.equal(
+      (await registry.get(cid.toString()))?.replicaStage?.origins?.['tx-owned'],
+      'peer-origin'
+    )
+
+    await abortReplica({
+      node,
+      registry,
+      cid,
+      transactionId: 'tx-owned',
+      peerId: 'peer-origin'
+    })
+    assert.equal(await registry.get(cid.toString()), undefined)
+  })
+
+  it('keeps peer abort tombstones isolated', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_200, 'replica-stage-abort-owner'))
+
+    await abortReplica({
+      node,
+      registry,
+      cid,
+      transactionId: 'tx-raced',
+      peerId: 'peer-other',
+      tombstoneTtlMs: 1000,
+      now: 1000
+    })
+
+    const prepared = await stage(registry, cid, 'tx-raced', 1100, 'peer-origin')
+
+    assert.equal(prepared.staged, true)
+    assert.equal(prepared.record.replicaStage?.origins?.['tx-raced'], 'peer-origin')
+
+    await abortReplica({
+      node,
+      registry,
+      cid,
+      transactionId: 'tx-raced',
+      peerId: 'peer-origin',
+      now: 1200
+    })
+
+    const secondCid = await ifs.addBytes(
+      deterministicBytes(21_300, 'replica-stage-abort-owner-overwrite')
+    )
+    await abortReplica({
+      node,
+      registry,
+      cid: secondCid,
+      transactionId: 'tx-raced-again',
+      peerId: 'peer-origin',
+      tombstoneTtlMs: 1000,
+      now: 2000
+    })
+    await abortReplica({
+      node,
+      registry,
+      cid: secondCid,
+      transactionId: 'tx-raced-again',
+      peerId: 'peer-other',
+      tombstoneTtlMs: 1000,
+      now: 2100
+    })
+
+    await assert.rejects(
+      () => stage(registry, secondCid, 'tx-raced-again', 2200, 'peer-origin'),
+      /already aborted/
+    )
   })
 
   it('keeps a shared stage until one transaction commits it', async () => {

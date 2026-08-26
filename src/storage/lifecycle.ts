@@ -163,6 +163,13 @@ export interface ConfirmOptions extends RegisterPinnedOptions {
    * stores and registers it.
    */
   registerUnknown?: boolean
+  /**
+   * Fetch or validate content before an explicit unknown-CID pin.
+   *
+   * Required when `registerUnknown` is true. It runs before the CID lock so a
+   * bounded network transfer cannot block other lifecycle work for this CID.
+   */
+  prepareForPin?: () => Promise<void>
   now?: number
 }
 
@@ -179,6 +186,14 @@ export interface ConfirmOptions extends RegisterPinnedOptions {
  */
 export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRecord | undefined> {
   const key = options.cid.toString()
+
+  if (options.registerUnknown === true) {
+    if (options.prepareForPin === undefined) {
+      throw new Error(`CID ${key} must be fetched or validated before it can be adopted`)
+    }
+
+    await options.prepareForPin()
+  }
 
   return options.registry.withExclusiveCids([key], async (registry) => {
     const current = await registry.get(key)

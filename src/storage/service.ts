@@ -7,7 +7,7 @@ import { availableStorageSize } from '../utils/utils.js'
 import { getNodesList } from '../utils/utils.js'
 import { blockstorePath } from '../store.js'
 import { mayDemote, placeFile, storageTargets, type Placement } from './placement.js'
-import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
+import { hasLocalDag, isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
 import {
   confirmStoredFile,
   registerPinnedFile,
@@ -449,13 +449,22 @@ export async function confirmFile(
   cid: string,
   options: { registerUnknown?: boolean } = {}
 ): Promise<FileRecord | undefined> {
+  const parsed = CID.parse(cid)
   const confirmed = await storageOperationLock.withShared(() =>
     confirmStoredFile({
       ...lifecycleTarget(),
       unixfs: ifs,
-      cid: CID.parse(cid),
+      cid: parsed,
       name: cid,
       registerUnknown: options.registerUnknown,
+      prepareForPin:
+        options.registerUnknown === true
+          ? async () => {
+              if (!(await hasLocalDag(helia, parsed))) {
+                await pullUnderIntakeLimits(cid)
+              }
+            }
+          : undefined,
       temporaryTtlMs: config.storage.temporaryTtlMs,
       pinTimeoutMs: config.replication.requestTimeoutMs
     })
