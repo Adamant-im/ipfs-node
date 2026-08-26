@@ -13,6 +13,7 @@ import {
   isSettledHeldFile,
   type FileRecord
 } from '../src/storage/registry.js'
+import { beginAdmission, endAdmission } from '../src/storage/admission.js'
 
 const CID_A = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
 const CID_B = 'bafkreihfzyt2g6pbd4rhk67deek7xh33xams74spn72eqq5qhx2ypphvii'
@@ -584,6 +585,15 @@ describe('expiry rules', () => {
       isSettledHeldFile({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
       true
     )
+    beginAdmission('upload-one')
+    try {
+      assert.equal(
+        isSettledHeldFile({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
+        false
+      )
+    } finally {
+      endAdmission('upload-one')
+    }
     assert.equal(isSettledHeldFile({ ...held, heldLocally: false }), false)
   })
 
@@ -596,5 +606,14 @@ describe('expiry rules', () => {
       isLifecycleBusy({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
       false
     )
+    beginAdmission('upload-one')
+    try {
+      assert.equal(
+        isLifecycleBusy({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
+        true
+      )
+    } finally {
+      endAdmission('upload-one')
+    }
   })
 })

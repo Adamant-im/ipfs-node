@@ -276,14 +276,18 @@ restarting a peer does not turn a prepared copy into a permanent one. Live
 stages are kept through watermark pressure for that short window;
 `GET /api/storage/metrics` reports how many remain as `stagedReplicas`.
 
-The local admission token remains until replica settlement finishes. A failed
-cleanup write, or a `500` after an unverified commit, leaves the token in place.
-`admissionSettledAt` still makes the record visible to `have`, repair, and
-handover, and repair clears the token once the durable copies are confirmed.
-Manual confirm, pin, and unpin return `409` while a replica stage or an
-_unsettled_ local upload owns that CID; a leftover settled token does not block
-them. On startup, _unsettled_ tokens belonging to a previous process are cleared
-in the background; settled tokens are left for repair.
+The local admission token remains until replica settlement finishes. The HTTP
+handler keeps that token _active_ in process until it returns, even after
+`admissionSettledAt` is written: confirm, pin, unpin, a second upload of the
+same CID, and repair must not take it while remote commit is still running. A
+failed cleanup write, or a `500` after an unverified commit, leaves the token
+in place once the request has ended. `admissionSettledAt` still makes the
+record visible to `have`, and repair then retries `commit` and clears the token
+once the durable copies are confirmed. Manual confirm, pin, and unpin return
+`409` while a replica stage, an unsettled upload, or an in-flight request owns
+that CID; a leftover settled token from a finished request does not block them.
+On startup, _unsettled_ tokens belonging to a previous process are cleared in
+the background; settled tokens are left for repair.
 
 Turning it off with `replication.enabled: false` makes the node store content
 **best effort** instead: one copy, on this node, pinned, with no promise that

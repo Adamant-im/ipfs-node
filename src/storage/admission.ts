@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { isAdmissionSettled, type FileRegistry } from './registry.js'
+import { isAdmissionSettled, type FileRecord, type FileRegistry } from './registry.js'
+import { isActiveAdmission } from './admissionState.js'
+
+export { beginAdmission, endAdmission, isActiveAdmission } from './admissionState.js'
 
 const processAdmissionPrefix = `${randomUUID()}:`
 
@@ -72,4 +75,37 @@ export async function recoverInterruptedAdmissions(
   }
 
   return report
+}
+
+/**
+ * Drop a leftover admission token once this node no longer needs it to retry
+ * `commit`. Unsettled tokens and tokens whose upload request is still running
+ * are left alone.
+ *
+ * Repair reads the record before network probes. A later upload can replace
+ * `admissionId` while those probes run; clearing that newer token would strand
+ * its own `commit` retry. Only the id this pass selected may be removed.
+ */
+export async function clearSettledAdmission(
+  registry: FileRegistry,
+  record: FileRecord
+): Promise<void> {
+  if (record.admissionId === undefined || isActiveAdmission(record.admissionId)) {
+    return
+  }
+
+  await registry.withExclusiveCids([record.cid], async (locked) => {
+    const current = await locked.get(record.cid)
+
+    if (
+      current === undefined ||
+      current.admissionId !== record.admissionId ||
+      !isAdmissionSettled(current) ||
+      isActiveAdmission(current.admissionId)
+    ) {
+      return
+    }
+
+    await locked.save({ ...current, admissionId: undefined, admissionSettledAt: undefined })
+  })
 }

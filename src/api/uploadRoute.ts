@@ -5,7 +5,7 @@ import type { FileRecord, FileRegistry } from '../storage/registry.js'
 import type { ReplicationReport } from '../storage/replication.js'
 import { rollbackUpload } from '../storage/rollback.js'
 import type { UploadSession } from '../storage/uploadSession.js'
-import { createAdmissionId } from '../storage/admission.js'
+import { createAdmissionId, beginAdmission, endAdmission } from '../storage/admission.js'
 import { UnixFsMulterFile } from '../utils/types.js'
 import { flatFiles } from '../utils/utils.js'
 
@@ -250,6 +250,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
 
     const session = dependencies.getSession(req)
     const admissionId = createAdmissionId()
+    beginAdmission(admissionId)
 
     try {
       const files = flatFiles(req.files as UnixFsMulterFile[])
@@ -551,6 +552,8 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       })
     } catch (err) {
       next(err)
+    } finally {
+      endAdmission(admissionId)
     }
   }
 }

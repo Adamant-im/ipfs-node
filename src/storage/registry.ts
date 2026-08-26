@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Key } from 'interface-datastore'
 import type { Datastore, Pair } from 'interface-datastore'
+import { isActiveAdmission } from './admissionState.js'
 
 /**
  * Datastore namespace of the lifecycle registry.
@@ -559,8 +560,9 @@ export class FileRegistry {
 
     if (
       existing !== undefined &&
-      !isAdmissionSettled(existing) &&
-      existing.admissionId !== options.admissionId
+      existing.admissionId !== undefined &&
+      existing.admissionId !== options.admissionId &&
+      (!isAdmissionSettled(existing) || isActiveAdmission(existing.admissionId))
     ) {
       throw new FileLifecycleBusyError(file.cid)
     }
@@ -654,12 +656,17 @@ export function isReclaimable(record: FileRecord, now: number = Date.now()): boo
 /**
  * Durable local copy that no in-flight upload still owns.
  *
- * Repair and handover skip an admission token only until the request publishes
- * `admissionSettledAt`. The token may remain after a failed cleanup write; once
- * settled, no path can roll the local lifecycle back.
+ * Repair and handover skip an admission token until the request that created it
+ * has finished. `admissionSettledAt` makes the copy visible to `have` earlier;
+ * an active token still excludes it from sweeps that would clear or replace it.
  */
 export function isSettledHeldFile(record: FileRecord): boolean {
-  return record.state === 'confirmed' && record.heldLocally && isAdmissionSettled(record)
+  return (
+    record.state === 'confirmed' &&
+    record.heldLocally &&
+    isAdmissionSettled(record) &&
+    !isActiveAdmission(record.admissionId)
+  )
 }
 
 /** Whether an upload can no longer roll this local lifecycle back. */
@@ -668,13 +675,19 @@ export function isAdmissionSettled(record: FileRecord): boolean {
 }
 
 /**
- * True while a replica stage or an unsettled local upload still owns this CID.
+ * True while a replica stage, an unsettled upload, or an in-flight request still
+ * owns this CID.
  *
- * A leftover admission token after settlement is not busy: nothing can roll the
- * local decision back, and repair uses that token to retry `commit`.
+ * `admissionSettledAt` is not enough: the HTTP handler writes it before remote
+ * commit. A token still listed as active belongs to that request. A leftover
+ * after the handler returns is not busy — repair uses it to retry `commit`.
  */
 export function isLifecycleBusy(record: FileRecord): boolean {
-  return record.replicaStage !== undefined || !isAdmissionSettled(record)
+  return (
+    record.replicaStage !== undefined ||
+    !isAdmissionSettled(record) ||
+    isActiveAdmission(record.admissionId)
+  )
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {

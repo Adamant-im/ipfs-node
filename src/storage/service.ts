@@ -21,6 +21,7 @@ import {
   protectedStorageBytes,
   type FileRecord
 } from './registry.js'
+import { clearSettledAdmission } from './admission.js'
 import {
   isUnderReplicated,
   replicate,
@@ -724,30 +725,6 @@ export interface RepairReport {
   rescued: string[]
 }
 
-/**
- * Drop a leftover admission token once this node no longer needs it to retry
- * `commit`. Unsettled tokens are left alone: their request can still roll back.
- */
-async function clearSettledAdmission(record: FileRecord): Promise<void> {
-  if (record.admissionId === undefined) {
-    return
-  }
-
-  await fileRegistry.withExclusiveCids([record.cid], async (locked) => {
-    const current = await locked.get(record.cid)
-
-    if (
-      current === undefined ||
-      current.admissionId === undefined ||
-      !isAdmissionSettled(current)
-    ) {
-      return
-    }
-
-    await locked.save({ ...current, admissionId: undefined, admissionSettledAt: undefined })
-  })
-}
-
 /** Ask the designated peers which durable copies exist right now. */
 async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise<string[]> {
   const answers = await Promise.all(
@@ -915,7 +892,7 @@ export async function repairReplication(): Promise<RepairReport> {
     await fileRegistry.setReplicas(record.cid, live)
 
     if (!isUnderReplicated(live.length, placement, self)) {
-      await clearSettledAdmission(record)
+      await clearSettledAdmission(fileRegistry, record)
       continue
     }
 
@@ -928,7 +905,7 @@ export async function repairReplication(): Promise<RepairReport> {
       report.stillMissing.push(record.cid)
     } else {
       report.repaired.push(record.cid)
-      await clearSettledAdmission(record)
+      await clearSettledAdmission(fileRegistry, record)
     }
   }
 

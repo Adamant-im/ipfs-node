@@ -17,7 +17,7 @@ import { releaseStoredFile } from '../../src/storage/lifecycle.js'
 import { ConcurrencyLimiter } from '../../src/storage/limits.js'
 import { StorageOperationLock } from '../../src/storage/operationLock.js'
 import { isDirectlyPinned, unpinFile } from '../../src/storage/pinning.js'
-import { FileRegistry } from '../../src/storage/registry.js'
+import { FileRegistry, isLifecycleBusy, isSettledHeldFile } from '../../src/storage/registry.js'
 import type { ReplicationReport } from '../../src/storage/replication.js'
 import { resetClaims } from '../../src/storage/reservation.js'
 import { UnixfsMulterStorage } from '../../src/utils/unixfs-multer.storage.js'
@@ -457,6 +457,86 @@ describe('the upload endpoint end to end', () => {
       assert.equal(releaseRejected, true)
       assert.equal(record?.state, 'confirmed')
       assert.equal(record?.heldLocally, true)
+      assert.equal(record?.admissionId, undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('keeps a settled admission busy until remote commit finishes', async () => {
+    let releaseCommit!: () => void
+    const hold = new Promise<void>((resolve) => {
+      releaseCommit = resolve
+    })
+    let reachedCommit!: () => void
+    const inCommit = new Promise<void>((resolve) => {
+      reachedCommit = resolve
+    })
+    const report: ReplicationReport = {
+      ...bestEffort(),
+      mode: 'quorum',
+      desiredCopies: 2,
+      copies: 2,
+      required: 2,
+      acknowledged: 2,
+      replicas: ['holder'],
+      satisfied: true,
+      networkTooSmall: true,
+      attempts: [
+        {
+          node: 'holder',
+          peerId: 'holder-peer-id',
+          ok: true,
+          outcome: 'stored',
+          staged: true
+        }
+      ]
+    }
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => report,
+      commitReplicas: async (cid, _transactionId, placement) => {
+        const record = await harness.registry.get(cid)
+        assert.ok(record)
+        assert.ok(record.admissionSettledAt !== undefined)
+        assert.equal(isLifecycleBusy(record), true)
+        assert.equal(isSettledHeldFile(record), false)
+        await assert.rejects(
+          () => releaseStoredFile({ node, registry: harness.registry, cid: CID.parse(cid) }),
+          /active lifecycle transaction/
+        )
+        await assert.rejects(
+          () =>
+            harness.registry.withExclusiveCids([cid], (locked) =>
+              locked.registerReplacing(
+                { cid, name: 'other.bin', fileSize: 1, storedBytes: 1 },
+                {
+                  confirmationRequired: false,
+                  temporaryTtlMs: 60_000,
+                  admissionId: 'other-upload'
+                }
+              )
+            ),
+          /active lifecycle transaction/
+        )
+        reachedCommit()
+        await hold
+        return placement
+      }
+    })
+    const payload = deterministicBytes(77_500, 'route-settled-commit-window')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const pending = post(harness.url, [{ name: 'held.bin', bytes: payload }])
+      await inCommit
+      releaseCommit()
+      const response = await pending
+      const record = await harness.registry.get(cid)
+
+      assert.equal(response.status, 200)
+      assert.equal(record?.state, 'confirmed')
       assert.equal(record?.admissionId, undefined)
       assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
     } finally {
