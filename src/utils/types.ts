@@ -13,4 +13,10 @@ export type ConfigNode = {
   multiAddr: string
 }
 
-export type UnixFsMulterFile = Express.Multer.File & { cid: CID<unknown, number, number, Version> }
+export type UnixFsMulterFile = Express.Multer.File & {
+  cid: CID<unknown, number, number, Version>
+  /** Bytes of blocks this node wrote while importing the part. */
+  storedBytes: number
+  /** Deduplicated bytes in the file's DAG, including blocks already present. */
+  protectedBytes: number
+}

@@ -1,56 +1,94 @@
 import { Router } from 'express'
-import { CID } from 'multiformats/cid'
-import { multerStorage } from '../multer.js'
 import { config } from '../config.js'
 import { helia } from '../helia.js'
-import { logger } from '../utils/logger.js'
-import { UnixFsMulterFile } from '../utils/types.js'
-import { flatFiles } from '../utils/utils.js'
-import { downloadFile, getFileStats } from '../utils/file.js'
-import { uploadLimiter, readLimiter } from '../middleware/rateLimiter.js'
+import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
+import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
+import { multerStorage } from '../multer.js'
+import {
+  abortUploadedReplicas,
+  commitUploadedReplicas,
+  confirmFile,
+  effectiveQuorum,
+  prepareFileRetrieval,
+  releaseFile,
+  replicateUploadedFile
+} from '../storage/service.js'
+import { fileRegistry } from '../storage/state.js'
+import { createUploadHandler } from './uploadRoute.js'
 import { parseCid } from '../utils/cid.js'
 import { sendDownloadStream } from '../utils/downloadResponse.js'
+import { downloadFile, getFileStats } from '../utils/file.js'
+import { logger } from '../utils/logger.js'
 
 const router = Router()
 
-router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, res, next) => {
-  if (!Array.isArray(req.files) || req.files.length === 0) {
-    res.statusCode = 400
-    return res.send({ error: 'No file uploaded' })
-  }
+/** Routes that make content durable or reclaim it; mounted behind the admin key. */
+export const fileAdminRouter = Router()
 
-  if (req.files.length > config.maxFileCount) {
-    res.status(400).send({
-      error: `File limit exceeded. Max ${config.maxFileCount} allowed.`
-    })
-    return
-  }
+/**
+ * Accept files into the blockstore.
+ *
+ * `admitUpload` refuses the request before any block is written when the node
+ * is at its concurrency limit, when the aggregate request size is too large, or
+ * when storing the request would eat into the disk reserve. The multipart
+ * parser enforces the file count and the per-file size, so an over-limit part
+ * never reaches the blockstore either.
+ *
+ * Files become durable immediately unless `storage.confirmationRequired` is
+ * enabled, in which case they stay temporary until an authorized confirmation.
+ */
+router.post(
+  '/upload',
+  uploadLimiter,
+  admitUpload,
+  multerStorage.array('files'),
+  createUploadHandler({
+    node: helia,
+    registry: fileRegistry,
+    getSession: getUploadSession,
+    confirmationRequired: config.storage.confirmationRequired,
+    temporaryTtlMs: config.storage.temporaryTtlMs,
+    requireQuorumOnUpload: config.replication.requireQuorumOnUpload,
+    replicate: replicateUploadedFile,
+    commitReplicas: commitUploadedReplicas,
+    abortReplicas: abortUploadedReplicas,
+    log: logger
+  })
+)
 
+/**
+ * Lifecycle state of a file.
+ *
+ * Deliberately free of the original filename so that the endpoint stays safe to
+ * expose next to the public download route.
+ */
+router.get('/:cid/status', readLimiter, async (req, res, next) => {
   try {
-    const files = flatFiles(req.files as UnixFsMulterFile[])
-    logger.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
+    const cid = parseCid(req.params.cid)
+    const record = await fileRegistry.get(cid.toString())
 
-    const cids: CID[] = []
-    for (const file of files) {
-      logger.info(`Adding ${file.originalname} to IPFS`)
-
-      const { cid } = file
-      logger.info(`Successfully added file ${cid}`)
-      cids.push(cid)
-
-      const isPinned = await helia.pins.isPinned(cid)
-      if (isPinned) {
-        logger.info(`File already pinned ${cid}`)
-      } else {
-        for await (const pinned of helia.pins.add(cid)) {
-          logger.info(`Filed pinned: ${pinned}`)
-        }
-      }
+    if (!record) {
+      return res.status(404).send({ error: 'Unknown CID' })
     }
 
     res.send({
-      filesNames: files.map((file) => file.originalname),
-      cids: cids.map((cid) => cid.toString())
+      cid: record.cid,
+      state: record.state,
+      pinned: record.pinned,
+      createdAt: record.createdAt,
+      expiresAt: record.expiresAt,
+      confirmedAt: record.confirmedAt,
+      replication: {
+        // A file handed over to other nodes keeps its record but no longer
+        // counts here, so the local copy is only added while it is still held.
+        acknowledged: record.replicas.length + (record.heldLocally ? 1 : 0),
+        // What this file is actually held to, not what the configuration asks
+        // for in the abstract: a quorum larger than the network can answer is
+        // capped when the file is placed, and reporting the raw number would
+        // show every file as short of it forever.
+        required: effectiveQuorum(record.cid, record.createdAt),
+        heldLocally: record.heldLocally
+      }
     })
   } catch (err) {
     next(err)
@@ -60,6 +98,12 @@ router.post('/upload', uploadLimiter, multerStorage.array('files'), async (req, 
 router.get('/:cid', readLimiter, async (req, res, next) => {
   try {
     const cid = parseCid(req.params.cid)
+
+    // Reach the file's holders first. Without this the read only succeeds if a
+    // peer that has the file is already connected, which stops being true as
+    // soon as the network is larger than the connection limit.
+    await prepareFileRetrieval(cid)
+
     const fileStats = await getFileStats(cid)
     const stream = downloadFile(cid)
 
@@ -72,6 +116,47 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
     )
   } catch (error) {
     next(error)
+  }
+})
+
+/** Promote a temporary upload to durable storage. */
+fileAdminRouter.post('/:cid/confirm', async (req, res, next) => {
+  try {
+    const cid = parseCid(req.params.cid)
+    const record = await confirmFile(cid.toString())
+
+    if (!record) {
+      return res.status(404).send({ error: 'Unknown CID' })
+    }
+
+    res.send({ cid: record.cid, state: record.state, replicas: record.replicas })
+  } catch (err) {
+    next(err)
+  }
+})
+
+/**
+ * Release durable content.
+ * The blocks are reclaimed by the next garbage collection, not by this call.
+ */
+fileAdminRouter.post('/:cid/unpin', async (req, res, next) => {
+  try {
+    const cid = parseCid(req.params.cid)
+    const record = await releaseFile(cid.toString())
+
+    // Nothing was released, so saying so would be a lie an operator acts on.
+    if (!record) {
+      return res.status(404).send({ error: 'Unknown CID' })
+    }
+
+    res.send({
+      cid: cid.toString(),
+      state: record.state,
+      pinned: false,
+      reclaimable: true
+    })
+  } catch (err) {
+    next(err)
   }
 })
 

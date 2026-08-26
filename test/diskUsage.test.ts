@@ -69,7 +69,21 @@ describe('availableStorageSize', () => {
       // The store directory does not exist yet, as on a first start
       const missing = join(parent, 'store', 'blockstore')
 
-      assert.equal(await availableStorageSize(missing), await availableStorageSize(parent))
+      const [fromMissing, fromParent] = [
+        await availableStorageSize(missing),
+        await availableStorageSize(parent)
+      ]
+
+      // Both must measure the same filesystem. They are not compared for
+      // equality: the two readings are taken a moment apart on a live volume,
+      // so anything else writing to disk moves one of them.
+      const drift = fromMissing > fromParent ? fromMissing - fromParent : fromParent - fromMissing
+
+      assert.ok(fromMissing > 0n)
+      assert.ok(
+        drift < fromParent / 1000n,
+        `readings differ by ${drift} bytes, which is more than ordinary drift`
+      )
     } finally {
       await rm(parent, { recursive: true, force: true })
     }

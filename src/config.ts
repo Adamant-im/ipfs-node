@@ -2,9 +2,17 @@ import * as fs from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import JSON5 from 'json5'
+import { peerIdFromString } from '@libp2p/peer-id'
+import { multiaddr } from '@multiformats/multiaddr'
 import { validateSecurityConfig } from './security/config.js'
 import type { RateLimitPolicy } from './security/rateLimit.js'
 import type { TrustProxySetting } from './security/trustProxy.js'
+import {
+  resolveReplicationConfig,
+  resolveStorageConfig,
+  type ReplicationConfig,
+  type StorageConfig
+} from './storage/config.js'
 
 /**
  * Locate the repository root by walking up to the nearest `package.json`.
@@ -30,6 +38,9 @@ function findRootDir(start: string): string {
 }
 
 const currDir = dirname(fileURLToPath(import.meta.url))
+
+/** Redial unconnected ADAMANT nodes every half minute unless configured otherwise. */
+const DEFAULT_PEERING_SCHEDULE = '*/30 * * * * *'
 
 /** Log levels accepted by `pino`, ordered from least to most verbose. */
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
@@ -58,6 +69,12 @@ export interface Config {
   serverPort: number
   /** Disk space scanning period in cron format. */
   diskUsageScanPeriod: string
+  /**
+   * How often the node redials the peers in `nodes` that are not connected,
+   * in cron format. Bootstrap only dials once, so without this a mesh never
+   * recovers from a restart.
+   */
+  peeringSchedule: string
   /** Maximum size of a single uploaded file, in bytes. */
   uploadLimitSizeBytes: number
   /** Maximum number of files accepted per upload request. */
@@ -73,6 +90,10 @@ export interface Config {
   /** Administrative API key. An empty value makes administrative routes fail closed. */
   adminApiKey: string
   enableDebugApi: boolean
+  /** Bounded storage lifecycle; see `src/storage/config.ts`. */
+  storage: StorageConfig
+  /** Cross-node durability policy; see `src/storage/config.ts`. */
+  replication: ReplicationConfig
 }
 
 /**
@@ -123,6 +144,26 @@ function requireStringArray(value: unknown, path: string): string[] {
   return value.map((item, index) => requireString(item, `${path}[${index}]`))
 }
 
+/** Validate a node multiaddr and return its authenticated peer identity. */
+function requireNodePeerId(value: string, path: string): string {
+  try {
+    const components = multiaddr(value).getComponents()
+    const peerComponent = components.filter((component) => component.name === 'p2p').at(-1)
+
+    if (peerComponent?.value === undefined) {
+      fail(path, 'must contain a /p2p/<peer-id> component')
+    }
+
+    return peerIdFromString(peerComponent.value).toString()
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+
+    fail(path, 'must be a valid multiaddr with a peer id')
+  }
+}
+
 /**
  * Validate a positive integer.
  *
@@ -156,11 +197,28 @@ export function validateConfig(raw: unknown): Config {
   }
   const nodes = root.nodes.map((node, index) => {
     const entry = requireObject(node, `nodes[${index}]`)
+    const multiAddr = requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+
     return {
       name: requireString(entry.name, `nodes[${index}].name`),
-      multiAddr: requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+      multiAddr,
+      peerId: requireNodePeerId(multiAddr, `nodes[${index}].multiAddr`)
     }
   })
+
+  const peerIndexes = new Map<string, number>()
+  for (const [index, node] of nodes.entries()) {
+    const previousIndex = peerIndexes.get(node.peerId)
+
+    if (previousIndex !== undefined) {
+      fail(
+        `nodes[${index}].multiAddr`,
+        `must identify a unique peer; it duplicates nodes[${previousIndex}]`
+      )
+    }
+
+    peerIndexes.set(node.peerId, index)
+  }
 
   const logLevel = requireString(root.logLevel, 'logLevel')
   if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
@@ -176,6 +234,10 @@ export function validateConfig(raw: unknown): Config {
   const storeFolder = requireString(root.storeFolder, 'storeFolder')
   const serverPort = requireInteger(root.serverPort, 'serverPort', 1)
   const diskUsageScanPeriod = requireString(root.diskUsageScanPeriod, 'diskUsageScanPeriod')
+  const peeringSchedule =
+    root.peeringSchedule === undefined
+      ? DEFAULT_PEERING_SCHEDULE
+      : requireString(root.peeringSchedule, 'peeringSchedule')
   const findFileTimeout = requireInteger(root.findFileTimeout, 'findFileTimeout', 1)
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
@@ -185,13 +247,36 @@ export function validateConfig(raw: unknown): Config {
 
   const cors = requireObject(root.cors, 'cors')
 
+  // Owns the storage lifecycle and replication policy. Both sections are
+  // optional: every option falls back to a documented default so that config
+  // files written before this feature keep working.
+  let storage: StorageConfig
+  let replication: ReplicationConfig
+  try {
+    storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
+    replication = resolveReplicationConfig(root.replication)
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+    throw new ConfigError((err as Error).message)
+  }
+
+  if (storage.confirmationRequired && replication.requireQuorumOnUpload) {
+    fail(
+      'replication.requireQuorumOnUpload',
+      'cannot be true while storage.confirmationRequired is true'
+    )
+  }
+
   return {
-    nodes,
+    nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
     storeFolder,
     logLevel: logLevel as LogLevel,
     peerDiscovery: { bootstrap, listen },
     serverPort,
     diskUsageScanPeriod,
+    peeringSchedule,
     uploadLimitSizeBytes: root.uploadLimitSizeBytes as number,
     maxFileCount: root.maxFileCount as number,
     findFileTimeout,
@@ -199,7 +284,9 @@ export function validateConfig(raw: unknown): Config {
     trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
     rateLimits: root.rateLimits as Config['rateLimits'],
     adminApiKey: (root.adminApiKey ?? '') as string,
-    enableDebugApi: root.enableDebugApi === true
+    enableDebugApi: root.enableDebugApi === true,
+    storage,
+    replication
   }
 }
 

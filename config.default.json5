@@ -25,6 +25,9 @@
   },
   serverPort: 4000,
   diskUsageScanPeriod: '*/30 * * * * *',
+  // Redials the nodes above that are not connected. Bootstrap dials once and
+  // never again, so without this a mesh never recovers from a restart.
+  peeringSchedule: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,
   findFileTimeout: 20000,
@@ -50,5 +53,47 @@
   // Admin routes return 503 while this value is empty.
   adminApiKey: '',
   // The debug API is absent unless explicitly enabled; it still requires the admin key.
-  enableDebugApi: false
+  enableDebugApi: false,
+  // Bounded storage lifecycle. Every option has a documented default, so an
+  // existing configuration file keeps working without this section.
+  storage: {
+    maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
+    maxConcurrentUploads: 32, // Uploads writing into the blockstore at the same time; over this, 429
+    diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
+    // true keeps an upload temporary until POST /api/file/:cid/confirm.
+    // Enabling it is a protocol change: clients must perform that call.
+    confirmationRequired: false,
+    temporaryTtlMs: 86400000, // 24 h. Lifetime of an unconfirmed upload
+    gc: {
+      // Controls the scheduled collector only; POST /api/storage/gc always runs
+      // on demand. Blocks are freed only when space is short, so leaving this on
+      // costs nothing until one of the thresholds below is reached.
+      enabled: true,
+      schedule: '0 */15 * * * *',
+      highWatermarkBytes: 53687091200, // 50 GiB. Collection starts above this blockstore size
+      lowWatermarkBytes: 42949672960 // 40 GiB. Collection reclaims down to this size
+    }
+  },
+  // Replication across the nodes listed in `nodes`. Copies travel over libp2p,
+  // so a peer needs no HTTP address and no shared secret: the handshake already
+  // proves which node is calling, and no extra configuration is needed.
+  replication: {
+    // Whether this node places copies of its own content. Answering a peer that
+    // wants to place a copy here does not depend on it. Turning this off leaves
+    // every file in a single copy, on this node only.
+    enabled: true,
+    // How many nodes should hold a file, including this one, by file age.
+    // Copies shrink as content ages instead of being tracked by access time,
+    // which would record when users fetch their files.
+    placement: [
+      { minAgeMs: 0, copies: 4 }, // fresh
+      { minAgeMs: 15552000000, copies: 3 }, // older than 180 days
+      { minAgeMs: 31536000000, copies: 2 } // older than 365 days
+    ],
+    ackQuorum: 1, // Including this node. Strict uploads need >= 2 so a remote copy is required.
+    requireQuorumOnUpload: false, // Incompatible with confirmationRequired; needs ackQuorum >= 2
+    requestTimeoutMs: 30000,
+    repairEnabled: true,
+    repairSchedule: '0 */30 * * * *'
+  }
 }

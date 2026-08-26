@@ -12,6 +12,7 @@ import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
 import { createMultipartLimits } from '../src/security/uploadLimits.js'
+import { FileLifecycleBusyError } from '../src/storage/registry.js'
 import { FileNotFoundError } from '../src/utils/fileErrors.js'
 
 describe('CORS origin policy', () => {
@@ -123,6 +124,13 @@ describe('public error mapping', () => {
       }
     )
   })
+
+  it('reports an active lifecycle without exposing transaction details', () => {
+    assert.deepEqual(getPublicError(new FileLifecycleBusyError('secret-cid')), {
+      status: 409,
+      body: { error: 'File lifecycle is busy' }
+    })
+  })
 })
 
 describe('streaming multipart limits', () => {
@@ -206,6 +214,7 @@ describe('route access policy', () => {
 
   before(async () => {
     const file = Router().get('/test', (req, res) => res.send({ public: true }))
+    const fileAdminRouter = Router().post('/test/confirm', (req, res) => res.send({ admin: true }))
     const publicNodeRouter = Router().get('/health', (req, res) => res.send({ public: true }))
     const node = Router()
       .get('/info', (req, res) => res.send({ admin: true }))
@@ -213,10 +222,22 @@ describe('route access policy', () => {
     const helia = Router().get('/test', (req, res) => res.send({ admin: true }))
     const libp2p = Router().get('/test', (req, res) => res.send({ admin: true }))
     const debug = Router().get('/test', (req, res) => res.send({ admin: true }))
+    const storage = Router().get('/metrics', (req, res) => res.send({ public: true }))
+    const storageAdminRouter = Router().post('/gc', (req, res) => res.send({ admin: true }))
 
     mountApiRoutes(
       app,
-      { file, publicNodeRouter, node, helia, libp2p, debug },
+      {
+        file,
+        fileAdminRouter,
+        publicNodeRouter,
+        node,
+        helia,
+        libp2p,
+        debug,
+        storage,
+        storageAdminRouter
+      },
       createApiKeyAuth(key),
       false
     )
@@ -228,21 +249,18 @@ describe('route access policy', () => {
 
   after(async () => closeServer?.())
 
-  it('keeps health and file transfer public', async () => {
+  it('keeps health, file transfer, and the storage report public', async () => {
     assert.equal((await fetch(`${serverUrl}/api/node/health`)).status, 200)
     assert.equal((await fetch(`${serverUrl}/api/file/test`)).status, 200)
+    assert.equal((await fetch(`${serverUrl}/api/storage/metrics`)).status, 200)
   })
 
-  it('protects node information, Helia, and libp2p routes', async () => {
-    for (const path of [
-      '/api/node/info',
-      '/api/node/future',
-      '/api/helia/test',
-      '/api/libp2p/test'
-    ]) {
-      assert.equal((await fetch(`${serverUrl}${path}`)).status, 401)
+  it('protects the routes that make content durable or reclaim it', async () => {
+    for (const path of ['/api/file/test/confirm', '/api/storage/gc']) {
+      assert.equal((await fetch(`${serverUrl}${path}`, { method: 'POST' })).status, 401)
       assert.equal(
-        (await fetch(`${serverUrl}${path}`, { headers: { 'x-api-key': key } })).status,
+        (await fetch(`${serverUrl}${path}`, { method: 'POST', headers: { 'x-api-key': key } }))
+          .status,
         200
       )
     }
@@ -260,11 +278,14 @@ describe('route access policy', () => {
       debugApp,
       {
         file: emptyRouter,
+        fileAdminRouter: emptyRouter,
         publicNodeRouter: emptyRouter,
         node: emptyRouter,
         helia: emptyRouter,
         libp2p: emptyRouter,
-        debug
+        debug,
+        storage: emptyRouter,
+        storageAdminRouter: emptyRouter
       },
       createApiKeyAuth(key),
       true

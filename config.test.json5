@@ -11,6 +11,7 @@
   },
   serverPort: 4000,
   diskUsageScanPeriod: '*/30 * * * * *',
+  peeringSchedule: '*/30 * * * * *',
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,
   findFileTimeout: 20000,
@@ -24,5 +25,30 @@
     read: { windowMs: 60000, limit: 100 }
   },
   adminApiKey: '',
-  enableDebugApi: false
+  enableDebugApi: false,
+  storage: {
+    maxRequestSizeBytes: 536870912,
+    maxConcurrentUploads: 2,
+    diskReserveBytes: 1048576,
+    confirmationRequired: false,
+    temporaryTtlMs: 3600000,
+    gc: {
+      enabled: true,
+      schedule: '0 */15 * * * *',
+      highWatermarkBytes: 10485760,
+      lowWatermarkBytes: 5242880
+    }
+  },
+  replication: {
+    enabled: false,
+    placement: [
+      { minAgeMs: 0, copies: 3 },
+      { minAgeMs: 31536000000, copies: 2 }
+    ],
+    ackQuorum: 1,
+    requireQuorumOnUpload: false,
+    requestTimeoutMs: 5000,
+    repairEnabled: false,
+    repairSchedule: '0 */30 * * * *'
+  }
 }

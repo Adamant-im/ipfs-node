@@ -1,14 +1,9 @@
-import { blockstorePath, datastorePath } from './store.js'
-import { dirSize, availableStorageSize } from './utils/utils.js'
 import { CronJob } from 'cron'
 import { config } from './config.js'
+import { getStorageMetrics, refreshStorageMetrics } from './storage/metrics.js'
 import { logger } from './utils/logger.js'
 
 const oneMb = 1048576
-
-let blockstoreSizeMb = 0
-let datastoreSizeMb = 0
-let availableSizeInMb = 0
 
 let started = false
 export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
@@ -24,26 +19,24 @@ async function scan() {
   logger.info('[Cron] Running "diskUsage" cronjob.')
   const start = Date.now()
 
-  const blockstoreSize = await dirSize(blockstorePath)
-  if (blockstoreSize > 0) {
-    blockstoreSizeMb = blockstoreSize / oneMb
-  }
+  // The same scan feeds the byte-accurate storage report, so both stay in step.
+  await refreshStorageMetrics()
 
-  const datastoreSize = await dirSize(datastorePath)
-  if (datastoreSize > 0) {
-    datastoreSizeMb = datastoreSize / oneMb
-  }
-
-  availableSizeInMb = Number((await availableStorageSize(blockstorePath)) / BigInt(oneMb))
   logger.info(`Check folder size took ${Date.now() - start} ms.`)
 }
 
 scan().catch((err) => logger.error(`${err.message}\n${err.stack}`))
 
+/**
+ * Disk usage in megabytes, kept for the existing `/api/node/info` payload.
+ * Byte-accurate values and lifecycle counters live in the storage metrics.
+ */
 export function getDiskUsageStats() {
+  const metrics = getStorageMetrics()
+
   return {
-    blockstoreSizeMb,
-    datastoreSizeMb,
-    availableSizeInMb
+    blockstoreSizeMb: metrics.blockstoreBytes / oneMb,
+    datastoreSizeMb: metrics.datastoreBytes / oneMb,
+    availableSizeInMb: metrics.availableBytes / oneMb
   }
 }

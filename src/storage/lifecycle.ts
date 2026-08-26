@@ -1,0 +1,292 @@
+import type { UnixFS } from '@helia/unixfs'
+import type { CID } from 'multiformats/cid'
+import type { IpfsNode } from '../ipfs-node.js'
+import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
+import {
+  FileLifecycleBusyError,
+  isLifecycleBusy,
+  type FileRecord,
+  type FileRegistry,
+  type LockedFileRegistry
+} from './registry.js'
+
+/**
+ * The lifecycle transitions that change a pin and a record together.
+ *
+ * They take what they work on rather than reaching for the node and the
+ * registry the process happens to have started with — the same shape garbage
+ * collection already uses. That is what makes them exercisable against a
+ * throwaway node in a test, which matters more here than elsewhere: each of
+ * them writes `pinned` and `heldLocally`, so a mistake produces a record that
+ * claims a protection the blockstore does not have.
+ */
+export interface LifecycleTarget {
+  node: IpfsNode
+  registry: FileRegistry
+}
+
+export interface RegisterPinnedOptions extends LifecycleTarget {
+  unixfs: UnixFS
+  cid: CID
+  /** Display name recorded for the file; defaults to its CID. */
+  name?: string
+  /** Lifetime an unconfirmed upload would get; unused here, since this path is durable. */
+  temporaryTtlMs: number
+  /** Bounds the DAG walk when the content still has to be fetched. */
+  pinTimeoutMs?: number
+}
+
+/** Build the optional deadline shared by one pin and its offline stat. */
+function pinSignal(timeoutMs: number | undefined): AbortSignal | undefined {
+  return timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
+}
+
+/**
+ * Put both sides of a lifecycle transition back to their observed baseline.
+ *
+ * Datastore implementations may reject after persisting a write. Merely
+ * undoing the pin would then leave the newly written record claiming the
+ * opposite state. Restore the pin first and the record second while the CID
+ * lock is still held, and preserve every failure when rollback is incomplete.
+ */
+async function restoreLifecycleBaseline(
+  registry: LockedFileRegistry,
+  node: IpfsNode,
+  cid: CID,
+  previous: FileRecord | undefined,
+  wasPinned: boolean,
+  originalError: unknown,
+  signal?: AbortSignal
+): Promise<never> {
+  const rollbackErrors: unknown[] = []
+
+  try {
+    if (wasPinned) {
+      await pinFile(node, cid, signal)
+    } else {
+      await unpinFile(node, cid)
+    }
+  } catch (err) {
+    rollbackErrors.push(err)
+  }
+
+  try {
+    if (previous === undefined) {
+      await registry.remove(cid.toString())
+    } else {
+      await registry.save(previous)
+    }
+  } catch (err) {
+    rollbackErrors.push(err)
+  }
+
+  if (rollbackErrors.length > 0) {
+    const message = originalError instanceof Error ? originalError.message : String(originalError)
+    throw new AggregateError(
+      [originalError, ...rollbackErrors],
+      `Lifecycle operation failed and rollback was incomplete: ${message}`
+    )
+  }
+
+  throw originalError
+}
+
+/**
+ * Pin content and record it as durable, with the CID locked throughout.
+ *
+ * Helia `pins.add` is not aborted: cancelling the DAG walk leaks block pin
+ * refs that collection cannot reclaim. Callers that still need a bound fetch
+ * the DAG first (intake) and pin a local tree. `pinTimeoutMs` is a pre-check
+ * on the pin and a bound on the offline stat afterwards.
+ */
+export async function registerPinnedFile(options: RegisterPinnedOptions): Promise<FileRecord> {
+  const key = options.cid.toString()
+
+  return options.registry.withExclusiveCids([key], async (registry) =>
+    registerPinnedUnderLock(registry, options, await registry.get(key))
+  )
+}
+
+/**
+ * The body of {@link registerPinnedFile}, for a caller that already holds the
+ * CID lock and has read the record.
+ */
+async function registerPinnedUnderLock(
+  registry: LockedFileRegistry,
+  options: RegisterPinnedOptions,
+  previous: FileRecord | undefined
+): Promise<FileRecord> {
+  const signal = pinSignal(options.pinTimeoutMs)
+  const wasPinned = previous?.pinned === true || (await isDirectlyPinned(options.node, options.cid))
+
+  try {
+    await pinFile(options.node, options.cid, signal)
+
+    // Everything is local after pinning, so the deduplicated DAG size is what
+    // this node actually holds on disk for the file.
+    const stats = await options.unixfs.stat(options.cid, {
+      extended: true,
+      offline: true,
+      signal
+    })
+
+    return (
+      await registry.registerReplacing(
+        {
+          cid: options.cid.toString(),
+          name: options.name ?? options.cid.toString(),
+          fileSize: Number(stats.size),
+          storedBytes: Number(stats.deduplicatedDagSize),
+          protectedBytes: Number(stats.deduplicatedDagSize)
+        },
+        { confirmationRequired: false, temporaryTtlMs: options.temporaryTtlMs }
+      )
+    ).record
+  } catch (err) {
+    return restoreLifecycleBaseline(
+      registry,
+      options.node,
+      options.cid,
+      previous,
+      wasPinned,
+      err,
+      signal
+    )
+  }
+}
+
+export interface ConfirmOptions extends RegisterPinnedOptions {
+  /**
+   * What to do with a CID the node never accepted through an upload.
+   *
+   * The confirmation endpoint reports it as unknown; an explicit pin request
+   * stores and registers it.
+   */
+  registerUnknown?: boolean
+  /**
+   * Fetch or validate content before an explicit unknown-CID pin.
+   *
+   * Required when `registerUnknown` is true. It runs before the CID lock so a
+   * bounded network transfer cannot block other lifecycle work for this CID.
+   */
+  prepareForPin?: () => Promise<void>
+  now?: number
+}
+
+/**
+ * Make a known file durable, or adopt an unknown one.
+ *
+ * The final state check, the pin and the registry write happen under one CID
+ * lock. Split apart, a concurrent release could remove the pin between the two,
+ * and this would then publish a `confirmed`, `pinned` record for content that is
+ * no longer protected.
+ *
+ * @returns The stored record, or `undefined` for an unknown CID that this call
+ *   was not asked to adopt
+ */
+export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRecord | undefined> {
+  const key = options.cid.toString()
+
+  if (options.registerUnknown === true) {
+    if (options.prepareForPin === undefined) {
+      throw new Error(`CID ${key} must be fetched or validated before it can be adopted`)
+    }
+
+    await options.prepareForPin()
+  }
+
+  return options.registry.withExclusiveCids([key], async (registry) => {
+    const current = await registry.get(key)
+
+    if (!current) {
+      return options.registerUnknown === true
+        ? registerPinnedUnderLock(registry, options, current)
+        : undefined
+    }
+
+    if (isLifecycleBusy(current)) {
+      throw new FileLifecycleBusyError(key)
+    }
+
+    const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
+    const signal = pinSignal(options.pinTimeoutMs)
+
+    try {
+      await pinFile(options.node, options.cid, signal)
+
+      return await registry.save({
+        ...current,
+        state: 'confirmed',
+        expiresAt: null,
+        confirmedAt: current.confirmedAt ?? options.now ?? Date.now(),
+        pinned: true,
+        heldLocally: true,
+        admissionId: undefined,
+        admissionSettledAt: undefined,
+        replicaStage: undefined
+      })
+    } catch (err) {
+      return restoreLifecycleBaseline(
+        registry,
+        options.node,
+        options.cid,
+        current,
+        wasPinned,
+        err,
+        signal
+      )
+    }
+  })
+}
+
+export interface ReleaseOptions extends LifecycleTarget {
+  cid: CID
+}
+
+/**
+ * Release a file so garbage collection may reclaim it.
+ *
+ * Blocks stay on disk until the collector runs, which keeps the action
+ * reversible until then.
+ *
+ * @returns The released record, or `undefined` when the registry does not know
+ *   the CID — in which case nothing was unpinned either
+ */
+export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRecord | undefined> {
+  const key = options.cid.toString()
+
+  return options.registry.withExclusiveCids([key], async (registry) => {
+    const current = await registry.get(key)
+
+    // Nothing is unpinned for a CID the registry does not know. Startup records
+    // every pin this node holds, so an unknown CID is either not pinned at all
+    // or has not been reconciled yet — and reconciliation is exactly the window
+    // in which removing a pin would drop protection from content that predates
+    // the registry.
+    if (!current) {
+      return undefined
+    }
+
+    if (isLifecycleBusy(current)) {
+      throw new FileLifecycleBusyError(key)
+    }
+
+    const wasPinned = current.pinned || (await isDirectlyPinned(options.node, options.cid))
+
+    try {
+      await unpinFile(options.node, options.cid)
+
+      return await registry.save({
+        ...current,
+        state: 'expired',
+        pinned: false,
+        heldLocally: false,
+        admissionId: undefined,
+        admissionSettledAt: undefined,
+        replicaStage: undefined
+      })
+    } catch (err) {
+      return restoreLifecycleBaseline(registry, options.node, options.cid, current, wasPinned, err)
+    }
+  })
+}

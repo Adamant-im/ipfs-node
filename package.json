@@ -1,6 +1,6 @@
 {
   "name": "ipfs-node",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "IPFS decentralized file storage and transfers",
   "main": "dist/index.js",
   "private": true,
@@ -40,6 +40,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.11.0",
     "husky": "^9.1.7",
+    "ipfs-unixfs-importer": "^17.0.1",
     "lint-staged": "^17.3.0",
     "nodemon": "^3.1.14",
     "prettier": "^3.9.6",

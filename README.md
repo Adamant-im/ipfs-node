@@ -56,9 +56,38 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "read": { "windowMs": 60000, "limit": 100 }
   },
   "adminApiKey": "",
-  "enableDebugApi": false
+  "enableDebugApi": false,
+  "peeringSchedule": "*/30 * * * * *",
+  "storage": {
+    "maxRequestSizeBytes": 536870912,
+    "maxConcurrentUploads": 32,
+    "diskReserveBytes": 5368709120,
+    "confirmationRequired": false,
+    "temporaryTtlMs": 86400000,
+    "gc": {
+      "enabled": true,
+      "schedule": "0 */15 * * * *",
+      "highWatermarkBytes": 53687091200,
+      "lowWatermarkBytes": 42949672960
+    }
+  },
+  "replication": {
+    "enabled": true,
+    "placement": [
+      { "minAgeMs": 0, "copies": 4 },
+      { "minAgeMs": 15552000000, "copies": 3 },
+      { "minAgeMs": 31536000000, "copies": 2 }
+    ],
+    "ackQuorum": 1,
+    "requireQuorumOnUpload": false,
+    "requestTimeoutMs": 30000,
+    "repairEnabled": true,
+    "repairSchedule": "0 */30 * * * *"
+  }
 }
 ```
+
+`storage` and `replication` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Both sections are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
 
 Generate the administrative secret before enabling operator endpoints:
 
@@ -77,18 +106,25 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Leave `trustProxy` as `false` for direct connections; configure exact proxy addresses, CIDR ranges, or a verified hop count behind a proxy
 - Set `enableDebugApi: true` only when the authenticated debug route is operationally required
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
+- Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
+- `storage.gc.enabled` is on by default and frees blocks only when the blockstore passes `highWatermarkBytes` or free space falls into `diskReserveBytes`; released files stay readable until then
+- `replication.enabled` is on by default and needs no key and no extra address: copies travel on a libp2p protocol between the peers already listed in `nodes`. Turning it off leaves every file in a single copy
+- Tune `replication.placement` if the deployment wants a different number of copies per file age
+- `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did
 
 Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 
 ## HTTP access policy
 
-| Class                | Routes                                                        | Policy                                                                    |
-| -------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Public               | `GET /`, `GET /api/node/health`                               | No authentication                                                         |
-| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                 | No authentication; endpoint-specific rate limits and upload limits apply  |
-| Administrative       | `GET /api/node/info`, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                 |
-| Disabled by default  | all `/api/debug/*`                                            | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key` |
-| Authenticated user   | None                                                          | The service has no end-user identity or session layer                     |
+| Class                | Routes                                                                                                                                                 | Policy                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                                                                                                                                                                     |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                                                              |
+| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                                                                                                                                                                            |
+| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                                                             |
+| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake. Pin, store, stage, commit, and abort are accepted only from the peers listed in `nodes`. `cache` is open to any peer (same effect as a public read), bounded by disk reserve and intake budget |
+| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                                                             |
+| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                                                                                                                                                                 |
 
 Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
 
@@ -102,7 +138,7 @@ This is an explicit compatibility decision, not an authorization guarantee. A de
 
 The multipart contract accepts `files` parts only. Text fields are rejected with a controlled `400 Bad Request` response.
 
-Interrupted uploads can leave unpinned blocks in the blockstore. Deleting only the returned root CID would miss descendant blocks, while recursively deleting content-addressed blocks could remove data shared with pinned files. Until [#22](https://github.com/Adamant-im/ipfs-node/issues/22) adds reference-aware garbage collection, operators must monitor and bound blockstore growth at the deployment layer.
+An interrupted upload no longer leaves blocks behind. Each request owns a session that records the blocks it created; a rejected, aborted, or partially failed request removes exactly those, skipping blocks that already existed, blocks a concurrent upload is still writing, and blocks a pin protects. Whatever survives cleanup is unpinned and reclaimable by garbage collection. Strict-quorum uploads prepare rollback-capable remote pins and commit them concurrently only after the local decision is durable; success is returned only after permanent copies still satisfy the quorum. Blockstore growth is bounded by the disk reserve, the aggregate request size, the concurrency limit, and the collection watermarks — see [docs/storage-lifecycle.md](docs/storage-lifecycle.md).
 
 ### CORS
 
@@ -214,9 +250,75 @@ Example response:
 ```json
 {
   "filesNames": ["file.txt"],
-  "cids": ["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"]
+  "cids": ["bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm"],
+  "files": [
+    {
+      "cid": "bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm",
+      "name": "file.txt",
+      "state": "confirmed",
+      "expiresAt": null
+    }
+  ],
+  "replication": {
+    "mode": "quorum",
+    "desiredCopies": 4,
+    "copies": 3,
+    "required": 1,
+    "acknowledged": 1,
+    "replicaCount": 0,
+    "cachedCount": 0,
+    "satisfied": true,
+    "networkTooSmall": true,
+    "failedAttemptCount": 0,
+    "attempts": []
+  }
 }
 ```
+
+The `replication` object on this public route is counts and per-attempt
+outcomes only: no node names, peer ids, or peer error text.
+
+Upload responses use the following stable status contract:
+
+| Status                      | Meaning                                                                    |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `200 OK`                    | Every file was stored and pinned                                           |
+| `400 Bad Request`           | No file was sent, too many files, or a single file exceeded its size limit |
+| `413 Payload Too Large`     | The combined size of the files exceeded `storage.maxRequestSizeBytes`      |
+| `429 Too Many Requests`     | The upload rate limit or the concurrent upload limit was exceeded          |
+| `503 Service Unavailable`   | The replication quorum was required and could not be reached               |
+| `507 Insufficient Storage`  | Storing the request would consume `storage.diskReserveBytes`               |
+| `500 Internal Server Error` | Storage or replica settlement failed; do not treat it as a clean rejection |
+
+### Check the state of a file
+
+```bash
+curl --fail-with-body \
+  https://ipfs.example.org/api/file/bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm/status
+```
+
+Example response:
+
+```json
+{
+  "cid": "bafkreif7v2d2wdyh6pz5y2pwmrpegfpdgh5u7n5vomxnbofraqhuk2wapm",
+  "state": "confirmed",
+  "pinned": true,
+  "createdAt": 1720614998797,
+  "expiresAt": null,
+  "confirmedAt": 1720614998797,
+  "replication": { "acknowledged": 1, "required": 1, "heldLocally": true }
+}
+```
+
+### Read the storage report and policy
+
+```bash
+curl --fail-with-body https://ipfs.example.org/api/storage/metrics
+curl --fail-with-body https://ipfs.example.org/api/storage/policy
+```
+
+`metrics` reports pinned, reclaimable, available, and reserved bytes together with the lifecycle counters, and the libp2p replication protocol this node speaks — nodes on different protocol versions cannot place copies on each other, so a mixed deployment is visible here. `policy` reports the limits and the durability mode a client should expect before uploading.
 
 ### Download a file
 
@@ -260,6 +362,18 @@ curl --fail-with-body \
   --header 'x-api-key: your-generated-key' \
   https://ipfs.example.org/api/node/info
 ```
+
+### Run garbage collection
+
+Add `?dryRun=true` to report the exact CIDs that would be released and retained without deleting anything. This is the supported way to review a deletion policy before enabling the scheduled collector.
+
+```bash
+curl --fail-with-body --request POST \
+  --header 'x-api-key: your-generated-key' \
+  'https://ipfs.example.org/api/storage/gc?dryRun=true'
+```
+
+`POST /api/storage/repair` places copies of any confirmed file whose designated holders have not all acknowledged. A collection pass also hands over local copies of files that belong on other nodes, once those nodes confirm they hold them; the report lists them under `demoted`.
 
 ## Validation
 

@@ -1,4 +1,6 @@
 import multer from 'multer'
+import { RequestSizeLimitError } from '../storage/limits.js'
+import { FileLifecycleBusyError } from '../storage/registry.js'
 import { FileNotFoundError } from '../utils/fileErrors.js'
 
 export type PublicError = {
@@ -32,6 +34,16 @@ export function getPublicError(error: unknown): PublicError {
 
   if (error instanceof FileNotFoundError) {
     return { status: 408, body: { error: 'File request timed out' } }
+  }
+
+  if (error instanceof FileLifecycleBusyError) {
+    return { status: 409, body: { error: 'File lifecycle is busy' } }
+  }
+
+  // Raised while streaming when the parts of one request exceed the aggregate
+  // limit. The configured limit is not echoed back to the client.
+  if (error instanceof RequestSizeLimitError) {
+    return { status: 413, body: { error: 'Upload size limit exceeded' } }
   }
 
   if (error instanceof multer.MulterError) {
