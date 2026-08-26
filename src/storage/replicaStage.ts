@@ -100,7 +100,7 @@ async function registerStableReplica(
       pinned: true,
       heldLocally: true,
       replicas: previous?.replicas ?? [],
-      admissionId: undefined,
+      admissionId: previous?.admissionId,
       replicaStage: undefined
     })
 
@@ -127,7 +127,7 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
     const previous = await registry.get(key)
 
     if (previous?.replicaStage !== undefined) {
-      const createdPin = await pinFile(options.node, options.cid, signal)
+      await pinFile(options.node, options.cid, signal)
 
       try {
         const transactionIds = previous.replicaStage.transactionIds.includes(options.transactionId)
@@ -144,7 +144,9 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
 
         return { record, staged: true }
       } catch (err) {
-        return restoreStageWrite(registry, options.node, options.cid, previous, createdPin, err)
+        // Other transactions still own this pin. A failed join must not unpin
+        // it, even when this call recreated a pin a collector had just removed.
+        return restoreStageWrite(registry, options.node, options.cid, previous, false, err)
       }
     }
 

@@ -90,8 +90,8 @@
       { minAgeMs: 15552000000, copies: 3 }, // older than 180 days
       { minAgeMs: 31536000000, copies: 2 } // older than 365 days
     ],
-    ackQuorum: 1, // Acknowledgements required before an upload is durable
-    requireQuorumOnUpload: false, // true rejects an upload that cannot reach the quorum
+    ackQuorum: 1, // Including this node. Strict uploads need >= 2 so a remote copy is required.
+    requireQuorumOnUpload: false, // Incompatible with confirmationRequired; needs ackQuorum >= 2
     requestTimeoutMs: 30000,
     repairEnabled: true,
     repairSchedule: '0 */30 * * * *'

@@ -12,11 +12,11 @@ import type { IpfsNode } from '../ipfs-node.js'
  * every release, for no reason.
  *
  * Raise it when the wire format changes in a way an older node cannot read —
- * a new required field, a different framing, or an operation whose meaning
- * changed. Adding an operation an older node simply never sends does not
- * require it.
+ * a new required field, a different framing, or an operation this node sends
+ * that an older handler would reject. Adding an operation an older node simply
+ * never sends does not require it.
  */
-export const REPLICATION_PROTOCOL_VERSION = '1.0.0'
+export const REPLICATION_PROTOCOL_VERSION = '1.1.0'
 
 /**
  * Protocol nodes use to place copies of a file.

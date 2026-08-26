@@ -136,4 +136,11 @@ describe('resolveReplicationConfig', () => {
     assert.equal(replication.ackQuorum, 2)
     assert.equal(replication.requireQuorumOnUpload, true)
   })
+
+  it('rejects a strict upload that could succeed with only the local copy', () => {
+    assert.throws(
+      () => resolveReplicationConfig({ ackQuorum: 1, requireQuorumOnUpload: true }),
+      /ackQuorum/
+    )
+  })
 })

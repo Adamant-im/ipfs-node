@@ -62,5 +62,13 @@ export function getReplicationState() {
     repairSchedule: config.replication.repairSchedule,
     running,
     lastRun: lastReport
+      ? {
+          checked: lastReport.checked,
+          underReplicated: lastReport.underReplicated,
+          repaired: lastReport.repaired.length,
+          stillMissing: lastReport.stillMissing.length,
+          rescued: lastReport.rescued.length
+        }
+      : null
   }
 }

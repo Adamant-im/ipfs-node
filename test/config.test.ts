@@ -154,6 +154,18 @@ describe('validateConfig', () => {
       /origin/i
     )
   })
+
+  it('rejects strict quorum while confirmation is still required', () => {
+    assert.throws(
+      () =>
+        validateConfig({
+          ...validRaw(),
+          storage: { confirmationRequired: true },
+          replication: { ackQuorum: 2, requireQuorumOnUpload: true }
+        }),
+      /requireQuorumOnUpload/
+    )
+  })
 })
 
 describe('the config loaded at startup', () => {

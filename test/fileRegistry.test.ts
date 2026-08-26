@@ -5,7 +5,13 @@ import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { FsDatastore } from 'datastore-fs'
 import { Key } from 'interface-datastore'
-import { FileRegistry, isExpired, isReclaimable, type FileRecord } from '../src/storage/registry.js'
+import {
+  FileRegistry,
+  isExpired,
+  isReclaimable,
+  isSettledHeldFile,
+  type FileRecord
+} from '../src/storage/registry.js'
 
 const CID_A = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
 const CID_B = 'bafkreihfzyt2g6pbd4rhk67deek7xh33xams74spn72eqq5qhx2ypphvii'
@@ -427,6 +433,62 @@ describe('FileRegistry', () => {
     assert.equal(refreshed?.admissionId, 'upload-one')
   })
 
+  it('does not confirm a live replica stage through a permanent store', async () => {
+    const registry = createRegistry()
+    const staged = await registry.save({
+      cid: CID_A,
+      name: CID_A,
+      state: 'temporary',
+      createdAt: 1,
+      expiresAt: 2,
+      confirmedAt: null,
+      fileSize: 100,
+      storedBytes: 120,
+      protectedBytes: 120,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      replicaStage: { transactionIds: ['tx-live'], previous: null }
+    })
+
+    const stored = await registerFile(registry)
+
+    assert.equal(stored.record.state, 'temporary')
+    assert.deepEqual(stored.record.replicaStage?.transactionIds, ['tx-live'])
+    assert.equal(stored.record.revision, staged.revision)
+  })
+
+  it('lets a later local upload take over a prepared replica', async () => {
+    const registry = createRegistry()
+    await registry.save({
+      cid: CID_A,
+      name: CID_A,
+      state: 'temporary',
+      createdAt: 1,
+      expiresAt: 2,
+      confirmedAt: null,
+      fileSize: 100,
+      storedBytes: 120,
+      protectedBytes: 120,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      replicaStage: { transactionIds: ['tx-live'], previous: null }
+    })
+
+    const stored = await registry.withExclusiveCids([CID_A], (locked) =>
+      locked.registerReplacing(newFile(), {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'upload-two'
+      })
+    )
+
+    assert.equal(stored.record.state, 'confirmed')
+    assert.equal(stored.record.replicaStage, undefined)
+    assert.equal(stored.record.admissionId, 'upload-two')
+  })
+
   it('refuses a public mutator called from inside its own lock', async () => {
     // The two ways to change a record — the locking mutators and the view
     // handed to withExclusiveCids — cannot be mixed: the inner call queues
@@ -510,5 +572,13 @@ describe('expiry rules', () => {
     const released: FileRecord = { ...record, state: 'expired', expiresAt: null, pinned: false }
 
     assert.equal(isReclaimable(released, 0), true)
+  })
+
+  it('treats only settled local copies as repair candidates', () => {
+    const held: FileRecord = { ...record, state: 'confirmed', expiresAt: null }
+
+    assert.equal(isSettledHeldFile(held), true)
+    assert.equal(isSettledHeldFile({ ...held, admissionId: 'upload-one' }), false)
+    assert.equal(isSettledHeldFile({ ...held, heldLocally: false }), false)
   })
 })

@@ -70,9 +70,14 @@ export interface ReplicationConfig {
    * which would record when users fetch their files.
    */
   placement: PlacementTier[]
-  /** Acknowledgements required before an upload is reported as durable. */
+  /** Acknowledgements required before an upload is reported as durable, including this node. */
   ackQuorum: number
-  /** When true an upload fails unless the acknowledgement quorum is reached. */
+  /**
+   * When true an upload fails unless the acknowledgement quorum is reached.
+   *
+   * Requires `ackQuorum >= 2` so a remote copy is part of the decision, and
+   * cannot be combined with `storage.confirmationRequired`.
+   */
   requireQuorumOnUpload: boolean
   /** Timeout of a single replication request to a peer node. */
   requestTimeoutMs: number
@@ -311,6 +316,13 @@ export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
   const mostCopies = Math.max(...placement.map((tier) => tier.copies))
   if (replication.ackQuorum > mostCopies) {
     fail('replication.ackQuorum', 'must not exceed the largest copy count in replication.placement')
+  }
+
+  if (replication.requireQuorumOnUpload && replication.ackQuorum < 2) {
+    fail(
+      'replication.ackQuorum',
+      'must be >= 2 when replication.requireQuorumOnUpload is true, so a strict upload cannot succeed with only the local copy'
+    )
   }
 
   return replication

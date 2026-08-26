@@ -130,7 +130,7 @@ than being open, so a node cannot be filled with permanently pinned content by
 an anonymous caller.
 
 Replication between nodes is not an HTTP route and uses no key at all. It runs
-on the libp2p protocol `/adamant/replication/1.0.0`, where the handshake already
+on the libp2p protocol `/adamant/replication/1.1.0`, where the handshake already
 proves the calling peer id cryptographically. Nothing has to be distributed, and
 a peer needs no HTTP address to be reachable.
 
@@ -239,9 +239,14 @@ libp2p and pins it before answering, so an acknowledgement means the copy exists
 and is protected there, not that a request was queued.
 
 When `replication.requireQuorumOnUpload` is enabled, the local and remote copies
-form one rollback-capable upload decision. Each peer first records its copy as a
-temporary, transaction-owned pin. If the required acknowledgements are not
-reached, the source withdraws every prepared copy and restores its own exact
+form one rollback-capable upload decision. `ackQuorum` counts the local copy, so
+the flag requires `ackQuorum >= 2`: otherwise the upload succeeds before any
+peer is asked. It cannot be combined with `storage.confirmationRequired`, which
+would skip placement until a later confirm that uses permanent `store`.
+
+Each peer first records its copy as a temporary, transaction-owned pin. If the
+required acknowledgements are not reached, the source withdraws every prepared
+copy — including peers whose `stage` ack was lost — and restores its own exact
 pre-upload pin and registry state before returning `503`. If any local or remote
 compensation fails, the route returns `500` instead: it must not describe an
 incomplete rollback as a clean rejection.
@@ -249,10 +254,12 @@ incomplete rollback as a clean rejection.
 After the local decision is durably recorded, the source commits the prepared
 copies. A lost commit acknowledgement does not turn an accepted request into a
 failure: the remote copy remains pinned and temporary, repair treats it as
-missing until it is promoted, and its TTL eventually restores the prior expired
-state or releases a newly created copy if the source never returns. Transaction
-owners and their restoration baselines live in the datastore, so restarting a
-peer does not turn a prepared copy into a permanent one.
+missing until it is promoted, and its TTL (three replication request timeouts)
+eventually restores the prior expired state or releases a newly created copy if
+the source never returns. Transaction owners and their restoration baselines
+live in the datastore, so restarting a peer does not turn a prepared copy into a
+permanent one. Live stages are kept through watermark pressure for that short
+window; `GET /api/storage/metrics` reports how many remain as `stagedReplicas`.
 
 Turning it off with `replication.enabled: false` makes the node store content
 **best effort** instead: one copy, on this node, pinned, with no promise that
@@ -434,15 +441,17 @@ copies are withdrawn as described above.
 
 ### Protocol version
 
-Copies are placed over the libp2p protocol `/adamant/replication/1.0.0`. The
+Copies are placed over the libp2p protocol `/adamant/replication/1.1.0`. The
 version in that identifier belongs to the wire format, not to the release: it
 says what two nodes must agree on to talk to each other, and that changes far
 less often than the software. Taking it from `package.json` would break
 interoperability on every release for no reason.
 
 Raise it when an older node can no longer read what a newer one sends — a new
-required field, different framing, or an operation whose meaning changed. Adding
-an operation that older nodes never send does not require it.
+required field, different framing, or an operation this node sends that an older
+handler would reject. Adding an operation that older nodes never send does not
+require it. `stage`, `commit`, and `abort` are sent by this node, which is why
+the identifier is `1.1.0`.
 
 libp2p negotiates the newest version both ends offer, so listing an older one
 alongside the current one is what allows a network to be upgraded one node at a
@@ -485,6 +494,11 @@ operational cost.
 - `availableBytes` — free space on the blockstore filesystem
 - `reservedBytes` and `usableBytes` — the disk reserve and what is left for uploads
 - `files` — how many files are in each lifecycle state
+- `stagedReplicas` — how many registry entries still belong to an in-flight
+  strict upload
+
+`replication.lastRun` on the same payload is counts only: the CID lists from a
+repair pass stay on `POST /api/storage/repair`, which is behind the admin key.
 
 A collection report also lists `demoted`: files whose local copy was handed over
 to their designated holders during that pass.

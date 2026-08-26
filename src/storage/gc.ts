@@ -62,8 +62,9 @@ export interface GcPlan {
  *
  * Confirmed files and live transaction-owned replica stages are never selected,
  * so durable content cannot be reclaimed and a strict acknowledgement cannot
- * disappear before its source settles it. An abandoned stage becomes eligible
- * normally once its TTL expires.
+ * disappear before its source settles it. Stage TTL is a few request timeouts,
+ * so an abandoned stage becomes eligible shortly afterwards rather than after
+ * the ordinary unconfirmed-upload lifetime.
  */
 export function planGarbageCollection(input: GcPlanInput): GcPlan {
   const now = input.now ?? Date.now()

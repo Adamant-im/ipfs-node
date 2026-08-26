@@ -33,14 +33,20 @@ export interface ReplicationAck {
   peerId: string
   ok: boolean
   outcome?: PlacementOutcome
-  /** True when this copy still belongs to an upload transaction. */
+  /**
+   * True when this copy still belongs to an upload transaction.
+   *
+   * Set on a failed attempt too when `stage` may have pinned before the ack
+   * was lost, so abort can still withdraw it.
+   */
   staged?: boolean
   error?: string
 }
 
 export interface ReplicationStoreResult {
-  outcome: PlacementOutcome
+  outcome: PlacementOutcome | 'failed'
   staged?: boolean
+  error?: string
 }
 
 export interface ReplicationReport {
@@ -165,6 +171,17 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
       try {
         const stored = await options.store(peer, cid)
         const result = typeof stored === 'string' ? { outcome: stored } : stored
+
+        if (result.outcome === 'failed') {
+          return {
+            node: peer.name,
+            peerId: peer.peerId,
+            ok: false,
+            staged: result.staged,
+            error: result.error ?? 'Replication store failed'
+          }
+        }
+
         return {
           node: peer.name,
           peerId: peer.peerId,

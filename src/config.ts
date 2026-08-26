@@ -253,6 +253,13 @@ export function validateConfig(raw: unknown): Config {
   const storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
   const replication = resolveReplicationConfig(root.replication)
 
+  if (storage.confirmationRequired && replication.requireQuorumOnUpload) {
+    fail(
+      'replication.requireQuorumOnUpload',
+      'cannot be true while storage.confirmationRequired is true'
+    )
+  }
+
   return {
     nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
     storeFolder,

@@ -531,6 +531,12 @@ export class FileRegistry {
     const now = options.now ?? Date.now()
     const existing = await this.get(file.cid)
 
+    // A permanent store or repair must not confirm a copy a strict upload can
+    // still abort. A later local upload passes `admissionId` and takes over.
+    if (existing?.replicaStage !== undefined && options.admissionId === undefined) {
+      return { record: existing, previous: existing }
+    }
+
     if (existing?.state === 'confirmed') {
       // Re-uploading already durable content must not weaken its state, and it
       // puts the blocks back on this node whether or not they were released.
@@ -613,6 +619,17 @@ export function isExpired(record: FileRecord, now: number = Date.now()): boolean
 /** Files that garbage collection is allowed to unpin and reclaim. */
 export function isReclaimable(record: FileRecord, now: number = Date.now()): boolean {
   return record.state !== 'confirmed' && isExpired(record, now)
+}
+
+/**
+ * Durable local copy that no in-flight upload still owns.
+ *
+ * Repair and handover skip records that still carry an admission token: those
+ * writes are mid-transaction, and treating them as settled would let `store`
+ * confirm a replica the upload can still abort.
+ */
+export function isSettledHeldFile(record: FileRecord): boolean {
+  return record.state === 'confirmed' && record.heldLocally && record.admissionId === undefined
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {

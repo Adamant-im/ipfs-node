@@ -14,7 +14,7 @@ import {
   releaseStoredFile,
   type LifecycleTarget
 } from './lifecycle.js'
-import { protectedStorageBytes, type FileRecord } from './registry.js'
+import { isSettledHeldFile, protectedStorageBytes, type FileRecord } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
@@ -122,11 +122,18 @@ export async function replicateUploadedFile(
 }
 
 /** Peers whose copies still belong to this upload transaction. */
-function stagedPeers(report: ReplicationReport): ReplicationPeer[] {
+function stagedPeers(
+  report: ReplicationReport,
+  options: { includeFailed: boolean }
+): ReplicationPeer[] {
   const peers = new Map(getReplicationPeers().map((peer) => [peer.peerId, peer]))
 
   return report.attempts
-    .filter((attempt) => attempt.ok && attempt.outcome === 'stored' && attempt.staged === true)
+    .filter(
+      (attempt) =>
+        attempt.staged === true &&
+        (options.includeFailed || (attempt.ok && attempt.outcome === 'stored'))
+    )
     .map((attempt) => peers.get(attempt.peerId))
     .filter((peer): peer is ReplicationPeer => peer !== undefined)
 }
@@ -135,15 +142,16 @@ function stagedPeers(report: ReplicationReport): ReplicationPeer[] {
  * Make every prepared copy permanent after the local upload decision commits.
  *
  * A lost acknowledgement cannot turn an accepted upload into a rejection. The
- * copy remains pinned as temporary, and replication repair probes it as missing
- * and promotes it with the idempotent permanent `store` operation.
+ * copy remains pinned as temporary. Repair skips records that still carry an
+ * `admissionId`; once that token is cleared it treats the staged copy as
+ * missing and promotes it with the idempotent permanent `store` operation.
  */
 export async function commitUploadedReplicas(
   cid: string,
   transactionId: string,
   report: ReplicationReport
 ): Promise<void> {
-  const peers = stagedPeers(report)
+  const peers = stagedPeers(report, { includeFailed: false })
   const results = await Promise.allSettled(
     peers.map((peer) => requestCommit(helia, peer.multiAddr, cid, transactionId, callOptions()))
   )
@@ -163,7 +171,7 @@ export async function abortUploadedReplicas(
   transactionId: string,
   report: ReplicationReport
 ): Promise<void> {
-  const peers = stagedPeers(report)
+  const peers = stagedPeers(report, { includeFailed: true })
   const results = await Promise.allSettled(
     peers.map((peer) => requestAbort(helia, peer.multiAddr, cid, transactionId, callOptions()))
   )
@@ -239,8 +247,18 @@ async function placeCopy(
     }
 
     if (transactionId !== undefined) {
-      const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
-      return { outcome: 'stored', staged: result.staged }
+      try {
+        const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
+        return { outcome: 'stored', staged: result.staged }
+      } catch (err) {
+        if ((err as Error).message.includes('Not authorized')) {
+          throw err
+        }
+
+        // The peer may have pinned before the ack was lost. Abort must still
+        // reach it; the copy must not count towards the quorum.
+        return { outcome: 'failed', staged: true, error: (err as Error).message }
+      }
     }
 
     await requestStore(helia, peer.multiAddr, cid, callOptions())
@@ -330,6 +348,14 @@ export async function releaseFile(cid: string): Promise<FileRecord | undefined> 
 /** Store a copy requested by another ADAMANT node. */
 export async function acceptReplica(cid: string): Promise<FileRecord> {
   return storageOperationLock.withShared(async () => {
+    const existing = await fileRegistry.get(cid)
+
+    if (existing?.replicaStage !== undefined) {
+      // A strict upload still owns this copy. Promoting it would make abort a
+      // no-op.
+      return existing
+    }
+
     // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
     // with no limit on how many transfers run at once, how much space they may
     // take together, or how large the content may be. The `accept` probe that
@@ -351,13 +377,11 @@ export async function acceptStagedReplica(
 ): Promise<{ storedBytes: number; staged: boolean }> {
   return storageOperationLock.withShared(async () => {
     await pullUnderIntakeLimits(cid)
-    // A deliberately short ordinary-upload TTL must not expire a replica while
-    // the source can still be waiting for its other placements and settlement
-    // calls. Three request windows cover both phases and scheduling overhead.
-    const settlementTtlMs = Math.max(
-      config.storage.temporaryTtlMs,
-      config.replication.requestTimeoutMs * 3
-    )
+    // Three request windows cover stage, the peer's own work, and commit or
+    // abort. The ordinary unconfirmed-upload TTL is a day; inheriting it would
+    // pin an abandoned stage through watermark pressure for far longer than
+    // settlement can take.
+    const settlementTtlMs = config.replication.requestTimeoutMs * 3
     const result = await stageReplica({
       ...lifecycleTarget(),
       unixfs: ifs,
@@ -715,10 +739,7 @@ export async function repairReplication(): Promise<RepairReport> {
   const peers = getReplicationPeers()
   const self = selfPeerId()
   const records = await fileRegistry.all()
-  const candidates = nextSweepBatch(
-    'repair',
-    records.filter((record) => record.state === 'confirmed' && record.heldLocally)
-  )
+  const candidates = nextSweepBatch('repair', records.filter(isSettledHeldFile))
 
   report.checked = candidates.length
 
@@ -804,9 +825,7 @@ export async function demoteReleasableCopies(
 
   const candidates = nextSweepBatch(
     'demote',
-    (await fileRegistry.all()).filter(
-      (record) => record.state === 'confirmed' && record.heldLocally
-    ),
+    (await fileRegistry.all()).filter(isSettledHeldFile),
     // A dry run must not take the batch: the real pass that follows would then
     // resume past the very files the operator was shown.
     { advance: options.dryRun !== true }

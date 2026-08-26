@@ -1347,6 +1347,97 @@ describe('strict-upload replica staging', () => {
     assert.equal(await isDirectlyPinned(node, cid), true)
   })
 
+  it('does not unpin a shared stage when a second claim fails to persist', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_500, 'replica-stage-join-fail'))
+
+    await stage(registry, cid, 'tx-one')
+    await unpinFile(node, cid)
+
+    let fail = true
+    const failing = new Proxy(registry, {
+      get: (target, property) => {
+        if (property !== 'save') {
+          return Reflect.get(target, property, target)
+        }
+
+        return async (value: FileRecord): Promise<FileRecord> => {
+          const stored = await target.save(value)
+
+          if (fail) {
+            fail = false
+            throw new Error('datastore acknowledgement failed')
+          }
+
+          return stored
+        }
+      }
+    }) as FileRegistry
+
+    await assert.rejects(
+      () =>
+        stageReplica({
+          node,
+          unixfs: ifs,
+          registry: failing,
+          cid,
+          transactionId: 'tx-two',
+          temporaryTtlMs: 1000,
+          now: 2000
+        }),
+      /datastore acknowledgement failed/
+    )
+
+    assert.equal(await isDirectlyPinned(node, cid), true)
+    assert.deepEqual((await registry.get(cid.toString()))?.replicaStage?.transactionIds, ['tx-one'])
+  })
+
+  it('does not confirm a prepared replica through a permanent store', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_600, 'replica-stage-store'))
+
+    await stage(registry, cid, 'tx-live')
+    const stored = await registerPinnedFile({
+      node,
+      registry,
+      unixfs: ifs,
+      cid,
+      temporaryTtlMs: 60_000
+    })
+
+    assert.equal(stored.state, 'temporary')
+    assert.deepEqual(stored.replicaStage?.transactionIds, ['tx-live'])
+    await abortReplica({ node, registry, cid, transactionId: 'tx-live' })
+    assert.equal(await registry.get(cid.toString()), undefined)
+  })
+
+  it('keeps a local upload token when the CID is already durable', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_700, 'replica-stage-admission'))
+    await pinFile(node, cid)
+    await registry.save({
+      cid: cid.toString(),
+      name: cid.toString(),
+      state: 'confirmed',
+      createdAt: 1000,
+      expiresAt: null,
+      confirmedAt: 1000,
+      fileSize: 21_700,
+      storedBytes: 21_700,
+      protectedBytes: 21_700,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      admissionId: 'mine'
+    })
+
+    const result = await stage(registry, cid, 'tx-other')
+
+    assert.equal(result.staged, false)
+    assert.equal((await registry.get(cid.toString()))?.admissionId, 'mine')
+    assert.equal((await registry.get(cid.toString()))?.replicaStage, undefined)
+  })
+
   it('restores an expired record after a prepared copy aborts', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(22_000, 'replica-stage-restore'))

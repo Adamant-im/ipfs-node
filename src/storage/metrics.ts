@@ -31,6 +31,8 @@ export interface StorageMetrics {
   /** Free bytes uploads may still use. */
   usableBytes: number
   files: Record<FileState, number> & { total: number }
+  /** Registry entries that still belong to an in-flight strict upload. */
+  stagedReplicas: number
   /** Unix epoch milliseconds of the last successful refresh. */
   updatedAt: number | null
 }
@@ -44,15 +46,10 @@ let cached: StorageMetrics = {
   reservedBytes: config.storage.diskReserveBytes,
   usableBytes: 0,
   files: { temporary: 0, confirmed: 0, expired: 0, total: 0 },
+  stagedReplicas: 0,
   updatedAt: null
 }
 
-/**
- * Recompute the storage report.
- *
- * Directory scans and a full registry sweep are too expensive for a request
- * path, so this runs on the disk usage schedule and the API serves the cache.
- */
 /**
  * Bytes the pins on this node protect.
  *
@@ -71,6 +68,12 @@ export function pinnedStorageBytes(
     .reduce((total, record) => total + protectedStorageBytes(record), 0)
 }
 
+/**
+ * Recompute the storage report.
+ *
+ * Directory scans and a full registry sweep are too expensive for a request
+ * path, so this runs on the disk usage schedule and the API serves the cache.
+ */
 export async function refreshStorageMetrics(): Promise<StorageMetrics> {
   const [blockstoreBytes, datastoreBytes, availableBytes, records] = await Promise.all([
     dirSize(blockstorePath),
@@ -92,6 +95,7 @@ export async function refreshStorageMetrics(): Promise<StorageMetrics> {
     reservedBytes,
     usableBytes: Math.max(0, availableBytes - reservedBytes),
     files: { ...countByState(records), total: records.length },
+    stagedReplicas: records.filter((record) => record.replicaStage !== undefined).length,
     updatedAt: Date.now()
   }
 

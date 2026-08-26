@@ -169,6 +169,22 @@ describe('replicate', () => {
     assert.equal(report.attempts.filter((attempt) => attempt.staged === true).length, 1)
   })
 
+  it('marks a lost stage acknowledgement so abort can still reach that peer', async () => {
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: { ...baseConfig, ackQuorum: 3 },
+      store: async () => ({ outcome: 'failed', staged: true, error: 'timed out' })
+    })
+
+    assert.equal(report.satisfied, false)
+    assert.equal(report.acknowledged, 1)
+    assert.equal(report.replicas.length, 0)
+    assert.ok(report.attempts.every((attempt) => attempt.ok === false && attempt.staged === true))
+  })
+
   it('does not demand a quorum the network cannot reach', async () => {
     const single = [peer('ipfs2')]
 
