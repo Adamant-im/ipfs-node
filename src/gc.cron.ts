@@ -1,6 +1,7 @@
 import { CronJob } from 'cron'
 import { config } from './config.js'
 import { helia } from './helia.js'
+import { recoverInterruptedAdmissions } from './storage/admission.js'
 import { collectStorage, type CollectionReport } from './storage/collection.js'
 import { refreshStorageMetrics } from './storage/metrics.js'
 import { demoteReleasableCopies } from './storage/service.js'
@@ -35,6 +36,11 @@ export async function collectGarbage(
 
   running = true
   try {
+    const recovery = await recoverInterruptedAdmissions(fileRegistry)
+    for (const error of recovery.errors) {
+      logger.warn(`Admission recovery: ${error}`)
+    }
+
     const collection = await collectStorage({
       lock: storageOperationLock,
       node: helia,

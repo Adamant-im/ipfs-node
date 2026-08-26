@@ -523,8 +523,12 @@ operational cost.
 - `stagedReplicas` — how many registry entries still belong to an in-flight
   strict upload
 
-`replication.lastRun` on the same payload is counts only: the CID lists from a
-repair pass stay on `POST /api/storage/repair`, which is behind the admin key.
+The route is public so a client can see capacity before uploading. It includes
+watermarks and job schedules; it does not include filenames, CID lists, or peer
+identity. Those stay on `POST /api/storage/gc` and `POST /api/storage/repair`,
+which are behind the admin key.
+
+`replication.lastRun` on the same payload is counts only.
 
 A collection report also lists `demoted`: files whose local copy was handed over
 to their designated holders during that pass.
@@ -556,10 +560,14 @@ Startup walks the pinset once and records anything the registry does not know as
 is not fully local is skipped rather than recorded — calling it confirmed would
 claim more than the node can serve.
 
-Which pins count as legacy is decided before the API accepts anything, by
-listing the pinset once. Anything pinned after that belongs to a request with a
-lifecycle of its own. Listing is cheap; reconciling each pin is not, which is
-why only the first part is ordered against the listener.
+Which pins count as legacy is decided before the replication protocol is
+registered and before the API accepts anything, by listing the pinset once.
+Anything pinned after that belongs to a request with a lifecycle of its own.
+
+A pin created after the snapshot but never registered (a crash between pin and
+registry write) carries a pin-intent marker. Backfill records that pin as
+`temporary` when `storage.confirmationRequired` is on, so it expires instead of
+becoming durable without a confirmation.
 
 Records are then created only while the CID is absent, and every
 read-modify-write on the registry is serialised per CID. Both are needed:
@@ -574,9 +582,11 @@ serve. Reads, uploads and incoming copies do not need a complete registry; the
 collector and the repair sweep are started once the walk finishes, so neither
 acts on a half-built picture.
 
-The same startup phase clears admission tokens left by the previous process.
-Tokens created by the running process carry its own prefix and are skipped, so
-this background recovery cannot settle an upload that is still in flight.
+The same startup phase clears admission tokens left by a request that can no
+longer resume. Tokens whose HTTP handler is still running in this process are
+skipped; unsettled tokens from a previous process, or from a handler in this
+process that has already returned, are removed so they cannot hide a pin from
+repair.
 
 Two consequences are worth planning for:
 

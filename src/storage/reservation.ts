@@ -1,3 +1,5 @@
+import { checkDiskReserve } from './limits.js'
+
 /**
  * Free space promised to work that is already running.
  *
@@ -8,7 +10,7 @@
  * may write.
  *
  * Every admission therefore claims the bytes it might write, and the claim is
- * counted against free space until the work finishes.
+ * counted against free space until the HTTP response finishes.
  */
 let claimed = 0
 
@@ -39,7 +41,14 @@ export interface ClaimRequest {
  * @returns The claim, or `undefined` when granting it would break the reserve
  */
 export function claimSpace(request: ClaimRequest): Claim | undefined {
-  if (request.availableBytes - claimed - request.bytes < request.reserveBytes) {
+  const remaining = request.availableBytes - claimed
+  if (
+    !checkDiskReserve({
+      availableBytes: remaining,
+      reserveBytes: request.reserveBytes,
+      requestedBytes: request.bytes
+    }).allowed
+  ) {
     return undefined
   }
 

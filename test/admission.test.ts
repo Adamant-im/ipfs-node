@@ -47,17 +47,33 @@ after(async () => {
 })
 
 describe('upload admission recovery', () => {
-  it('clears only tokens left by an earlier process', async () => {
+  it('clears only tokens whose upload request is no longer running', async () => {
     const registry = new FileRegistry(datastore, '/adm/admission-recovery')
     const currentId = createAdmissionId()
+    beginAdmission(currentId)
     await registry.save(record(CID_A, 'previous-process:request'))
     await registry.save(record(CID_B, currentId))
+
+    try {
+      const report = await recoverInterruptedAdmissions(registry)
+
+      assert.deepEqual(report, { checked: 1, recovered: 1, errors: [] })
+      assert.equal((await registry.get(CID_A))?.admissionId, undefined)
+      assert.equal((await registry.get(CID_B))?.admissionId, currentId)
+    } finally {
+      endAdmission(currentId)
+    }
+  })
+
+  it('clears an unsettled token this process left after its handler returned', async () => {
+    const registry = new FileRegistry(datastore, '/adm/admission-recovery-stale')
+    const leftover = createAdmissionId()
+    await registry.save(record(CID_A, leftover))
 
     const report = await recoverInterruptedAdmissions(registry)
 
     assert.deepEqual(report, { checked: 1, recovered: 1, errors: [] })
     assert.equal((await registry.get(CID_A))?.admissionId, undefined)
-    assert.equal((await registry.get(CID_B))?.admissionId, currentId)
   })
 
   it('keeps a settled token from an earlier process for commit retry', async () => {

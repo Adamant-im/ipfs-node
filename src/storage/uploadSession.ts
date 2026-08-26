@@ -34,6 +34,11 @@ export function inFlightBlockCount(): number {
   return inFlightBlocks.size
 }
 
+/** True when another in-flight upload still references this block. */
+export function isBlockInFlight(cid: string): boolean {
+  return inFlightBlocks.has(cid)
+}
+
 type PutOptions = Parameters<Blocks['put']>[2]
 type GetOptions = Parameters<Blocks['get']>[1]
 type HasOptions = Parameters<Blocks['has']>[1]
@@ -179,6 +184,13 @@ export class UploadSession {
   readonly budget: RequestSizeBudget
   readonly blockstore: RecordingBlockstore
   private settled = false
+  /**
+   * True after the route handler has taken the session over.
+   *
+   * A client disconnect must not delete blocks the handler is pinning. The
+   * handler's own `catch` still calls {@link cleanup} if the request fails.
+   */
+  private claimed = false
 
   constructor(private readonly options: UploadSessionOptions) {
     this.budget = new RequestSizeBudget(options.maxRequestSizeBytes)
@@ -191,6 +203,24 @@ export class UploadSession {
 
   get isSettled(): boolean {
     return this.settled
+  }
+
+  get isClaimed(): boolean {
+    return this.claimed
+  }
+
+  /**
+   * Take ownership so a disconnect cannot race the pin/register path.
+   *
+   * @returns False when cleanup or commit already ran
+   */
+  claim(): boolean {
+    if (this.settled) {
+      return false
+    }
+
+    this.claimed = true
+    return true
   }
 
   /**
@@ -214,11 +244,25 @@ export class UploadSession {
     }
 
     this.settled = true
+    this.claimed = false
     try {
       this.blockstore.releaseAll()
     } finally {
       this.options.onSettle?.()
     }
+  }
+
+  /**
+   * Disconnect-path cleanup. No-ops once the handler has claimed the session.
+   *
+   * The checks are synchronous so they cannot interleave with {@link claim}.
+   */
+  async cleanupIfUnclaimed(): Promise<number> {
+    if (this.settled || this.claimed) {
+      return 0
+    }
+
+    return this.cleanup()
   }
 
   /**
@@ -237,6 +281,7 @@ export class UploadSession {
     }
 
     this.settled = true
+    this.claimed = false
     try {
       const releasable = new Set(this.blockstore.releaseAll())
       let removed = 0
@@ -250,6 +295,12 @@ export class UploadSession {
           const cid = this.options.parseCid(key)
 
           if (await this.options.isPinned(cid)) {
+            continue
+          }
+
+          // Re-check at delete time: a concurrent upload may have retained the
+          // block after `releaseAll` took the snapshot.
+          if (isBlockInFlight(key)) {
             continue
           }
 

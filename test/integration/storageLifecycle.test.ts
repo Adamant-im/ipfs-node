@@ -1687,7 +1687,9 @@ describe('registry backfill', () => {
     // problem entirely.
     const failing = {
       get: (value: string) => registry.get(value),
-      save: () => Promise.reject(new Error('datastore is unavailable'))
+      save: () => Promise.reject(new Error('datastore is unavailable')),
+      hasPinIntent: async () => false,
+      clearPinIntent: async () => undefined
     } as unknown as FileRegistry
 
     const report = await backfillRegistryFromPins({

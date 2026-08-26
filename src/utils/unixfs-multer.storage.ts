@@ -1,7 +1,7 @@
 import { StorageEngine } from 'multer'
 import * as e from 'express'
 import { unixfs } from '@helia/unixfs'
-import { Readable, Transform } from 'node:stream'
+import { Readable, Transform, pipeline } from 'node:stream'
 import { logger } from './logger.js'
 import { UnixFsMulterFile } from './types.js'
 import { sanitizeFilename } from './sanitizeFilename.js'
@@ -46,8 +46,14 @@ function budgeted(stream: Readable, budget: RequestSizeBudget): MeteredStream {
     }
   })
 
+  pipeline(stream, meter, (err) => {
+    if (err !== null && err !== undefined && !meter.destroyed) {
+      meter.destroy(err)
+    }
+  })
+
   return {
-    stream: stream.pipe(meter),
+    stream: meter,
     get bytes() {
       return bytes
     }

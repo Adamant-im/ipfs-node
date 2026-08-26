@@ -63,4 +63,17 @@ describe('nextSweepBatch', () => {
 
     assert.equal(nextSweepBatch('rescue', replaced).length, SWEEP_BATCHES.rescue)
   })
+
+  it('does not rewind when the last batch CID left the candidate set', () => {
+    const size = SWEEP_BATCHES.demote
+    const all = Array.from({ length: size + 8 }, (unused, index) => ({
+      cid: `z-${String(index).padStart(3, '0')}`
+    }))
+    const first = nextSweepBatch('demote', all)
+    const cursor = first[first.length - 1].cid
+    const remaining = all.filter((record) => record.cid !== cursor)
+    const second = nextSweepBatch('demote', remaining)
+
+    assert.ok(second[0].cid > cursor)
+  })
 })

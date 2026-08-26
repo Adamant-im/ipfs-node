@@ -34,19 +34,25 @@ export interface BackfillOptions {
   cids: string[]
   unixfs: UnixFS
   registry: FileRegistry
+  /**
+   * When true, a pin that still carries a pin-intent marker is recorded as
+   * `temporary` instead of `confirmed`. That marker means an upload crashed
+   * between pinning and registration; promoting it would bypass confirmation.
+   */
+  confirmationRequired?: boolean
+  /** TTL applied to an interrupted upload when {@link confirmationRequired} is set. */
+  temporaryTtlMs?: number
   log?: (message: string) => void
 }
 
 /**
  * List the pins that exist right now.
  *
- * This has to happen before the node accepts its first upload, and it is why
- * enumeration is separate from the work that follows. A pin created after this
- * point belongs to an upload with a lifecycle of its own; if the backfill saw
- * it, it would record it as legacy content — `confirmed`, with no expiry, named
- * by its CID — in the window between the upload pinning the file and
- * registering it. An operator who required confirmation would find the file
- * durable without ever confirming it.
+ * This has to happen before the node accepts pins over the replication
+ * protocol or the upload API, and it is why enumeration is separate from the
+ * work that follows. A pin created after this point belongs to a request with
+ * a lifecycle of its own; if the backfill saw a replica that had already been
+ * aborted, it would record the leftover pin as confirmed.
  *
  * Listing pins is cheap next to what the backfill then does with them, so the
  * part that must be ordered is also the part that costs almost nothing.
@@ -90,10 +96,19 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
     try {
       if (await options.registry.get(cid)) {
         report.known += 1
+        await options.registry.clearPinIntent(cid)
         continue
       }
     } catch (err) {
       report.errors.push(`Registry read failed for ${cid}: ${(err as Error).message}`)
+      continue
+    }
+
+    let interrupted: boolean
+    try {
+      interrupted = await options.registry.hasPinIntent(cid)
+    } catch (err) {
+      report.errors.push(`Pin-intent read failed for ${cid}: ${(err as Error).message}`)
       continue
     }
 
@@ -103,13 +118,20 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
       // Offline on purpose: a pin whose blocks are not all here must not send
       // the node looking for them on the network at startup.
       stats = await options.unixfs.stat(CID.parse(cid), { extended: true, offline: true })
-    } catch {
-      // The only failure this catch may claim. A datastore that is unavailable
-      // says nothing about whether the DAG is complete, and reporting it as
-      // incomplete content would send an operator after the wrong problem.
+    } catch (err) {
+      const code = (err as { code?: string }).code
+      if (code === 'EIO' || code === 'EACCES') {
+        report.errors.push(`Blockstore read failed for ${cid}: ${(err as Error).message}`)
+        continue
+      }
+      // Missing blocks, non-UnixFS DAGs, timeouts: the pin stays, but calling
+      // the file confirmed would claim more than the node can serve.
       report.incomplete += 1
       continue
     }
+
+    const treatAsTemporary = interrupted && options.confirmationRequired === true
+    const ttl = options.temporaryTtlMs ?? 0
 
     try {
       // Create-if-absent rather than a plain write: the API is serving while
@@ -122,12 +144,12 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
         // Nothing recorded the original name, and inventing one would be worse
         // than admitting it is unknown.
         name: cid,
-        state: 'confirmed',
+        state: treatAsTemporary ? 'temporary' : 'confirmed',
         // The upload happened before this release; its time is not recoverable,
         // so the file counts as new and is placed as widely as a fresh one.
         createdAt: now,
-        expiresAt: null,
-        confirmedAt: now,
+        expiresAt: treatAsTemporary ? now + ttl : null,
+        confirmedAt: treatAsTemporary ? null : now,
         fileSize: Number(stats.size),
         storedBytes: Number(stats.deduplicatedDagSize),
         protectedBytes: Number(stats.deduplicatedDagSize),
@@ -135,6 +157,8 @@ export async function backfillRegistryFromPins(options: BackfillOptions): Promis
         heldLocally: true,
         replicas: []
       })
+
+      await options.registry.clearPinIntent(cid)
 
       if (created === undefined) {
         report.known += 1

@@ -23,13 +23,14 @@ export interface AdmissionRecoveryReport {
 }
 
 /**
- * Clear upload ownership left by a process that stopped before cleanup.
+ * Clear upload ownership left by a request that can no longer resume.
  *
- * A current-process token is skipped because its request can still compensate
- * the record. A previous process cannot resume an unsettled request; retaining
- * that token would hide a confirmed pin from repair and handover forever. The
- * file itself stays exactly as it was — only stale transaction ownership is
- * removed.
+ * A token whose HTTP handler is still running is skipped. An earlier process
+ * cannot resume an unsettled request; retaining that token would hide a
+ * confirmed pin from repair and handover forever. The same is true of an
+ * unsettled token this process created after its handler returned — a failed
+ * rollback or a failed settlement write. The file itself stays exactly as it
+ * was; only stale transaction ownership is removed.
  *
  * A settled token is kept. Repair uses it to retry `commit` on peers that still
  * hold a prepared copy, then clears it once those copies are durable.
@@ -40,8 +41,8 @@ export async function recoverInterruptedAdmissions(
   const candidates = (await registry.all()).filter(
     (record) =>
       record.admissionId !== undefined &&
-      !isCurrentAdmissionId(record.admissionId) &&
-      !isAdmissionSettled(record)
+      !isAdmissionSettled(record) &&
+      !isActiveAdmission(record.admissionId)
   )
   const report: AdmissionRecoveryReport = { checked: candidates.length, recovered: 0, errors: [] }
 
@@ -52,7 +53,7 @@ export async function recoverInterruptedAdmissions(
 
         if (
           current?.admissionId === undefined ||
-          isCurrentAdmissionId(current.admissionId) ||
+          isActiveAdmission(current.admissionId) ||
           isAdmissionSettled(current)
         ) {
           return false

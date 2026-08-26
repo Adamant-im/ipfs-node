@@ -17,7 +17,9 @@ const cursors = new Map<SweepName, string>()
  *
  * Slicing from the front would examine the same files on every pass and never
  * reach the rest, so the batch wraps around the end and the cursor moves with
- * it. A cursor pointing at a record that has since gone simply starts over.
+ * A cursor pointing at a record that has since gone resumes at the first
+ * remaining CID greater than it, so a successful demote/rescue of the last
+ * batch element does not rewind to the head.
  *
  * @param sweep Which sweep is asking; each keeps its own position
  * @param records Every candidate, in a stable order
@@ -41,9 +43,24 @@ export function nextSweepBatch<T extends { cid: string }>(
   }
 
   const previous = cursors.get(sweep)
-  const resumeAt =
-    previous === undefined ? 0 : records.findIndex((item) => item.cid === previous) + 1
-  const start = resumeAt > 0 && resumeAt < records.length ? resumeAt : 0
+  let start = 0
+
+  if (previous !== undefined) {
+    const exact = records.findIndex((item) => item.cid === previous)
+    if (exact >= 0) {
+      start = exact + 1
+    } else {
+      // The cursor record left the candidate set (the usual success path for
+      // demote/rescue). Resume at the first CID strictly greater so the pass
+      // does not rewind to the head.
+      const next = records.findIndex((item) => item.cid > previous)
+      start = next >= 0 ? next : 0
+    }
+  }
+
+  if (start >= records.length) {
+    start = 0
+  }
 
   const batch = [...records.slice(start), ...records.slice(0, start)].slice(0, size)
 

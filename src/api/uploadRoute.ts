@@ -37,6 +37,11 @@ export interface UploadRouteDependencies {
   abortReplicas: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
   /** Test seam for pin-datastore failure paths. */
   unpin?: (cid: UnixFsMulterFile['cid']) => Promise<void>
+  /**
+   * Bounds the pin DAG walk. Uploaded blocks are already local; the deadline
+   * is a backstop if disconnect cleanup won the race and the walk would fetch.
+   */
+  pinTimeoutMs?: number
   log: UploadRouteLog
 }
 
@@ -243,16 +248,20 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
   const { node, registry, log } = dependencies
 
   return async (req: Request, res: Response, next: NextFunction) => {
-    if (!Array.isArray(req.files) || req.files.length === 0) {
-      res.statusCode = 400
-      return res.send({ error: 'No file uploaded' })
-    }
-
-    const session = dependencies.getSession(req)
     const admissionId = createAdmissionId()
     beginAdmission(admissionId)
 
     try {
+      if (!Array.isArray(req.files) || req.files.length === 0) {
+        res.statusCode = 400
+        return res.send({ error: 'No file uploaded' })
+      }
+
+      const session = dependencies.getSession(req)
+      if (!session.claim()) {
+        throw new Error('Upload was aborted before it could be committed')
+      }
+
       const files = flatFiles(req.files as UnixFsMulterFile[])
       log.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
 
@@ -303,10 +312,16 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
                 }
               }
               const previous = await locked.get(cid)
-              const createdPin = await pinFile(node, file.cid)
+              await locked.markPinIntent(cid)
+              const pinSignal =
+                dependencies.pinTimeoutMs === undefined
+                  ? undefined
+                  : AbortSignal.timeout(dependencies.pinTimeoutMs)
 
+              let createdPin = false
               let registration
               try {
+                createdPin = await pinFile(node, file.cid, pinSignal)
                 registration = await locked.registerReplacing(
                   {
                     cid,
@@ -326,8 +341,11 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
                 // key. Restore both sides from the baseline captured under the
                 // same CID lock, so neither outcome leaks a pin or a record.
                 await rollbackUpload({ registry: locked, cid, previous, createdPin, unpin })
+                await locked.clearPinIntent(cid)
                 throw err
               }
+
+              await locked.clearPinIntent(cid)
 
               if (!baselines.has(cid)) {
                 baselines.set(cid, { cid, previous, createdPin, unpin })
@@ -364,6 +382,11 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
 
       // One request may contain the same content more than once. Place each CID
       // once, using the registration that stored it last.
+      //
+      // `requireQuorumOnUpload` cannot be paired with `confirmationRequired`, so
+      // every admitted record here is `confirmed`. Temporary records would have
+      // nothing to commit and would keep a settled admission token; that pairing
+      // is rejected at startup rather than handled as a second branch.
       const durableByCid = new Map(
         admitted.records
           .filter((record) => record.state === 'confirmed')

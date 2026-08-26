@@ -271,6 +271,12 @@ function resolvePlacement(raw: unknown, defaults: PlacementTier[]): PlacementTie
     if (tiers[index].minAgeMs <= tiers[index - 1].minAgeMs) {
       fail(`replication.placement[${index}].minAgeMs`, 'must be greater than the previous tier')
     }
+    if (tiers[index].copies > tiers[index - 1].copies) {
+      fail(
+        `replication.placement[${index}].copies`,
+        'must not exceed the previous tier so copies shrink as a file ages'
+      )
+    }
   }
 
   return tiers
@@ -313,9 +319,12 @@ export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
     )
   }
 
-  const mostCopies = Math.max(...placement.map((tier) => tier.copies))
+  const mostCopies = placement[0]?.copies ?? 0
   if (replication.ackQuorum > mostCopies) {
-    fail('replication.ackQuorum', 'must not exceed the largest copy count in replication.placement')
+    fail(
+      'replication.ackQuorum',
+      'must not exceed the fresh-tier copy count in replication.placement'
+    )
   }
 
   if (replication.requireQuorumOnUpload && replication.ackQuorum < 2) {

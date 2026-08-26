@@ -3,7 +3,13 @@ import type { IpfsNode } from '../ipfs-node.js'
 import type { GarbageCollectionConfig } from './config.js'
 import { isProtected, pinFile, unpinFile } from './pinning.js'
 import { restoreReplicaStage } from './replicaStage.js'
-import { FileRegistry, isExpired, protectedStorageBytes, type FileRecord } from './registry.js'
+import {
+  FileRegistry,
+  isAdmissionInFlight,
+  isExpired,
+  protectedStorageBytes,
+  type FileRecord
+} from './registry.js'
 
 export type Watermarks = Pick<GarbageCollectionConfig, 'highWatermarkBytes' | 'lowWatermarkBytes'>
 
@@ -70,15 +76,14 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
   const now = input.now ?? Date.now()
   const { highWatermarkBytes, lowWatermarkBytes } = input.watermarks
 
-  const confirmed = input.records.filter((record) => record.state === 'confirmed')
   const unconfirmed = input.records.filter((record) => record.state !== 'confirmed')
 
-  const expired = unconfirmed.filter((record) => isExpired(record, now))
-  const prepared = unconfirmed.filter(
-    (record) => record.replicaStage !== undefined && !isExpired(record, now)
+  const expired = unconfirmed.filter(
+    (record) => isExpired(record, now) && !isAdmissionInFlight(record)
   )
   const alive = unconfirmed.filter(
-    (record) => record.replicaStage === undefined && !isExpired(record, now)
+    (record) =>
+      record.replicaStage === undefined && !isExpired(record, now) && !isAdmissionInFlight(record)
   )
 
   // Helia GC removes every unpinned block, including read cache and files a
@@ -137,6 +142,9 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
       }
 
       evicted.push(record)
+      // Shared DAG blocks are counted once per file, and an already-unpinned
+      // residue frees nothing on unpin. The next run re-measures; this is an
+      // estimate so the planner stops, not an accounting of bytes on disk.
       estimatedBytesAfter -= protectedStorageBytes(record)
     }
   }
@@ -148,11 +156,7 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
     trigger,
     expired,
     evicted,
-    retained: [
-      ...confirmed,
-      ...prepared,
-      ...alive.filter((record) => !releasedCids.has(record.cid))
-    ],
+    retained: input.records.filter((record) => !releasedCids.has(record.cid)),
     estimatedBytesAfter: Math.max(0, estimatedBytesAfter)
   }
 }
@@ -366,7 +370,8 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
           if (
             current === undefined ||
             current.revision !== record.revision ||
-            current.state === 'confirmed'
+            current.state === 'confirmed' ||
+            isAdmissionInFlight(current)
           ) {
             return undefined
           }

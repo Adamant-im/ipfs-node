@@ -107,7 +107,7 @@ export interface Placement {
 
 /** Resolve where a file belongs right now. */
 export function placeFile(input: PlacementInput): Placement {
-  const candidates = [input.selfPeerId, ...input.peerIds]
+  const candidates = [...new Set([input.selfPeerId, ...input.peerIds])]
   const desiredCopies = copiesForAge(input.tiers, input.ageMs)
   const copies = effectiveCopies(desiredCopies, candidates.length)
   const holders = rankHolders(input.cid, candidates).slice(0, copies)

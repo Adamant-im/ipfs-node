@@ -233,6 +233,9 @@ export interface LockedFileRegistry {
   get(cid: string): Promise<FileRecord | undefined>
   save(record: FileRecord): Promise<FileRecord>
   remove(cid: string): Promise<void>
+  markPinIntent(cid: string): Promise<void>
+  clearPinIntent(cid: string): Promise<void>
+  hasPinIntent(cid: string): Promise<boolean>
   registerReplacing(
     file: NewFileRecord,
     options: RegisterFileOptions
@@ -352,6 +355,9 @@ export class FileRegistry {
       get: (cid) => this.get(cid),
       save: (record) => this.save(record),
       remove: (cid) => this.removeRecord(cid),
+      markPinIntent: (cid) => this.markPinIntent(cid),
+      clearPinIntent: (cid) => this.clearPinIntent(cid),
+      hasPinIntent: (cid) => this.hasPinIntent(cid),
       registerReplacing: (file, options) => this.registerExclusively(file, options)
     }
 
@@ -480,6 +486,46 @@ export class FileRegistry {
     }
   }
 
+  /**
+   * Record that a pin is about to be created for `cid` before its registry
+   * entry exists.
+   *
+   * Startup backfill would otherwise treat a crash between `pinFile` and
+   * `registerReplacing` as legacy content and make it forever-confirmed.
+   * Stored under a sibling prefix so {@link list} does not see it as a record.
+   */
+  async markPinIntent(cid: string): Promise<void> {
+    await this.datastore.put(this.intentKey(cid), encoder.encode('1'))
+  }
+
+  /** Drop the pin-intent marker once the registry entry is written or undone. */
+  async clearPinIntent(cid: string): Promise<void> {
+    try {
+      await this.datastore.delete(this.intentKey(cid))
+    } catch (err) {
+      if (!isNotFound(err)) {
+        throw err
+      }
+    }
+  }
+
+  /** Whether an in-flight pin for `cid` was interrupted before registration. */
+  async hasPinIntent(cid: string): Promise<boolean> {
+    try {
+      await this.datastore.get(this.intentKey(cid))
+      return true
+    } catch (err) {
+      if (isNotFound(err) || isMissingStore(err)) {
+        return false
+      }
+      throw err
+    }
+  }
+
+  private intentKey(cid: string): Key {
+    return new Key(`/adm/pin-intent/${this.prefix.slice(1)}/${cid}`)
+  }
+
   async *list(): AsyncGenerator<FileRecord> {
     // `query` may return a sync iterable (memory) or an async one (file system).
     const source = this.datastore.query({ prefix: this.prefix })
@@ -519,7 +565,15 @@ export class FileRegistry {
     }
   }
 
-  /** Every record, materialised for callers that need more than one pass. */
+  /**
+   * Every record, materialised for callers that need more than one pass.
+   *
+   * Repair, collection, metrics, and admission recovery all call this on their
+   * tick. Records are small, so the cost is acceptable at the current scale;
+   * it is the growth ceiling. Bounded sweeps cover repair/demote/rescue, not
+   * this listing. The GC pin guard rail must still walk every confirmed held
+   * file before deleting anything — do not cap that walk.
+   */
   async all(): Promise<FileRecord[]> {
     const records: FileRecord[] = []
     for await (const record of this.list()) {
@@ -675,6 +729,14 @@ export function isAdmissionSettled(record: FileRecord): boolean {
 }
 
 /**
+ * True while the upload that owns this record can still roll it back, or its
+ * HTTP handler is still running after settlement.
+ */
+export function isAdmissionInFlight(record: FileRecord): boolean {
+  return !isAdmissionSettled(record) || isActiveAdmission(record.admissionId)
+}
+
+/**
  * True while a replica stage, an unsettled upload, or an in-flight request still
  * owns this CID.
  *
@@ -683,11 +745,7 @@ export function isAdmissionSettled(record: FileRecord): boolean {
  * after the handler returns is not busy — repair uses it to retry `commit`.
  */
 export function isLifecycleBusy(record: FileRecord): boolean {
-  return (
-    record.replicaStage !== undefined ||
-    !isAdmissionSettled(record) ||
-    isActiveAdmission(record.admissionId)
-  )
+  return record.replicaStage !== undefined || isAdmissionInFlight(record)
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {

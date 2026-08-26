@@ -99,12 +99,12 @@ export function createUploadAdmission(dependencies: UploadAdmissionDependencies)
     res.on('close', () => {
       release()
 
-      if (session === undefined || session.isSettled) {
+      if (session === undefined || session.isSettled || session.isClaimed) {
         return
       }
 
       session
-        .cleanup()
+        .cleanupIfUnclaimed()
         .then((removed) => {
           if (removed > 0) {
             dependencies.log.info(`Removed ${removed} blocks left by an unfinished upload`)

@@ -203,4 +203,22 @@ describe('planGarbageCollection', () => {
     assert.deepEqual(plan.evicted, [])
     assert.deepEqual(plan.retained, [staged])
   })
+
+  it('does not evict a temporary file whose upload is still in flight', () => {
+    const uploading = record({
+      cid: 'uploading',
+      state: 'temporary',
+      expiresAt: 9000,
+      admissionId: 'req-1'
+    })
+    const plan = planGarbageCollection({
+      blockstoreBytes: 5000,
+      watermarks,
+      records: [uploading],
+      now: 1000
+    })
+
+    assert.deepEqual(plan.evicted, [])
+    assert.ok(plan.retained.some((item) => item.cid === 'uploading'))
+  })
 })

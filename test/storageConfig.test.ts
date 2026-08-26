@@ -93,6 +93,19 @@ describe('resolveReplicationConfig', () => {
     )
   })
 
+  it('rejects tiers that increase copies as a file ages', () => {
+    assert.throws(
+      () =>
+        resolveReplicationConfig({
+          placement: [
+            { minAgeMs: 0, copies: 2 },
+            { minAgeMs: 1000, copies: 4 }
+          ]
+        }),
+      /placement\[1\].copies/
+    )
+  })
+
   it('rejects tiers that go backwards', () => {
     assert.throws(
       () =>

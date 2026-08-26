@@ -5,7 +5,7 @@
  * that every boundary they guard can be exercised in isolation.
  */
 
-/** Counts uploads that are currently writing into the blockstore. */
+/** Counts uploads whose HTTP request has not finished yet. */
 export class ConcurrencyLimiter {
   private inFlight = 0
 
@@ -67,9 +67,9 @@ export type AdmissionResult = { allowed: true } | { allowed: false; reason: stri
 /**
  * Decide whether an upload may start without eating into the disk reserve.
  *
- * The declared request size is subtracted up front so that content is rejected
- * before a single block is written, instead of after the blockstore has already
- * grown past the reserve.
+ * Pure predicate used by {@link claimSpace}. Admission never calls this on its
+ * own: a check without a claim would let two requests both see the same free
+ * space and pass. Kept here so the arithmetic cannot drift from the reservation.
  */
 export function checkDiskReserve(input: DiskReserveInput): AdmissionResult {
   const requested = input.requestedBytes ?? 0

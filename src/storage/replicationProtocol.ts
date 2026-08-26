@@ -1,6 +1,7 @@
 import type { Connection, Stream } from '@libp2p/interface'
 import type { Multiaddr } from '@multiformats/multiaddr'
 import type { PeerId } from '@libp2p/interface'
+import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 
 /**
@@ -58,7 +59,9 @@ export type ReplicationRequest =
    *
    * Accepted from any peer, because it grants nothing a reader does not already
    * have: the blocks are unpinned, so they are reclaimed as soon as space is
-   * short, exactly like content cached while answering a read.
+   * short, exactly like content cached while answering a read. The DAG is
+   * fetched through Bitswap from whichever connected peer has the blocks, not
+   * only from the requester — the same path a public read uses.
    */
   | { op: 'cache'; cid: string }
 
@@ -106,8 +109,9 @@ export interface ReplicationHandlers {
   /**
    * Pull `cid` into the local blockstore without pinning or registering it.
    *
-   * The node can serve the file from now on, and gives up nothing: the blocks
-   * live in the same tier as read cache and go when space is needed.
+   * Fetches via Bitswap, so blocks may come from any connected peer that has
+   * them, not only from the caller. Bounded by the intake budget and disk
+   * reserve. The copy sits in the same tier as read cache.
    */
   cacheCopy(cid: string, peerId: string): Promise<number>
   onError?(message: string): void
@@ -148,38 +152,49 @@ function encodeMessage(message: unknown): Uint8Array {
 }
 
 /** Read exactly one framed message, without waiting for the stream to end. */
-async function readMessage(stream: Stream): Promise<unknown> {
-  const chunks: Uint8Array[] = []
-  let received = 0
-
-  for await (const chunk of stream) {
-    const bytes = toBytes(chunk)
-    chunks.push(bytes)
-    received += bytes.byteLength
-
-    if (received > MAX_MESSAGE_BYTES + LENGTH_PREFIX_BYTES) {
-      throw new Error('Replication message is too large')
-    }
-
-    if (received < LENGTH_PREFIX_BYTES) {
-      continue
-    }
-
-    const buffer = Buffer.concat(chunks)
-    const length = buffer.readUInt32BE(0)
-
-    if (length > MAX_MESSAGE_BYTES) {
-      throw new Error('Replication message is too large')
-    }
-
-    if (buffer.byteLength >= LENGTH_PREFIX_BYTES + length) {
-      return JSON.parse(
-        buffer.subarray(LENGTH_PREFIX_BYTES, LENGTH_PREFIX_BYTES + length).toString('utf8')
-      ) as unknown
-    }
+async function readMessage(stream: Stream, signal?: AbortSignal): Promise<unknown> {
+  if (signal?.aborted === true) {
+    throw new Error('Replication message timed out')
   }
 
-  throw new Error('Replication stream ended before a complete message arrived')
+  const abort = (): void => stream.abort(new Error('Replication message timed out'))
+  signal?.addEventListener('abort', abort, { once: true })
+
+  try {
+    const chunks: Uint8Array[] = []
+    let received = 0
+
+    for await (const chunk of stream) {
+      const bytes = toBytes(chunk)
+      chunks.push(bytes)
+      received += bytes.byteLength
+
+      if (received > MAX_MESSAGE_BYTES + LENGTH_PREFIX_BYTES) {
+        throw new Error('Replication message is too large')
+      }
+
+      if (received < LENGTH_PREFIX_BYTES) {
+        continue
+      }
+
+      const buffer = Buffer.concat(chunks)
+      const length = buffer.readUInt32BE(0)
+
+      if (length > MAX_MESSAGE_BYTES) {
+        throw new Error('Replication message is too large')
+      }
+
+      if (buffer.byteLength >= LENGTH_PREFIX_BYTES + length) {
+        return JSON.parse(
+          buffer.subarray(LENGTH_PREFIX_BYTES, LENGTH_PREFIX_BYTES + length).toString('utf8')
+        ) as unknown
+      }
+    }
+
+    throw new Error('Replication stream ended before a complete message arrived')
+  } finally {
+    signal?.removeEventListener('abort', abort)
+  }
 }
 
 /** Send one framed message. The stream stays open for the reply. */
@@ -192,6 +207,12 @@ function parseRequest(value: unknown): ReplicationRequest {
 
   if (typeof message?.cid !== 'string' || message.cid === '') {
     throw new Error('Replication request is missing a CID')
+  }
+
+  try {
+    CID.parse(message.cid)
+  } catch {
+    throw new Error('Replication request has an invalid CID')
   }
 
   const operations: ReplicationRequest['op'][] = [
@@ -225,9 +246,10 @@ function parseRequest(value: unknown): ReplicationRequest {
 async function respond(
   stream: Stream,
   connection: Connection,
-  handlers: ReplicationHandlers
+  handlers: ReplicationHandlers,
+  requestTimeoutMs: number
 ): Promise<void> {
-  const request = parseRequest(await readMessage(stream))
+  const request = parseRequest(await readMessage(stream, AbortSignal.timeout(requestTimeoutMs)))
   const peerId = connection.remotePeer.toString()
 
   // Holding an extra copy is open to anyone, because it costs no more than a
@@ -286,10 +308,13 @@ async function respond(
 /** Start answering replication requests from other ADAMANT nodes. */
 export async function registerReplicationProtocol(
   node: IpfsNode,
-  handlers: ReplicationHandlers
+  handlers: ReplicationHandlers,
+  options: { requestTimeoutMs?: number } = {}
 ): Promise<void> {
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15_000
+
   await node.libp2p.handle(SUPPORTED_REPLICATION_PROTOCOLS, (stream, connection) => {
-    respond(stream, connection, handlers)
+    respond(stream, connection, handlers, requestTimeoutMs)
       .then(async () => stream.close())
       .catch((err: Error) => {
         handlers.onError?.(`Replication request failed: ${err.message}`)
@@ -317,7 +342,7 @@ async function call(
 
   try {
     sendMessage(stream, request)
-    const response = (await readMessage(stream)) as ReplicationResponse
+    const response = (await readMessage(stream, signal)) as ReplicationResponse
 
     if (response?.ok !== true) {
       throw new Error(response?.error ?? 'Replication request was refused')

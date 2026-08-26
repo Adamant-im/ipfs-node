@@ -141,6 +141,19 @@ describe('placeFile', () => {
       placement.selfIsHolder ? placement.copies - 1 : placement.copies
     )
   })
+
+  it('counts a peer once even when the same id is listed twice', () => {
+    const placement = placeFile({
+      cid: CID,
+      ageMs: 0,
+      tiers: TIERS,
+      selfPeerId: 'self',
+      peerIds: ['peer-a', 'peer-a', 'peer-b']
+    })
+
+    assert.equal(new Set(placement.holders).size, placement.holders.length)
+    assert.equal(placement.holders.includes('peer-a'), true)
+  })
 })
 
 describe('mayDemote', () => {

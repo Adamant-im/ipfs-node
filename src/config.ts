@@ -250,8 +250,17 @@ export function validateConfig(raw: unknown): Config {
   // Owns the storage lifecycle and replication policy. Both sections are
   // optional: every option falls back to a documented default so that config
   // files written before this feature keep working.
-  const storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
-  const replication = resolveReplicationConfig(root.replication)
+  let storage: StorageConfig
+  let replication: ReplicationConfig
+  try {
+    storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
+    replication = resolveReplicationConfig(root.replication)
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+    throw new ConfigError((err as Error).message)
+  }
 
   if (storage.confirmationRequired && replication.requireQuorumOnUpload) {
     fail(

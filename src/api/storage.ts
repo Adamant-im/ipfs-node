@@ -24,6 +24,10 @@ export const storageAdminRouter = Router()
  *
  * Values come from the disk usage schedule, so they are as fresh as
  * `diskUsageScanPeriod`.
+ *
+ * This route is public: it includes free space, watermarks and job schedules
+ * so a client can see capacity. It does not include filenames, CID lists, or
+ * peer identity. Those stay on the admin collection and repair endpoints.
  */
 router.get('/metrics', readLimiter, (req, res) => {
   res.send({

@@ -74,11 +74,19 @@ function selfPeerId(): string {
  * libp2p handshake proves the peer id.
  */
 export function getReplicationPeers(): ReplicationPeer[] {
-  return getNodesList([selfPeerId()]).map((node) => ({
-    name: node.name,
-    peerId: node.peerId.toString(),
-    multiAddr: node.multiAddr
-  }))
+  const seen = new Set<string>()
+  const peers: ReplicationPeer[] = []
+
+  for (const node of getNodesList([selfPeerId()])) {
+    const peerId = node.peerId.toString()
+    if (seen.has(peerId)) {
+      continue
+    }
+    seen.add(peerId)
+    peers.push({ name: node.name, peerId, multiAddr: node.multiAddr })
+  }
+
+  return peers
 }
 
 function placementFor(cid: string, createdAt: number, peers: ReplicationPeer[]): Placement {
@@ -649,6 +657,10 @@ async function pullUnderIntakeLimits(
     // as a value rather than inline. Without it the exporter requests the whole
     // DAG before the meter can count a single byte, and the limit bounds
     // nothing at all.
+    //
+    // Bitswap may fetch from any connected peer that has the blocks, not only
+    // from the requester. That is the same path a public read uses; the intake
+    // budget and disk reserve are what bound it.
     const readOptions = { signal, blockReadConcurrency: INTAKE_READ_CONCURRENCY }
 
     for await (const chunk of metered.cat(CID.parse(cid), readOptions)) {

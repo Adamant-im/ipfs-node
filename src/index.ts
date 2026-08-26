@@ -28,11 +28,19 @@ diskUsageCron.start()
 peeringCron.start()
 await peerWithKnownNodes()
 
+// Which pins are legacy is decided here, before this node accepts new pins
+// over the replication protocol or the upload API. A replica staged after
+// this snapshot is a request with a lifecycle of its own; if the backfill
+// saw it after an abort, it would record the leftover pin as confirmed.
+const legacyPins = await snapshotPins(helia)
+
 // Answering the protocol is what lets peers place copies here, and it is
 // registered whether or not this node places copies of its own. A node that
 // only accepted copies when it was also sending them could not be added to a
 // network without every other node being reconfigured first.
-await registerReplicationProtocol(helia, createReplicationHandlers())
+await registerReplicationProtocol(helia, createReplicationHandlers(), {
+  requestTimeoutMs: config.replication.requestTimeoutMs
+})
 
 /** The scheduled work that reads the file registry and acts on what it finds. */
 function startLifecycleJobs(): void {
@@ -62,12 +70,8 @@ function startLifecycleJobs(): void {
 
 // Content pinned before this release has no registry entry, which would leave
 // it out of the storage report, out of dry runs, and out of replication repair.
-// Recording it is idempotent.
-//
-// Which pins are legacy is decided here, before the API can accept an upload:
-// anything pinned after this line belongs to a request with a lifecycle of its
-// own. Listing them is cheap; reconciling them is not.
-const legacyPins = await snapshotPins(helia)
+// Recording it is idempotent. Listing is cheap; reconciling is not, which is
+// why only the snapshot is ordered against protocol registration and the listener.
 
 // The reconciliation is deliberately not awaited. It is as long as the pinset,
 // and blocking here would keep the whole API — reads included — unavailable for
@@ -79,6 +83,8 @@ void Promise.all([
     cids: legacyPins,
     unixfs: ifs,
     registry: fileRegistry,
+    confirmationRequired: config.storage.confirmationRequired,
+    temporaryTtlMs: config.storage.temporaryTtlMs,
     log: (message) => logger.info(message)
   }),
   recoverInterruptedAdmissions(fileRegistry)
@@ -134,10 +140,24 @@ mountApiRoutes(app, routers, createApiKeyAuth(config.adminApiKey), config.enable
 app.use(notFoundHandler)
 app.use(errorHandler)
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`Server is running on http://localhost:${PORT}`)
   logger.warn(
     'TLS is not handled at the application level. ' +
       'Ensure this service is deployed behind a TLS-terminating reverse proxy (e.g. nginx, Caddy).'
   )
 })
+
+function shutdown(signal: string): void {
+  logger.info(`Received ${signal}, shutting down`)
+  diskUsageCron.stop()
+  peeringCron.stop()
+  garbageCollectionCron.stop()
+  replicationRepairCron.stop()
+  server.close(() => {
+    void helia.stop().finally(() => process.exit(0))
+  })
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'))
+process.once('SIGTERM', () => shutdown('SIGTERM'))
