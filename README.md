@@ -116,15 +116,15 @@ Invalid CORS, proxy, API-key, or rate-limit configuration stops the process inst
 
 ## HTTP access policy
 
-| Class                | Routes                                                                                                                                                 | Policy                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                     |
-| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply              |
-| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                            |
-| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                             |
-| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake; accepted only from the peers listed in `nodes` |
-| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`             |
-| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                 |
+| Class                | Routes                                                                                                                                                 | Policy                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                                                                                                                                                                     |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                                                              |
+| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                                                                                                                                                                            |
+| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                                                             |
+| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake. Pin, store, stage, commit, and abort are accepted only from the peers listed in `nodes`. `cache` is open to any peer (same effect as a public read), bounded by disk reserve and intake budget |
+| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                                                             |
+| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                                                                                                                                                                 |
 
 Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
 
@@ -260,18 +260,23 @@ Example response:
     }
   ],
   "replication": {
-    "mode": "best-effort",
-    "desiredCopies": 1,
-    "copies": 1,
+    "mode": "quorum",
+    "desiredCopies": 4,
+    "copies": 3,
     "required": 1,
     "acknowledged": 1,
-    "replicas": [],
+    "replicaCount": 0,
+    "cachedCount": 0,
     "satisfied": true,
     "networkTooSmall": true,
+    "failedAttemptCount": 0,
     "attempts": []
   }
 }
 ```
+
+The `replication` object on this public route is counts and per-attempt
+outcomes only: no node names, peer ids, or peer error text.
 
 Upload responses use the following stable status contract:
 

@@ -1,3 +1,4 @@
+import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 
@@ -14,19 +15,48 @@ async function drain(source: AsyncIterable<unknown>): Promise<void> {
  * Idempotent: pinning content that already carries a direct pin is reported as
  * `false` instead of failing, because Helia rejects a duplicate pin.
  *
- * @param signal Bounds the DAG walk, which fetches missing blocks from peers
+ * `signal` is honoured only as a pre-check. Helia `pins.add` writes per-block
+ * pin metadata during the DAG walk and the direct pin key only after it
+ * finishes. Aborting the walk leaves `/pinned-block/` refs that `pins.rm`
+ * cannot clear (no `/pin/` key yet) and that `isPinned` still treats as
+ * protected. Fetch missing blocks under a timeout *before* calling this, or
+ * skip the pin when {@link hasLocalDag} is false.
+ *
  * @returns True when this call created the pin
  */
 export async function pinFile(node: IpfsNode, cid: CID, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted === true) {
+    throw new Error('Pin was aborted')
+  }
+
   try {
-    // Draining the generator is what performs the DAG walk.
-    await drain(node.pins.add(cid, { signal }))
+    // Draining the generator is what performs the DAG walk. The abort signal is
+    // deliberately not forwarded: see the JSDoc above.
+    await drain(node.pins.add(cid))
     return true
   } catch (err) {
     if ((err as Error).name === 'AlreadyPinnedError') {
       return false
     }
     throw err
+  }
+}
+
+/**
+ * True when every block of the DAG is already in the local blockstore.
+ *
+ * Used to decide whether {@link pinFile} can run without Helia fetching over
+ * the network. An offline `stat` walks the DAG; a missing block fails it.
+ */
+export async function hasLocalDag(node: IpfsNode, cid: CID): Promise<boolean> {
+  try {
+    await unixfs({ blockstore: node.blockstore }).stat(cid, {
+      extended: true,
+      offline: true
+    })
+    return true
+  } catch {
+    return false
   }
 }
 

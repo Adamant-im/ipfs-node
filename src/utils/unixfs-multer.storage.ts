@@ -89,28 +89,32 @@ export class UnixfsMulterStorage implements StorageEngine {
   ): void {
     file.originalname = sanitizeFilename(file.originalname)
 
-    const session = this.options.getSession(req)
-    const write = session.beginFile()
-    const metered = budgeted(file.stream, session.budget)
+    try {
+      const session = this.options.getSession(req)
+      const write = session.beginFile()
+      const metered = budgeted(file.stream, session.budget)
 
-    unixfs({ blockstore: write.blockstore })
-      .addByteStream(metered.stream)
-      .then((cid) => {
-        // `size` is what multer would have set for a disk engine, and what the
-        // lifecycle record stores as the file's size. Leaving it unset wrote
-        // records without one, which nothing noticed until the registry began
-        // validating what it reads.
-        callback(undefined, {
-          ...file,
-          cid,
-          size: metered.bytes,
-          storedBytes: write.storedBytes,
-          protectedBytes: write.protectedBytes
+      unixfs({ blockstore: write.blockstore })
+        .addByteStream(metered.stream)
+        .then((cid) => {
+          // `size` is what multer would have set for a disk engine, and what the
+          // lifecycle record stores as the file's size. Leaving it unset wrote
+          // records without one, which nothing noticed until the registry began
+          // validating what it reads.
+          callback(undefined, {
+            ...file,
+            cid,
+            size: metered.bytes,
+            storedBytes: write.storedBytes,
+            protectedBytes: write.protectedBytes
+          })
         })
-      })
-      .catch((err) => {
-        callback(err, undefined)
-      })
+        .catch((err) => {
+          callback(err, undefined)
+        })
+    } catch (err) {
+      callback(err as Error)
+    }
   }
 
   /**
@@ -124,8 +128,15 @@ export class UnixfsMulterStorage implements StorageEngine {
     file: Express.Multer.File,
     callback: (error: Error | null) => void
   ): void {
-    this.options
-      .getSession(req)
+    let session
+    try {
+      session = this.options.getSession(req)
+    } catch (err) {
+      callback(err as Error)
+      return
+    }
+
+    session
       .cleanup()
       .then((removed) => {
         if (removed > 0) {

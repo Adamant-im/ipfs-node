@@ -40,6 +40,8 @@ import {
   requestCommit,
   requestStage,
   requestStore,
+  ReplicationProtocolError,
+  type ReplicationErrorCode,
   type ReplicationHandlers,
   type ReplicationCallOptions
 } from './replicationProtocol.js'
@@ -319,26 +321,61 @@ async function placeCopy(
         const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
         return { outcome: 'stored', staged: result.staged }
       } catch (err) {
-        if ((err as Error).message.includes('Not authorized')) {
+        if (isNotAuthorizedError(err)) {
           throw err
         }
 
-        // The peer may have pinned before the ack was lost. Abort must still
-        // reach it; the copy must not count towards the quorum.
-        return { outcome: 'failed', staged: true, error: (err as Error).message }
+        // A lost ack after a pin must still be aborted. A structured refusal
+        // (busy, not staged, already aborted) never took ownership.
+        return {
+          outcome: 'failed',
+          staged: isMaybeStagedError(err),
+          error: (err as Error).message
+        }
       }
     }
 
     await requestStore(helia, peer.multiAddr, cid, callOptions())
     return { outcome: 'stored', staged: false }
   } catch (err) {
-    if (!(err as Error).message.includes('Not authorized')) {
+    if (!isNotAuthorizedError(err)) {
       throw err
     }
 
     await requestCache(helia, peer.multiAddr, cid, callOptions())
     return 'cached'
   }
+}
+
+const UNSTAGED_CODES: ReplicationErrorCode[] = [
+  'not_authorized',
+  'busy',
+  'not_staged',
+  'already_aborted',
+  'no_room',
+  'invalid'
+]
+
+function isNotAuthorizedError(err: unknown): boolean {
+  return (
+    (err instanceof ReplicationProtocolError && err.code === 'not_authorized') ||
+    (err as Error).message.includes('Not authorized')
+  )
+}
+
+function isMaybeStagedError(err: unknown): boolean {
+  if (err instanceof ReplicationProtocolError) {
+    return !UNSTAGED_CODES.includes(err.code)
+  }
+
+  const message = (err as Error).message
+  return (
+    !message.includes('Not authorized') &&
+    !message.includes('busy') &&
+    !message.includes('not staged') &&
+    !message.includes('already aborted') &&
+    !message.includes('no room')
+  )
 }
 
 /**
@@ -377,7 +414,7 @@ async function repairCopy(
     await requestStore(helia, peer.multiAddr, cid, callOptions())
     return { outcome: 'stored', staged: false }
   } catch (err) {
-    if (!(err as Error).message.includes('Not authorized')) {
+    if (!isNotAuthorizedError(err)) {
       throw err
     }
 
@@ -495,7 +532,8 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
 /** Prepare a remote copy that can still be withdrawn after a strict miss. */
 export async function acceptStagedReplica(
   cid: string,
-  transactionId: string
+  transactionId: string,
+  originPeerId: string
 ): Promise<{ storedBytes: number; staged: boolean }> {
   return storageOperationLock.withShared(async () => {
     await pullUnderIntakeLimits(cid)
@@ -508,6 +546,7 @@ export async function acceptStagedReplica(
       unixfs: ifs,
       cid: CID.parse(cid),
       transactionId,
+      originPeerId,
       temporaryTtlMs: settlementTtlMs(),
       pinTimeoutMs: config.replication.requestTimeoutMs
     })
@@ -517,19 +556,28 @@ export async function acceptStagedReplica(
 }
 
 /** A prepared transaction becomes a normal durable holder. */
-export async function commitStagedReplica(cid: string, transactionId: string): Promise<void> {
+export async function commitStagedReplica(
+  cid: string,
+  transactionId: string,
+  peerId: string
+): Promise<void> {
   await storageOperationLock.withShared(async () => {
-    await commitReplica({ ...lifecycleTarget(), cid: CID.parse(cid), transactionId })
+    await commitReplica({ ...lifecycleTarget(), cid: CID.parse(cid), transactionId, peerId })
   })
 }
 
 /** Withdraw one source upload's claim on a prepared copy. */
-export async function abortStagedReplica(cid: string, transactionId: string): Promise<void> {
+export async function abortStagedReplica(
+  cid: string,
+  transactionId: string,
+  peerId: string
+): Promise<void> {
   await storageOperationLock.withShared(async () => {
     await abortReplica({
       ...lifecycleTarget(),
       cid: CID.parse(cid),
       transactionId,
+      peerId,
       tombstoneTtlMs: settlementTtlMs()
     })
   })

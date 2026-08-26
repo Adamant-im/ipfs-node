@@ -1,7 +1,7 @@
 import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 import type { GarbageCollectionConfig } from './config.js'
-import { isProtected, pinFile, unpinFile } from './pinning.js'
+import { hasLocalDag, isProtected, pinFile, unpinFile } from './pinning.js'
 import { restoreReplicaStage } from './replicaStage.js'
 import {
   FileRegistry,
@@ -216,8 +216,6 @@ export interface GcRunOptions {
   dryRun?: boolean
   /** Collect even when the blockstore is below the high watermark. */
   force?: boolean
-  /** Bounds the DAG walk when a missing pin has to be restored. */
-  pinTimeoutMs?: number
   /**
    * Excludes in-flight unpinned writes while Helia deletes blocks.
    *
@@ -310,9 +308,13 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
         }
 
         log(`Restoring the missing pin of the confirmed file ${record.cid}`)
-        const signal =
-          options.pinTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.pinTimeoutMs)
-        const createdPin = await pinFile(options.node, cid, signal)
+        // Aborting Helia `pins.add` leaks block pin refs, so missing blocks are
+        // refused here rather than fetched under a timeout. The next pass retries.
+        if (!(await hasLocalDag(options.node, cid))) {
+          throw new Error('Confirmed file is missing local blocks')
+        }
+
+        const createdPin = await pinFile(options.node, cid)
 
         try {
           await registry.save({ ...current, pinned: true })

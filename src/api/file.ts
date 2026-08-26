@@ -52,7 +52,6 @@ router.post(
     replicate: replicateUploadedFile,
     commitReplicas: commitUploadedReplicas,
     abortReplicas: abortUploadedReplicas,
-    pinTimeoutMs: config.findFileTimeout,
     log: logger
   })
 )

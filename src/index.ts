@@ -9,7 +9,7 @@ import { recoverInterruptedAdmissions } from './storage/admission.js'
 import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
-import { garbageCollectionCron } from './gc.cron.js'
+import { garbageCollectionCron, admissionRecoveryCron } from './gc.cron.js'
 import { replicationRepairCron } from './replication.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
@@ -57,6 +57,7 @@ function startLifecycleJobs(): void {
     garbageCollectionCron.start()
   } else {
     logger.info('Garbage collection is disabled. Storage grows until an operator collects it.')
+    admissionRecoveryCron.start()
   }
 
   if (config.replication.enabled) {
@@ -148,14 +149,39 @@ const server = app.listen(PORT, () => {
   )
 })
 
+const SHUTDOWN_MS = 15_000
+
 function shutdown(signal: string): void {
   logger.info(`Received ${signal}, shutting down`)
   diskUsageCron.stop()
   peeringCron.stop()
   garbageCollectionCron.stop()
+  admissionRecoveryCron.stop()
   replicationRepairCron.stop()
+
+  const forceTimer = setTimeout(() => {
+    logger.warn('Shutdown timed out')
+    process.exit(1)
+  }, SHUTDOWN_MS)
+  forceTimer.unref()
+
+  const closeIdle = setTimeout(
+    () => {
+      server.closeAllConnections()
+    },
+    Math.max(1_000, SHUTDOWN_MS - 3_000)
+  )
+  closeIdle.unref()
+
   server.close(() => {
-    void helia.stop().finally(() => process.exit(0))
+    clearTimeout(closeIdle)
+    void helia
+      .stop()
+      .catch((err: Error) => logger.error(`helia.stop failed: ${err.message}`))
+      .finally(() => {
+        clearTimeout(forceTimer)
+        process.exit(0)
+      })
   })
 }
 

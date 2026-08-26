@@ -94,8 +94,10 @@ async function restoreLifecycleBaseline(
 /**
  * Pin content and record it as durable, with the CID locked throughout.
  *
- * The DAG is pulled over libp2p if it is missing locally, bounded by
- * `pinTimeoutMs` so an unreachable CID cannot hang the caller.
+ * Helia `pins.add` is not aborted: cancelling the DAG walk leaks block pin
+ * refs that collection cannot reclaim. Callers that still need a bound fetch
+ * the DAG first (intake) and pin a local tree. `pinTimeoutMs` is a pre-check
+ * on the pin and a bound on the offline stat afterwards.
  */
 export async function registerPinnedFile(options: RegisterPinnedOptions): Promise<FileRecord> {
   const key = options.cid.toString()

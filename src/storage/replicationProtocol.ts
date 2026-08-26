@@ -3,6 +3,7 @@ import type { Multiaddr } from '@multiformats/multiaddr'
 import type { PeerId } from '@libp2p/interface'
 import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
+import { FileLifecycleBusyError } from './registry.js'
 
 /**
  * Version of the replication wire format.
@@ -73,7 +74,22 @@ export type ReplicationResponse =
   | { ok: true; op: 'have'; has: boolean }
   | { ok: true; op: 'accept'; willAccept: boolean }
   | { ok: true; op: 'cache'; cachedBytes: number }
-  | { ok: false; error: string }
+  | { ok: false; error: string; code?: ReplicationErrorCode }
+
+/** Why a replication request was refused, when the peer could name the reason. */
+export type ReplicationErrorCode =
+  'not_authorized' | 'busy' | 'not_staged' | 'already_aborted' | 'no_room' | 'invalid' | 'failed'
+
+/** Structured refusal from {@link call}, so the client can tell busy from a lost ack. */
+export class ReplicationProtocolError extends Error {
+  constructor(
+    message: string,
+    readonly code: ReplicationErrorCode
+  ) {
+    super(message)
+    this.name = 'ReplicationProtocolError'
+  }
+}
 
 /**
  * Node behaviour behind the protocol.
@@ -92,11 +108,15 @@ export interface ReplicationHandlers {
   /** Pin `cid` and register it, returning the bytes now held for it. */
   store(cid: string): Promise<number>
   /** Prepare a rollback-capable copy for a strict upload. */
-  stage(cid: string, transactionId: string): Promise<{ storedBytes: number; staged: boolean }>
+  stage(
+    cid: string,
+    transactionId: string,
+    peerId: string
+  ): Promise<{ storedBytes: number; staged: boolean }>
   /** Commit a prepared copy. */
-  commit(cid: string, transactionId: string): Promise<void>
+  commit(cid: string, transactionId: string, peerId: string): Promise<void>
   /** Abort one transaction's claim on a prepared copy. */
-  abort(cid: string, transactionId: string): Promise<void>
+  abort(cid: string, transactionId: string, peerId: string): Promise<void>
   /** Whether this node holds `cid` durably, not merely cached. */
   have(cid: string): Promise<boolean>
   /**
@@ -243,6 +263,44 @@ function parseRequest(value: unknown): ReplicationRequest {
   return { op, cid: message.cid }
 }
 
+function failureResponse(err: unknown): { ok: false; error: string; code: ReplicationErrorCode } {
+  if (err instanceof FileLifecycleBusyError) {
+    return { ok: false, error: 'File lifecycle is busy', code: 'busy' }
+  }
+
+  if (err instanceof ReplicationProtocolError) {
+    return { ok: false, error: err.message, code: err.code }
+  }
+
+  const message = err instanceof Error ? err.message : 'Replication request failed'
+
+  if (message.includes('Not authorized') || message.includes('staged by another peer')) {
+    return { ok: false, error: 'Not authorized', code: 'not_authorized' }
+  }
+
+  if (message.includes('was already aborted')) {
+    return { ok: false, error: message, code: 'already_aborted' }
+  }
+
+  if (
+    message.includes('unrelated temporary') ||
+    message.includes('unsettled local') ||
+    message.includes('active lifecycle')
+  ) {
+    return { ok: false, error: message, code: 'busy' }
+  }
+
+  if (message.includes('is not staged')) {
+    return { ok: false, error: message, code: 'not_staged' }
+  }
+
+  if (message.includes('no room') || message.includes('No room')) {
+    return { ok: false, error: message, code: 'no_room' }
+  }
+
+  return { ok: false, error: 'Replication request failed', code: 'failed' }
+}
+
 async function respond(
   stream: Stream,
   connection: Connection,
@@ -252,57 +310,61 @@ async function respond(
   const request = parseRequest(await readMessage(stream, AbortSignal.timeout(requestTimeoutMs)))
   const peerId = connection.remotePeer.toString()
 
-  // Holding an extra copy is open to anyone, because it costs no more than a
-  // read from the same peer would. Everything that makes this node responsible
-  // for content stays behind the authorization check. Open still means
-  // accountable: the handler charges the request to the peer that made it.
-  if (request.op === 'cache') {
-    if (!(await handlers.willAccept())) {
-      sendMessage(stream, { ok: false, error: 'No room for another copy' })
+  try {
+    // Holding an extra copy is open to anyone, because it costs no more than a
+    // read from the same peer would. Everything that makes this node responsible
+    // for content stays behind the authorization check. Open still means
+    // accountable: the handler charges the request to the peer that made it.
+    if (request.op === 'cache') {
+      if (!(await handlers.willAccept())) {
+        sendMessage(stream, { ok: false, error: 'No room for another copy', code: 'no_room' })
+        return
+      }
+
+      const cachedBytes = await handlers.cacheCopy(request.cid, peerId)
+      sendMessage(stream, { ok: true, op: 'cache', cachedBytes })
       return
     }
 
-    const cachedBytes = await handlers.cacheCopy(request.cid, peerId)
-    sendMessage(stream, { ok: true, op: 'cache', cachedBytes })
-    return
-  }
+    if (!handlers.isAuthorized(peerId)) {
+      handlers.onRefused?.(peerId, request.op)
+      sendMessage(stream, { ok: false, error: 'Not authorized', code: 'not_authorized' })
+      return
+    }
 
-  if (!handlers.isAuthorized(peerId)) {
-    handlers.onRefused?.(peerId, request.op)
-    sendMessage(stream, { ok: false, error: 'Not authorized' })
-    return
-  }
+    if (request.op === 'have') {
+      sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
+      return
+    }
 
-  if (request.op === 'have') {
-    sendMessage(stream, { ok: true, op: 'have', has: await handlers.have(request.cid) })
-    return
-  }
+    if (request.op === 'accept') {
+      sendMessage(stream, { ok: true, op: 'accept', willAccept: await handlers.willAccept() })
+      return
+    }
 
-  if (request.op === 'accept') {
-    sendMessage(stream, { ok: true, op: 'accept', willAccept: await handlers.willAccept() })
-    return
-  }
+    if (request.op === 'stage') {
+      const staged = await handlers.stage(request.cid, request.transactionId, peerId)
+      sendMessage(stream, { ok: true, op: 'stage', ...staged })
+      return
+    }
 
-  if (request.op === 'stage') {
-    const staged = await handlers.stage(request.cid, request.transactionId)
-    sendMessage(stream, { ok: true, op: 'stage', ...staged })
-    return
-  }
+    if (request.op === 'commit') {
+      await handlers.commit(request.cid, request.transactionId, peerId)
+      sendMessage(stream, { ok: true, op: 'commit' })
+      return
+    }
 
-  if (request.op === 'commit') {
-    await handlers.commit(request.cid, request.transactionId)
-    sendMessage(stream, { ok: true, op: 'commit' })
-    return
-  }
+    if (request.op === 'abort') {
+      await handlers.abort(request.cid, request.transactionId, peerId)
+      sendMessage(stream, { ok: true, op: 'abort' })
+      return
+    }
 
-  if (request.op === 'abort') {
-    await handlers.abort(request.cid, request.transactionId)
-    sendMessage(stream, { ok: true, op: 'abort' })
-    return
+    const storedBytes = await handlers.store(request.cid)
+    sendMessage(stream, { ok: true, op: 'store', storedBytes })
+  } catch (err) {
+    sendMessage(stream, failureResponse(err))
   }
-
-  const storedBytes = await handlers.store(request.cid)
-  sendMessage(stream, { ok: true, op: 'store', storedBytes })
 }
 
 /** Start answering replication requests from other ADAMANT nodes. */
@@ -345,7 +407,10 @@ async function call(
     const response = (await readMessage(stream, signal)) as ReplicationResponse
 
     if (response?.ok !== true) {
-      throw new Error(response?.error ?? 'Replication request was refused')
+      throw new ReplicationProtocolError(
+        response?.error ?? 'Replication request was refused',
+        response?.code ?? 'failed'
+      )
     }
 
     return response

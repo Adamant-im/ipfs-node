@@ -53,6 +53,30 @@ function wasAborted(cid: string, transactionId: string, now: number): boolean {
   return (abortedTransactions.get(transactionKey(cid, transactionId)) ?? 0) > now
 }
 
+function withOrigin(
+  previous: Record<string, string> | undefined,
+  transactionId: string,
+  originPeerId: string | undefined
+): Record<string, string> | undefined {
+  if (originPeerId === undefined) {
+    return previous
+  }
+
+  return { ...previous, [transactionId]: originPeerId }
+}
+
+function assertStageOwner(
+  transactionId: string,
+  origin: string | undefined,
+  peerId: string | undefined
+): void {
+  if (origin === undefined || peerId === undefined || origin === peerId) {
+    return
+  }
+
+  throw new Error(`Replica transaction ${transactionId} was staged by another peer`)
+}
+
 export interface ReplicaStageTarget {
   node: IpfsNode
   unixfs: UnixFS
@@ -62,6 +86,8 @@ export interface ReplicaStageTarget {
   temporaryTtlMs: number
   pinTimeoutMs?: number
   now?: number
+  /** libp2p peer that asked to stage; commit and abort must come from it. */
+  originPeerId?: string
 }
 
 export interface ReplicaStageResult {
@@ -175,7 +201,7 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
     const previous = await registry.get(key)
 
     if (previous?.replicaStage !== undefined) {
-      await pinFile(options.node, options.cid, signal)
+      await pinFile(options.node, options.cid)
 
       try {
         const transactionIds = previous.replicaStage.transactionIds.includes(options.transactionId)
@@ -187,7 +213,15 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
           expiresAt: Math.max(previous.expiresAt ?? 0, now + options.temporaryTtlMs),
           pinned: true,
           heldLocally: true,
-          replicaStage: { ...previous.replicaStage, transactionIds }
+          replicaStage: {
+            ...previous.replicaStage,
+            transactionIds,
+            origins: withOrigin(
+              previous.replicaStage.origins,
+              options.transactionId,
+              options.originPeerId
+            )
+          }
         })
 
         return { record, staged: true }
@@ -213,11 +247,11 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
     // Existing pins and confirmed records predate this transaction. Repairing
     // their protection is safe to keep even if the new upload is rejected.
     if (wasDirectlyPinned || previous?.state === 'confirmed') {
-      const createdPin = await pinFile(options.node, options.cid, signal)
+      const createdPin = await pinFile(options.node, options.cid)
       return registerStableReplica(registry, options, previous, createdPin, now, signal)
     }
 
-    const createdPin = await pinFile(options.node, options.cid, signal)
+    const createdPin = await pinFile(options.node, options.cid)
 
     try {
       const stats = await options.unixfs.stat(options.cid, {
@@ -253,7 +287,11 @@ export async function stageReplica(options: ReplicaStageTarget): Promise<Replica
         replicas: previous?.replicas ?? [],
         admissionId: previous?.admissionId,
         admissionSettledAt: previous?.admissionSettledAt,
-        replicaStage: { transactionIds: [options.transactionId], previous: baseline }
+        replicaStage: {
+          transactionIds: [options.transactionId],
+          origins: withOrigin(undefined, options.transactionId, options.originPeerId),
+          previous: baseline
+        }
       })
 
       return { record, staged: true }
@@ -271,6 +309,8 @@ export interface SettleReplicaOptions {
   now?: number
   /** How long a missing-stage abort rejects a stage request still in flight. */
   tombstoneTtlMs?: number
+  /** libp2p peer asking to settle; must match the staging peer when known. */
+  peerId?: string
 }
 
 /** Make a prepared copy durable. One commit settles every transaction sharing it. */
@@ -296,6 +336,12 @@ export async function commitReplica(
 
       throw new Error(`Replica transaction ${options.transactionId} for ${key} is not staged`)
     }
+
+    assertStageOwner(
+      options.transactionId,
+      current.replicaStage.origins?.[options.transactionId],
+      options.peerId
+    )
 
     return registry.save({
       ...current,
@@ -375,12 +421,7 @@ function currentCid(record: FileRecord): CID {
 export async function abortReplica(options: SettleReplicaOptions): Promise<FileRecord | undefined> {
   const key = options.cid.toString()
   const now = options.now ?? Date.now()
-  rememberAbort(
-    key,
-    options.transactionId,
-    now + (options.tombstoneTtlMs ?? DEFAULT_ABORT_TOMBSTONE_TTL_MS),
-    now
-  )
+  const tombstoneUntil = now + (options.tombstoneTtlMs ?? DEFAULT_ABORT_TOMBSTONE_TTL_MS)
 
   return options.registry.withExclusiveCids([key], async (registry) => {
     const current = await registry.get(key)
@@ -391,13 +432,23 @@ export async function abortReplica(options: SettleReplicaOptions): Promise<FileR
       stage === undefined ||
       !stage.transactionIds.includes(options.transactionId)
     ) {
+      rememberAbort(key, options.transactionId, tombstoneUntil, now)
       return current
     }
 
+    assertStageOwner(options.transactionId, stage.origins?.[options.transactionId], options.peerId)
+    rememberAbort(key, options.transactionId, tombstoneUntil, now)
+
     const transactionIds = stage.transactionIds.filter((id) => id !== options.transactionId)
+    const origins = { ...stage.origins }
+    delete origins[options.transactionId]
+    const nextOrigins = Object.keys(origins).length > 0 ? origins : undefined
 
     if (transactionIds.length > 0) {
-      return registry.save({ ...current, replicaStage: { ...stage, transactionIds } })
+      return registry.save({
+        ...current,
+        replicaStage: { ...stage, transactionIds, origins: nextOrigins }
+      })
     }
 
     return restoreReplicaStage(registry, options.node, current, false)

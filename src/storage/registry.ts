@@ -30,6 +30,13 @@ export interface ReplicaStageBaseline {
 export interface ReplicaStage {
   /** Upload transactions that currently need this prepared copy. */
   transactionIds: string[]
+  /**
+   * Peer that staged each transaction id.
+   *
+   * Commit and abort must come from that peer. Absent on records written
+   * before this field existed, which any authorized mesh peer may still settle.
+   */
+  origins?: Record<string, string>
   /** `null` when the stage created the registry entry. */
   previous: ReplicaStageBaseline | null
 }
@@ -126,13 +133,27 @@ function isReplicaStage(value: unknown): value is ReplicaStage {
       previous.pinned === false &&
       previous.heldLocally === false)
 
-  return (
-    Array.isArray(stage.transactionIds) &&
-    stage.transactionIds.length > 0 &&
-    new Set(stage.transactionIds).size === stage.transactionIds.length &&
-    stage.transactionIds.every((id) => typeof id === 'string' && id.length > 0) &&
-    previousIsValid
-  )
+  const transactionIds = stage.transactionIds
+  if (
+    !Array.isArray(transactionIds) ||
+    transactionIds.length === 0 ||
+    new Set(transactionIds).size !== transactionIds.length ||
+    !transactionIds.every((id) => typeof id === 'string' && id.length > 0)
+  ) {
+    return false
+  }
+
+  const originsAreValid =
+    stage.origins === undefined ||
+    (typeof stage.origins === 'object' &&
+      stage.origins !== null &&
+      !Array.isArray(stage.origins) &&
+      Object.entries(stage.origins).every(
+        ([id, peerId]) =>
+          transactionIds.includes(id) && typeof peerId === 'string' && peerId.length > 0
+      ))
+
+  return originsAreValid && previousIsValid
 }
 
 /** Validate the durable shape before lifecycle policy is allowed to trust it. */

@@ -3,6 +3,7 @@ import type { IpfsNode } from '../ipfs-node.js'
 import { pinFile, unpinFile } from '../storage/pinning.js'
 import type { FileRecord, FileRegistry } from '../storage/registry.js'
 import type { ReplicationReport } from '../storage/replication.js'
+import { toPublicReplicationReport } from '../storage/replication.js'
 import { rollbackUpload } from '../storage/rollback.js'
 import type { UploadSession } from '../storage/uploadSession.js'
 import { createAdmissionId, beginAdmission, endAdmission } from '../storage/admission.js'
@@ -37,11 +38,6 @@ export interface UploadRouteDependencies {
   abortReplicas: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
   /** Test seam for pin-datastore failure paths. */
   unpin?: (cid: UnixFsMulterFile['cid']) => Promise<void>
-  /**
-   * Bounds the pin DAG walk. Uploaded blocks are already local; the deadline
-   * is a backstop if disconnect cleanup won the race and the walk would fetch.
-   */
-  pinTimeoutMs?: number
   log: UploadRouteLog
 }
 
@@ -250,6 +246,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
   return async (req: Request, res: Response, next: NextFunction) => {
     const admissionId = createAdmissionId()
     beginAdmission(admissionId)
+    let session: UploadSession | undefined
 
     try {
       if (!Array.isArray(req.files) || req.files.length === 0) {
@@ -257,8 +254,9 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
         return res.send({ error: 'No file uploaded' })
       }
 
-      const session = dependencies.getSession(req)
-      if (!session.claim()) {
+      session = dependencies.getSession(req)
+      const claimedSession = session
+      if (!claimedSession.claim()) {
         throw new Error('Upload was aborted before it could be committed')
       }
 
@@ -313,15 +311,11 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
               }
               const previous = await locked.get(cid)
               await locked.markPinIntent(cid)
-              const pinSignal =
-                dependencies.pinTimeoutMs === undefined
-                  ? undefined
-                  : AbortSignal.timeout(dependencies.pinTimeoutMs)
 
               let createdPin = false
               let registration
               try {
-                createdPin = await pinFile(node, file.cid, pinSignal)
+                createdPin = await pinFile(node, file.cid)
                 registration = await locked.registerReplacing(
                   {
                     cid,
@@ -345,11 +339,10 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
                 throw err
               }
 
-              await locked.clearPinIntent(cid)
-
               if (!baselines.has(cid)) {
                 baselines.set(cid, { cid, previous, createdPin, unpin })
               }
+              await locked.clearPinIntent(cid)
               stored.push(registration.record)
             }
 
@@ -359,7 +352,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
             // session holds the shared storage lease, and keeping it across a
             // network round would stop collection — and, behind it, every other
             // upload — for as long as the slowest peer takes to answer.
-            session.commit()
+            claimedSession.commit()
 
             return { records: stored, baselines: [...baselines.values()] }
           } catch (err) {
@@ -374,7 +367,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
               )
             }
 
-            await session.cleanup()
+            await claimedSession.cleanup()
             throw failure
           }
         }
@@ -555,7 +548,9 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       }
 
       const records = outcome.records.map((record) => finalized.get(record.cid) ?? record)
-      const replicationByCid = new Map(replication.map((item) => [item.cid, item.report]))
+      const replicationByCid = new Map(
+        replication.map((item) => [item.cid, toPublicReplicationReport(item.report)])
+      )
 
       res.send({
         filesNames: files.map((file) => file.originalname),
@@ -571,12 +566,20 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
         })),
         // The first file's report, kept for clients written against it. New
         // ones should read the per-file field above.
-        replication: replication[0]?.report ?? null
+        replication:
+          replication[0] !== undefined ? toPublicReplicationReport(replication[0].report) : null
       })
     } catch (err) {
       next(err)
     } finally {
       endAdmission(admissionId)
+      if (session !== undefined && !session.isSettled) {
+        try {
+          await session.cleanup()
+        } catch (cleanupErr) {
+          log.error(`Upload cleanup failed: ${(cleanupErr as Error).message}`)
+        }
+      }
     }
   }
 }

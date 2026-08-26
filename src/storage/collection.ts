@@ -16,8 +16,6 @@ export interface CollectStorageOptions {
   watermarks: Watermarks
   /** Free bytes uploads must never consume. */
   reserveBytes: number
-  /** Bounds the DAG walk when a missing pin has to be restored. */
-  pinTimeoutMs?: number
   /** Hands copies over to their designated holders, and reports which. */
   demote: (options: { dryRun?: boolean }) => Promise<{ demoted: string[] }>
   /** Measures the blockstore and the volume it sits on. */
@@ -63,7 +61,6 @@ export async function collectStorage(options: CollectStorageOptions): Promise<Co
     reserveBytes: options.reserveBytes,
     dryRun: options.dryRun,
     force: options.force,
-    pinTimeoutMs: options.pinTimeoutMs,
     withCollectionLease: (work) => options.lock.withExclusive(work),
     log: options.log
   })

@@ -353,9 +353,11 @@ hold the blocks without pinning them. Because such a copy lasts only until its
 node needs the space, the file is spread to a few more nodes than a pinned one
 would be: several fragile copies outlive a single one. It can serve the file from then on, and it
 promises nothing — the copy sits in the same tier as read cache and goes when
-that node needs the space. Nothing is counted as durable that is not: an upload
-report lists such peers under `cached`, separately from `replicas`, and the
-acknowledged count ignores them.
+that node needs the space. Nothing is counted as durable that is not. The
+internal placement report still lists those peers under `cached`, separately
+from `replicas`, and the acknowledged count ignores them. The public upload
+receipt keeps only counts (`replicaCount`, `cachedCount`, `acknowledged`) — not
+node names, peer ids, or peer error text.
 
 This grants a stranger nothing it did not already have. Anyone who knows a CID
 can already make a node fetch and cache those blocks by asking it to serve them;
@@ -586,7 +588,9 @@ The same startup phase clears admission tokens left by a request that can no
 longer resume. Tokens whose HTTP handler is still running in this process are
 skipped; unsettled tokens from a previous process, or from a handler in this
 process that has already returned, are removed so they cannot hide a pin from
-repair.
+repair. The same pass runs at the start of every real collection, and on the
+same schedule even when `storage.gc.enabled` is false. A dry-run collection
+does not clear tokens.
 
 Two consequences are worth planning for:
 
@@ -608,7 +612,7 @@ Two consequences are worth planning for:
    a dry run. It does ask peers whether they hold the files it would hand over,
    because a handover unpins a local copy and a plan without them is not the
    plan the real run follows. The sweep position is left where it was, so the
-   real run starts on the same files.
+   real run starts on the same files. Leftover admission tokens are not cleared.
 2. Confirm that every CID that must survive appears in `retainedCids`. If a CID
    is missing, it is not confirmed: pin it with `POST /api/helia/pin/:cid` or
    confirm it with `POST /api/file/:cid/confirm` first.

@@ -81,6 +81,47 @@ export interface ReplicationReport {
   attempts: ReplicationAck[]
 }
 
+/**
+ * Upload receipt without peer identity.
+ *
+ * The internal report names holders and carries raw peer errors. Upload is
+ * public, so the HTTP body keeps counts and outcomes only.
+ */
+export interface PublicReplicationReport {
+  mode: ReplicationReport['mode']
+  desiredCopies: number
+  copies: number
+  required: number
+  acknowledged: number
+  replicaCount: number
+  cachedCount: number
+  satisfied: boolean
+  networkTooSmall: boolean
+  failedAttemptCount: number
+  attempts: Array<{ ok: boolean; outcome?: PlacementOutcome; staged?: boolean }>
+}
+
+/** Strip holder names, peer ids, and error text from an upload receipt. */
+export function toPublicReplicationReport(report: ReplicationReport): PublicReplicationReport {
+  return {
+    mode: report.mode,
+    desiredCopies: report.desiredCopies,
+    copies: report.copies,
+    required: report.required,
+    acknowledged: report.acknowledged,
+    replicaCount: report.replicas.length,
+    cachedCount: report.cached.length,
+    satisfied: report.satisfied,
+    networkTooSmall: report.networkTooSmall,
+    failedAttemptCount: report.attempts.filter((attempt) => !attempt.ok).length,
+    attempts: report.attempts.map(({ ok, outcome, staged }) => ({
+      ok,
+      ...(outcome === undefined ? {} : { outcome }),
+      ...(staged === undefined ? {} : { staged })
+    }))
+  }
+}
+
 export interface ReplicateOptions {
   cid: string
   /** Age of the file, which decides how many copies it deserves. */

@@ -76,4 +76,18 @@ describe('nextSweepBatch', () => {
 
     assert.ok(second[0].cid > cursor)
   })
+
+  it('does not rewind on an unsorted listing when the cursor CID is gone', () => {
+    const size = SWEEP_BATCHES.demote
+    const all = Array.from({ length: size + 8 }, (unused, index) => ({
+      cid: `z-${String(index).padStart(3, '0')}`
+    }))
+    const shuffled = [...all.slice(size / 2), ...all.slice(0, size / 2)]
+    const first = nextSweepBatch('demote', shuffled)
+    const cursor = first[first.length - 1].cid
+    const remaining = shuffled.filter((record) => record.cid !== cursor)
+    const second = nextSweepBatch('demote', remaining)
+
+    assert.ok(second[0].cid > cursor)
+  })
 })

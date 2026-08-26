@@ -7,6 +7,7 @@ import {
   isUnderReplicated,
   replicate,
   requiredAcks,
+  toPublicReplicationReport,
   type ReplicationPeer
 } from '../src/storage/replication.js'
 
@@ -334,5 +335,39 @@ describe('isUnderReplicated', () => {
     const placement = placementFor(0, [peer('only')])
 
     assert.equal(isUnderReplicated(1, placement, SELF), false)
+  })
+})
+
+describe('toPublicReplicationReport', () => {
+  it('strips holder names, peer ids, and error text', () => {
+    const publicReport = toPublicReplicationReport({
+      mode: 'quorum',
+      desiredCopies: 4,
+      copies: 3,
+      required: 2,
+      acknowledged: 2,
+      replicas: ['ipfs2'],
+      cached: ['ipfs3'],
+      satisfied: true,
+      networkTooSmall: false,
+      attempts: [
+        {
+          node: 'ipfs2',
+          peerId: '12D3KooWsecret',
+          ok: false,
+          outcome: 'stored',
+          staged: true,
+          error: 'ECONNRESET at /var/lib/ipfs'
+        }
+      ]
+    })
+
+    assert.equal(publicReport.replicaCount, 1)
+    assert.equal(publicReport.cachedCount, 1)
+    assert.equal(publicReport.failedAttemptCount, 1)
+    assert.deepEqual(publicReport.attempts, [{ ok: false, outcome: 'stored', staged: true }])
+    assert.equal(JSON.stringify(publicReport).includes('12D3KooWsecret'), false)
+    assert.equal(JSON.stringify(publicReport).includes('ECONNRESET'), false)
+    assert.equal(JSON.stringify(publicReport).includes('ipfs2'), false)
   })
 })

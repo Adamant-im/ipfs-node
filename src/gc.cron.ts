@@ -36,9 +36,9 @@ export async function collectGarbage(
 
   running = true
   try {
-    const recovery = await recoverInterruptedAdmissions(fileRegistry)
-    for (const error of recovery.errors) {
-      logger.warn(`Admission recovery: ${error}`)
+    // Dry-run is a report. Clearing leftover tokens would still be a write.
+    if (options.dryRun !== true) {
+      await recoverStaleAdmissions()
     }
 
     const collection = await collectStorage({
@@ -47,7 +47,6 @@ export async function collectGarbage(
       registry: fileRegistry,
       watermarks: config.storage.gc,
       reserveBytes: config.storage.diskReserveBytes,
-      pinTimeoutMs: config.replication.requestTimeoutMs,
       demote: demoteReleasableCopies,
       measure: refreshStorageMetrics,
       dryRun: options.dryRun,
@@ -74,6 +73,27 @@ export const garbageCollectionCron = new CronJob(config.storage.gc.schedule, () 
   logger.info('[Cron] Running "garbageCollection" cronjob.')
   collectGarbage().catch((err) => logger.error(`${err.message}\n${err.stack}`))
 })
+
+/**
+ * Clear leftover upload tokens when the collector itself is off.
+ *
+ * Recovery also runs inside {@link collectGarbage}. This job exists so an
+ * operator who disables the collector still un-wedges CIDs whose handler died.
+ */
+export const admissionRecoveryCron = new CronJob(config.storage.gc.schedule, () => {
+  logger.info('[Cron] Running "admissionRecovery" cronjob.')
+  recoverStaleAdmissions().catch((err) => logger.error(`${err.message}\n${err.stack}`))
+})
+
+async function recoverStaleAdmissions(): Promise<void> {
+  const recovery = await recoverInterruptedAdmissions(fileRegistry)
+  for (const error of recovery.errors) {
+    logger.warn(`Admission recovery: ${error}`)
+  }
+  if (recovery.recovered > 0) {
+    logger.info(`Admission recovery: cleared ${recovery.recovered} interrupted uploads`)
+  }
+}
 
 export function getGarbageCollectionState() {
   return {

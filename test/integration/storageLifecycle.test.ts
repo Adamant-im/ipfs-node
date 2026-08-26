@@ -561,7 +561,6 @@ describe('garbage collection against fixture data', () => {
       withCollectionLease: runWithoutOtherWriters,
       watermarks: TIGHT,
       blockstoreBytes: 4096,
-      pinTimeoutMs: 1500,
       now: 1000
     })
 
@@ -1134,7 +1133,7 @@ describe('lifecycle transitions', () => {
     assert.equal(await isDirectlyPinned(node, cid), true)
   })
 
-  it('passes the configured timeout to a known CID pin', async () => {
+  it('does not abort Helia pins.add, which cannot roll back a partial walk', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(2048, 'confirm-timeout'))
     await registry.save(
@@ -1164,8 +1163,7 @@ describe('lifecycle transitions', () => {
       pinTimeoutMs: 30_000
     })
 
-    assert.ok(receivedSignal instanceof AbortSignal)
-    assert.equal(receivedSignal.aborted, false)
+    assert.equal(receivedSignal, undefined)
   })
 
   it('removes the pin it created when confirmation cannot be recorded', async () => {
@@ -1299,13 +1297,20 @@ describe('lifecycle transitions', () => {
 })
 
 describe('strict-upload replica staging', () => {
-  const stage = (registry: FileRegistry, cid: CID, transactionId: string, now = 1000) =>
+  const stage = (
+    registry: FileRegistry,
+    cid: CID,
+    transactionId: string,
+    now = 1000,
+    originPeerId?: string
+  ) =>
     stageReplica({
       node,
       unixfs: ifs,
       registry,
       cid,
       transactionId,
+      originPeerId,
       temporaryTtlMs: 1000,
       now
     })
@@ -1325,6 +1330,45 @@ describe('strict-upload replica staging', () => {
 
     assert.equal(await registry.get(cid.toString()), undefined)
     assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('refuses commit and abort from a peer that did not stage the transaction', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_000, 'replica-stage-owner'))
+
+    await stage(registry, cid, 'tx-owned', 1000, 'peer-origin')
+
+    await assert.rejects(
+      () =>
+        commitReplica({
+          node,
+          registry,
+          cid,
+          transactionId: 'tx-owned',
+          peerId: 'peer-other'
+        }),
+      /staged by another peer/
+    )
+    await assert.rejects(
+      () =>
+        abortReplica({
+          node,
+          registry,
+          cid,
+          transactionId: 'tx-owned',
+          peerId: 'peer-other'
+        }),
+      /staged by another peer/
+    )
+
+    const committed = await commitReplica({
+      node,
+      registry,
+      cid,
+      transactionId: 'tx-owned',
+      peerId: 'peer-origin'
+    })
+    assert.equal(committed?.state, 'confirmed')
   })
 
   it('keeps a shared stage until one transaction commits it', async () => {
