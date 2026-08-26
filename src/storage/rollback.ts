@@ -4,14 +4,8 @@ export interface UploadRollback {
   /** Registry view whose CID lock the caller already holds. */
   registry: LockedFileRegistry
   cid: string
-  /**
-   * The record this request stored, when the lock was released in between.
-   *
-   * A rollback decided while the lock was held needs no such check. One that
-   * runs after replication does: another request may have written to the CID
-   * meanwhile, and undoing its work would take away a lifecycle it owns.
-   */
-  written?: FileRecord
+  /** Request ownership token to check after releasing the lock for replication. */
+  admissionId?: string
   /** What that write replaced, as reported by the write itself. */
   previous?: FileRecord
   /** Whether the pin on this CID was created by this request. */
@@ -23,19 +17,20 @@ export interface UploadRollback {
 /**
  * Undo what one file of a failed upload left behind.
  *
- * The caller holds the CID lock from registration through request commit or
- * rollback. No other request can adopt the pin between these steps, so this
- * first restores the real pin state and only then restores or removes the
- * registry entry. If unpinning fails, the current entry deliberately remains:
- * a visible record for protected content is recoverable, while an orphan pin
- * is not.
+ * The caller holds the CID lock for this compensation. When network work
+ * happened between registration and rollback, `admissionId` proves the record
+ * still belongs to this request; a lifecycle that adopted it is left alone.
+ * The real pin state is restored before the registry entry. If unpinning fails,
+ * the current entry deliberately remains: a visible record for protected
+ * content is recoverable, while an orphan pin is not.
  */
 export async function rollbackUpload(options: UploadRollback): Promise<void> {
-  if (options.written !== undefined) {
+  if (options.admissionId !== undefined) {
     const current = await options.registry.get(options.cid)
 
-    // Somebody else wrote after this request did; the CID is theirs now.
-    if (current?.revision !== options.written.revision) {
+    // A lifecycle adoption replaces or clears this token. Replica metadata
+    // updates deliberately preserve it and therefore do not defeat rollback.
+    if (current?.admissionId !== options.admissionId) {
       return
     }
   }

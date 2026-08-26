@@ -14,23 +14,28 @@ import {
   releaseStoredFile,
   type LifecycleTarget
 } from './lifecycle.js'
-import type { FileRecord } from './registry.js'
+import { protectedStorageBytes, type FileRecord } from './registry.js'
 import {
   isUnderReplicated,
   replicate,
   requiredAcks,
   type PlacementOutcome,
   type ReplicationPeer,
-  type ReplicationReport
+  type ReplicationReport,
+  type ReplicationStoreResult
 } from './replication.js'
 import {
   probeAccept,
   probeHave,
+  requestAbort,
   requestCache,
+  requestCommit,
+  requestStage,
   requestStore,
   type ReplicationHandlers,
   type ReplicationCallOptions
 } from './replicationProtocol.js'
+import { abortReplica, commitReplica, stageReplica } from './replicaStage.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
 import {
@@ -83,14 +88,18 @@ function placementFor(cid: string, createdAt: number, peers: ReplicationPeer[]):
  * pinned locally stays valid when a peer is unavailable, and the repair job
  * retries later.
  */
-async function placeReplicas(cid: string, createdAt: number): Promise<ReplicationReport> {
+async function placeReplicas(
+  cid: string,
+  createdAt: number,
+  transactionId?: string
+): Promise<ReplicationReport> {
   return replicate({
     cid,
     ageMs: Math.max(0, Date.now() - createdAt),
     selfPeerId: selfPeerId(),
     peers: getReplicationPeers(),
     config: config.replication,
-    store: (peer) => placeCopy(peer, cid),
+    store: (peer) => placeCopy(peer, cid, transactionId),
     cacheOnly: async (peer) => {
       await requestCache(helia, peer.multiAddr, cid, callOptions())
     }
@@ -104,9 +113,69 @@ async function placeReplicas(cid: string, createdAt: number): Promise<Replicatio
  * network placement separate prevents the service from queuing a registry
  * mutation behind the lock its caller already holds.
  */
-export async function replicateUploadedFile(cid: string): Promise<ReplicationReport> {
+export async function replicateUploadedFile(
+  cid: string,
+  transactionId?: string
+): Promise<ReplicationReport> {
   const record = await fileRegistry.get(cid)
-  return placeReplicas(cid, record?.createdAt ?? Date.now())
+  return placeReplicas(cid, record?.createdAt ?? Date.now(), transactionId)
+}
+
+/** Peers whose copies still belong to this upload transaction. */
+function stagedPeers(report: ReplicationReport): ReplicationPeer[] {
+  const peers = new Map(getReplicationPeers().map((peer) => [peer.peerId, peer]))
+
+  return report.attempts
+    .filter((attempt) => attempt.ok && attempt.outcome === 'stored' && attempt.staged === true)
+    .map((attempt) => peers.get(attempt.peerId))
+    .filter((peer): peer is ReplicationPeer => peer !== undefined)
+}
+
+/**
+ * Make every prepared copy permanent after the local upload decision commits.
+ *
+ * A lost acknowledgement cannot turn an accepted upload into a rejection. The
+ * copy remains pinned as temporary, and replication repair probes it as missing
+ * and promotes it with the idempotent permanent `store` operation.
+ */
+export async function commitUploadedReplicas(
+  cid: string,
+  transactionId: string,
+  report: ReplicationReport
+): Promise<void> {
+  const peers = stagedPeers(report)
+  const results = await Promise.allSettled(
+    peers.map((peer) => requestCommit(helia, peer.multiAddr, cid, transactionId, callOptions()))
+  )
+
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      logger.warn(
+        `Could not commit prepared replica ${cid} on ${peers[index]?.name}: ${result.reason}`
+      )
+    }
+  }
+}
+
+/** Withdraw every prepared remote copy before reporting a strict rejection. */
+export async function abortUploadedReplicas(
+  cid: string,
+  transactionId: string,
+  report: ReplicationReport
+): Promise<void> {
+  const peers = stagedPeers(report)
+  const results = await Promise.allSettled(
+    peers.map((peer) => requestAbort(helia, peer.multiAddr, cid, transactionId, callOptions()))
+  )
+  const failures = results.flatMap((result, index) =>
+    result.status === 'rejected'
+      ? [new Error(`Could not abort replica on ${peers[index]?.name}: ${result.reason}`)]
+      : []
+  )
+
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `Could not abort every prepared replica for ${cid}`)
+  }
 }
 
 /** Place copies of a known file and persist the peers that acknowledged it. */
@@ -155,18 +224,27 @@ export async function prepareFileRetrieval(cid: CID): Promise<void> {
  * offered as an unpinned copy instead: the peer can serve it from then on, and
  * nothing is counted as durable that is not.
  */
-async function placeCopy(peer: ReplicationPeer, cid: string): Promise<PlacementOutcome> {
+async function placeCopy(
+  peer: ReplicationPeer,
+  cid: string,
+  transactionId?: string
+): Promise<PlacementOutcome | ReplicationStoreResult> {
   try {
     if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-      return 'stored'
+      return { outcome: 'stored', staged: false }
     }
 
     if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
       throw new Error('peer has no room for another copy')
     }
 
+    if (transactionId !== undefined) {
+      const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
+      return { outcome: 'stored', staged: result.staged }
+    }
+
     await requestStore(helia, peer.multiAddr, cid, callOptions())
-    return 'stored'
+    return { outcome: 'stored', staged: false }
   } catch (err) {
     if (!(err as Error).message.includes('Not authorized')) {
       throw err
@@ -266,6 +344,66 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
   })
 }
 
+/** Prepare a remote copy that can still be withdrawn after a strict miss. */
+export async function acceptStagedReplica(
+  cid: string,
+  transactionId: string
+): Promise<{ storedBytes: number; staged: boolean }> {
+  return storageOperationLock.withShared(async () => {
+    await pullUnderIntakeLimits(cid)
+    // A deliberately short ordinary-upload TTL must not expire a replica while
+    // the source can still be waiting for its other placements and settlement
+    // calls. Three request windows cover both phases and scheduling overhead.
+    const settlementTtlMs = Math.max(
+      config.storage.temporaryTtlMs,
+      config.replication.requestTimeoutMs * 3
+    )
+    const result = await stageReplica({
+      ...lifecycleTarget(),
+      unixfs: ifs,
+      cid: CID.parse(cid),
+      transactionId,
+      temporaryTtlMs: settlementTtlMs,
+      pinTimeoutMs: config.replication.requestTimeoutMs
+    })
+
+    return { storedBytes: protectedStorageBytes(result.record), staged: result.staged }
+  })
+}
+
+/** A prepared transaction becomes a normal durable holder. */
+export async function commitStagedReplica(cid: string, transactionId: string): Promise<void> {
+  await storageOperationLock.withShared(async () => {
+    await commitReplica({ ...lifecycleTarget(), cid: CID.parse(cid), transactionId })
+  })
+}
+
+/** Withdraw one source upload's claim on a prepared copy. */
+export async function abortStagedReplica(cid: string, transactionId: string): Promise<void> {
+  await storageOperationLock.withShared(async () => {
+    await abortReplica({ ...lifecycleTarget(), cid: CID.parse(cid), transactionId })
+  })
+}
+
+/** True only for a permanent replica, not for a prepared strict-upload copy. */
+async function hasDurableReplica(cid: string): Promise<boolean> {
+  const parsed = CID.parse(cid)
+  const record = await fileRegistry.get(cid)
+
+  if (record === undefined) {
+    // A pin awaiting startup backfill predates transactional replication.
+    return isDirectlyPinned(helia, parsed)
+  }
+
+  return (
+    record.state === 'confirmed' &&
+    record.pinned &&
+    record.heldLocally &&
+    record.replicaStage === undefined &&
+    (await isDirectlyPinned(helia, parsed))
+  )
+}
+
 /**
  * Behaviour this node exposes on the replication protocol.
  *
@@ -278,7 +416,10 @@ export function createReplicationHandlers(): ReplicationHandlers {
   return {
     isAuthorized: (peerId) => getReplicationPeers().some((peer) => peer.peerId === peerId),
     store: async (cid) => (await acceptReplica(cid)).storedBytes,
-    have: async (cid) => isDirectlyPinned(helia, CID.parse(cid)),
+    stage: acceptStagedReplica,
+    commit: commitStagedReplica,
+    abort: abortStagedReplica,
+    have: hasDurableReplica,
     willAccept: hasRoomForAnotherCopy,
     cacheCopy: cacheFileLocally,
     onError: (message) => logger.warn(message),
@@ -520,7 +661,13 @@ async function rescueOrphanedFiles(
           const createdPin = await pinFile(helia, cid)
 
           try {
-            return await registry.save({ ...current, pinned: true, heldLocally: true })
+            return await registry.save({
+              ...current,
+              pinned: true,
+              heldLocally: true,
+              admissionId: undefined,
+              replicaStage: undefined
+            })
           } catch (err) {
             if (createdPin && current.pinned !== true) {
               await unpinFile(helia, cid)
@@ -719,7 +866,13 @@ export async function demoteReleasableCopies(
       const removedPin = await unpinFile(helia, parsed)
 
       try {
-        await registry.save({ ...current, pinned: false, heldLocally: false })
+        await registry.save({
+          ...current,
+          pinned: false,
+          heldLocally: false,
+          admissionId: undefined,
+          replicaStage: undefined
+        })
         return true
       } catch (err) {
         if (removedPin && current.pinned) {

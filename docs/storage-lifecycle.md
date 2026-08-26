@@ -80,10 +80,11 @@ pinned, and registered. Any other outcome removes the recorded blocks:
 
 Pinning and lifecycle registration are one transaction for concurrency
 purposes. Before changing either, a request locks every CID it contains in
-lexical order and holds those locks through commit or rollback. Another upload,
-confirmation, release, collector or handover therefore sees either the state
-before the request or the state after it, never a pin from one side and a
-registry record from the other. Ordering the locks also keeps two overlapping
+lexical order. It releases those locks before network placement, then takes the
+same ordered set again for the final local decision. An internal ownership token
+lets that decision and a rejected upload compensate their own writes without
+overwriting a confirmation, release, collector, handover, or re-upload that
+adopted the CID meanwhile. Ordering the locks also keeps two overlapping
 multi-file requests from deadlocking.
 
 A recorded block is deleted only when no other in-flight upload references it and
@@ -147,7 +148,9 @@ Collection applies three independent rules:
 2. **Watermarks.** When the blockstore grows above
    `storage.gc.highWatermarkBytes`, the oldest unconfirmed files are released
    until the estimated size drops below `storage.gc.lowWatermarkBytes`. The gap
-   between the two thresholds stops the collector from running on every tick.
+   between the two thresholds stops the collector from running on every tick. A
+   live transaction-owned replica is retained until its source commits or
+   aborts it; if the source disappears, its TTL makes it eligible normally.
 3. **Handover.** A confirmed file whose copies belong on other nodes is released
    here once those nodes confirm they hold it. This is how an ageing file drops
    from four holders to two without ever losing durability; see
@@ -234,6 +237,22 @@ guarantee nobody switches on protects nothing.
 A file is placed on a subset of the ADAMANT nodes. The peer pulls the DAG over
 libp2p and pins it before answering, so an acknowledgement means the copy exists
 and is protected there, not that a request was queued.
+
+When `replication.requireQuorumOnUpload` is enabled, the local and remote copies
+form one rollback-capable upload decision. Each peer first records its copy as a
+temporary, transaction-owned pin. If the required acknowledgements are not
+reached, the source withdraws every prepared copy and restores its own exact
+pre-upload pin and registry state before returning `503`. If any local or remote
+compensation fails, the route returns `500` instead: it must not describe an
+incomplete rollback as a clean rejection.
+
+After the local decision is durably recorded, the source commits the prepared
+copies. A lost commit acknowledgement does not turn an accepted request into a
+failure: the remote copy remains pinned and temporary, repair treats it as
+missing until it is promoted, and its TTL eventually restores the prior expired
+state or releases a newly created copy if the source never returns. Transaction
+owners and their restoration baselines live in the datastore, so restarting a
+peer does not turn a prepared copy into a permanent one.
 
 Turning it off with `replication.enabled: false` makes the node store content
 **best effort** instead: one copy, on this node, pinned, with no promise that
@@ -407,9 +426,11 @@ travels by bitswap. Startup peering opens those connections before the API
 starts serving, so the first upload after a restart already has somewhere to
 place its copies.
 
-A copy request that a peer cannot answer in time is reported as a shortfall
-rather than failing the upload, and the repair job places the missing copies on
-its next pass.
+A copy request that a peer cannot answer in time is reported as a shortfall. In
+best-effort mode the upload stays accepted and repair places the missing copy on
+its next pass. With strict quorum enabled, the upload is accepted only when the
+configured acknowledgement threshold was reached; otherwise its prepared
+copies are withdrawn as described above.
 
 ### Protocol version
 

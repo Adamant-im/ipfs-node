@@ -5,6 +5,8 @@ import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
 import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
 import { multerStorage } from '../multer.js'
 import {
+  abortUploadedReplicas,
+  commitUploadedReplicas,
   confirmFile,
   effectiveQuorum,
   prepareFileRetrieval,
@@ -48,6 +50,8 @@ router.post(
     temporaryTtlMs: config.storage.temporaryTtlMs,
     requireQuorumOnUpload: config.replication.requireQuorumOnUpload,
     replicate: replicateUploadedFile,
+    commitReplicas: commitUploadedReplicas,
+    abortReplicas: abortUploadedReplicas,
     log: logger
   })
 )

@@ -193,7 +193,9 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         expiresAt: null,
         confirmedAt: current.confirmedAt ?? options.now ?? Date.now(),
         pinned: true,
-        heldLocally: true
+        heldLocally: true,
+        admissionId: undefined,
+        replicaStage: undefined
       })
     } catch (err) {
       return restoreLifecycleBaseline(
@@ -246,7 +248,9 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
         ...current,
         state: 'expired',
         pinned: false,
-        heldLocally: false
+        heldLocally: false,
+        admissionId: undefined,
+        replicaStage: undefined
       })
     } catch (err) {
       return restoreLifecycleBaseline(registry, options.node, options.cid, current, wasPinned, err)

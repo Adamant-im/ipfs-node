@@ -13,9 +13,10 @@ import { CID } from 'multiformats/cid'
 import { createUploadHandler } from '../../src/api/uploadRoute.js'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
 import { createUploadAdmission, getUploadSession } from '../../src/middleware/uploadAdmission.js'
+import { releaseStoredFile } from '../../src/storage/lifecycle.js'
 import { ConcurrencyLimiter } from '../../src/storage/limits.js'
 import { StorageOperationLock } from '../../src/storage/operationLock.js'
-import { isDirectlyPinned } from '../../src/storage/pinning.js'
+import { isDirectlyPinned, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry } from '../../src/storage/registry.js'
 import type { ReplicationReport } from '../../src/storage/replication.js'
 import { resetClaims } from '../../src/storage/reservation.js'
@@ -64,8 +65,15 @@ interface Harness {
  */
 async function serveUpload(
   overrides: {
-    replicate?: (cid: string) => Promise<ReplicationReport>
+    replicate?: (cid: string, transactionId?: string) => Promise<ReplicationReport>
     requireQuorumOnUpload?: boolean
+    commitReplicas?: (
+      cid: string,
+      transactionId: string,
+      report: ReplicationReport
+    ) => Promise<void>
+    abortReplicas?: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
+    unpin?: (cid: CID) => Promise<void>
   } = {}
 ): Promise<Harness> {
   prefix += 1
@@ -103,6 +111,9 @@ async function serveUpload(
           replicated.push(cid)
           return bestEffort()
         }),
+      commitReplicas: overrides.commitReplicas ?? (async () => undefined),
+      abortReplicas: overrides.abortReplicas ?? (async () => undefined),
+      unpin: overrides.unpin,
       log: { info: () => undefined, error: () => undefined }
     })
   )
@@ -259,6 +270,241 @@ describe('the upload endpoint end to end', () => {
       assert.equal(response.status, 503)
       assert.equal(await harness.registry.get(cid), undefined)
       assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('rolls one CID back once when identical parts miss strict quorum', async () => {
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => ({ ...bestEffort(), mode: 'quorum' as const, satisfied: false })
+    })
+    const payload = deterministicBytes(71_000, 'route-duplicate-quorum')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const response = await post(harness.url, [
+        { name: 'same-one.bin', bytes: payload },
+        { name: 'same-two.bin', bytes: payload }
+      ])
+
+      assert.equal(response.status, 503)
+      assert.equal(await harness.registry.get(cid), undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('rolls back through a concurrent replica metadata refresh', async () => {
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async (cid) => {
+        await harness.registry.setReplicas(cid, ['repair-observation'])
+        return { ...bestEffort(), mode: 'quorum' as const, satisfied: false }
+      }
+    })
+    const payload = deterministicBytes(72_000, 'route-replica-race')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const response = await post(harness.url, [{ name: 'race.bin', bytes: payload }])
+
+      assert.equal(response.status, 503)
+      assert.equal(await harness.registry.get(cid), undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('aborts every prepared peer before returning a strict rejection', async () => {
+    const aborted: Array<{ cid: string; transactionId: string }> = []
+    const report: ReplicationReport = {
+      ...bestEffort(),
+      mode: 'quorum',
+      desiredCopies: 3,
+      copies: 3,
+      required: 3,
+      acknowledged: 2,
+      replicas: ['holder'],
+      satisfied: false,
+      networkTooSmall: true,
+      attempts: [
+        {
+          node: 'holder',
+          peerId: 'holder-peer-id',
+          ok: true,
+          outcome: 'stored',
+          staged: true
+        }
+      ]
+    }
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => report,
+      abortReplicas: async (cid, transactionId) => {
+        aborted.push({ cid, transactionId })
+      }
+    })
+    const payload = deterministicBytes(73_000, 'route-remote-abort')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const response = await post(harness.url, [{ name: 'remote.bin', bytes: payload }])
+
+      assert.equal(response.status, 503)
+      assert.deepEqual(
+        aborted.map((item) => item.cid),
+        [cid]
+      )
+      assert.ok(aborted[0]?.transactionId.length > 0)
+      assert.equal(await harness.registry.get(cid), undefined)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('does not report a clean rejection when remote compensation fails', async () => {
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => ({ ...bestEffort(), mode: 'quorum' as const, satisfied: false }),
+      abortReplicas: async () => {
+        throw new Error('remote abort unavailable')
+      }
+    })
+    const payload = deterministicBytes(74_000, 'route-remote-abort-fails')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const response = await post(harness.url, [{ name: 'uncertain.bin', bytes: payload }])
+
+      assert.equal(response.status, 500)
+      assert.equal(await harness.registry.get(cid), undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('does not report a clean rejection when local unpinning fails', async () => {
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => ({ ...bestEffort(), mode: 'quorum' as const, satisfied: false }),
+      unpin: async () => {
+        throw new Error('pin datastore unavailable')
+      }
+    })
+    const payload = deterministicBytes(76_000, 'route-local-rollback-fails')
+    const parsed = await ifs.addBytes(payload)
+    const cid = parsed.toString()
+
+    try {
+      const response = await post(harness.url, [{ name: 'protected.bin', bytes: payload }])
+
+      assert.equal(response.status, 500)
+      assert.equal((await harness.registry.get(cid))?.state, 'confirmed')
+      assert.equal(await isDirectlyPinned(node, parsed), true)
+    } finally {
+      await unpinFile(node, parsed)
+      await harness.registry.remove(cid)
+      harness.server.close()
+    }
+  })
+
+  it('does not accept a strict upload after another lifecycle releases its local copy', async () => {
+    const aborted: string[] = []
+    const report: ReplicationReport = {
+      ...bestEffort(),
+      mode: 'quorum',
+      desiredCopies: 2,
+      copies: 2,
+      required: 2,
+      acknowledged: 2,
+      replicas: ['holder'],
+      satisfied: true,
+      networkTooSmall: true,
+      attempts: [
+        {
+          node: 'holder',
+          peerId: 'holder-peer-id',
+          ok: true,
+          outcome: 'stored',
+          staged: true
+        }
+      ]
+    }
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async (cid) => {
+        await releaseStoredFile({ node, registry: harness.registry, cid: CID.parse(cid) })
+        return report
+      },
+      abortReplicas: async (cid) => {
+        aborted.push(cid)
+      }
+    })
+    const payload = deterministicBytes(77_000, 'route-lifecycle-race')
+    const cid = (await ifs.addBytes(payload)).toString()
+
+    try {
+      const response = await post(harness.url, [{ name: 'released.bin', bytes: payload }])
+      const record = await harness.registry.get(cid)
+
+      assert.equal(response.status, 500)
+      assert.deepEqual(aborted, [cid])
+      assert.equal(record?.state, 'expired')
+      assert.equal(record?.heldLocally, false)
+      assert.equal(record?.admissionId, undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(cid)), false)
+    } finally {
+      harness.server.close()
+    }
+  })
+
+  it('keeps an accepted upload durable when a remote commit acknowledgement is lost', async () => {
+    let commitAttempts = 0
+    const report: ReplicationReport = {
+      ...bestEffort(),
+      mode: 'quorum',
+      desiredCopies: 2,
+      copies: 2,
+      required: 2,
+      acknowledged: 2,
+      replicas: ['holder'],
+      satisfied: true,
+      networkTooSmall: true,
+      attempts: [
+        {
+          node: 'holder',
+          peerId: 'holder-peer-id',
+          ok: true,
+          outcome: 'stored',
+          staged: true
+        }
+      ]
+    }
+    const harness = await serveUpload({
+      requireQuorumOnUpload: true,
+      replicate: async () => report,
+      commitReplicas: async () => {
+        commitAttempts += 1
+        throw new Error('commit acknowledgement lost')
+      }
+    })
+    const payload = deterministicBytes(78_000, 'route-commit-ack-lost')
+
+    try {
+      const response = await post(harness.url, [{ name: 'accepted.bin', bytes: payload }])
+      const body = (await response.json()) as { cids: string[] }
+      const record = await harness.registry.get(body.cids[0])
+
+      assert.equal(response.status, 200)
+      assert.equal(commitAttempts, 1)
+      assert.equal(record?.state, 'confirmed')
+      assert.equal(record?.admissionId, undefined)
+      assert.equal(await isDirectlyPinned(node, CID.parse(body.cids[0])), true)
     } finally {
       harness.server.close()
     }

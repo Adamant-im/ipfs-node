@@ -171,4 +171,62 @@ describe('rollbackUpload', () => {
     assert.equal(await registry.get(CID_A), undefined)
     assert.equal(pinned, false)
   })
+
+  it('rolls back after metadata changes but not after lifecycle adoption', async () => {
+    const registry = createRegistry()
+    let pinned = true
+
+    await registry.withExclusiveCids([CID_A], (locked) =>
+      locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'mine'
+      })
+    )
+    await registry.setReplicas(CID_A, ['repair-observation'])
+
+    await registry.withExclusiveCids([CID_A], (locked) =>
+      rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        admissionId: 'mine',
+        previous: undefined,
+        createdPin: true,
+        unpin: async () => {
+          pinned = false
+        }
+      })
+    )
+
+    assert.equal(await registry.get(CID_A), undefined)
+    assert.equal(pinned, false)
+
+    pinned = true
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'mine'
+      })
+      await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'theirs'
+      })
+
+      await rollbackUpload({
+        registry: locked,
+        cid: CID_A,
+        admissionId: 'mine',
+        previous: undefined,
+        createdPin: true,
+        unpin: async () => {
+          pinned = false
+        }
+      })
+    })
+
+    assert.equal((await registry.get(CID_A))?.admissionId, 'theirs')
+    assert.equal(pinned, true)
+  })
 })

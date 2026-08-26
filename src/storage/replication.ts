@@ -29,9 +29,18 @@ export type PlacementOutcome = 'stored' | 'cached'
 
 export interface ReplicationAck {
   node: string
+  /** Stable identity used to settle a prepared copy without trusting display names. */
+  peerId: string
   ok: boolean
   outcome?: PlacementOutcome
+  /** True when this copy still belongs to an upload transaction. */
+  staged?: boolean
   error?: string
+}
+
+export interface ReplicationStoreResult {
+  outcome: PlacementOutcome
+  staged?: boolean
 }
 
 export interface ReplicationReport {
@@ -74,7 +83,7 @@ export interface ReplicateOptions {
   peers: ReplicationPeer[]
   config: ReplicationConfig
   /** Asks one peer to take a copy, and reports what it agreed to. */
-  store: (peer: ReplicationPeer, cid: string) => Promise<PlacementOutcome>
+  store: (peer: ReplicationPeer, cid: string) => Promise<PlacementOutcome | ReplicationStoreResult>
   /** Asks one peer for an unpinned copy, used to widen a spread nobody pins. */
   cacheOnly?: (peer: ReplicationPeer, cid: string) => Promise<void>
 }
@@ -154,9 +163,17 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
   const attempts = await Promise.all(
     targets.map(async (peer): Promise<ReplicationAck> => {
       try {
-        return { node: peer.name, ok: true, outcome: await options.store(peer, cid) }
+        const stored = await options.store(peer, cid)
+        const result = typeof stored === 'string' ? { outcome: stored } : stored
+        return {
+          node: peer.name,
+          peerId: peer.peerId,
+          ok: true,
+          outcome: result.outcome,
+          staged: result.staged
+        }
       } catch (err) {
-        return { node: peer.name, ok: false, error: (err as Error).message }
+        return { node: peer.name, peerId: peer.peerId, ok: false, error: (err as Error).message }
       }
     })
   )
@@ -189,9 +206,9 @@ export async function replicate(options: ReplicateOptions): Promise<ReplicationR
       extra.map(async (peer): Promise<ReplicationAck> => {
         try {
           await options.cacheOnly?.(peer, cid)
-          return { node: peer.name, ok: true, outcome: 'cached' }
+          return { node: peer.name, peerId: peer.peerId, ok: true, outcome: 'cached' }
         } catch (err) {
-          return { node: peer.name, ok: false, error: (err as Error).message }
+          return { node: peer.name, peerId: peer.peerId, ok: false, error: (err as Error).message }
         }
       })
     )

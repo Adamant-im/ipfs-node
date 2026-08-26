@@ -183,4 +183,24 @@ describe('planGarbageCollection', () => {
     assert.deepEqual(plan.evicted, [])
     assert.equal(plan.estimatedBytesAfter, 500)
   })
+
+  it('does not evict a live replica stage before its source settles it', () => {
+    const staged = record({
+      cid: 'prepared',
+      state: 'temporary',
+      expiresAt: 9000,
+      replicaStage: { transactionIds: ['upload-1'], previous: null }
+    })
+    const plan = planGarbageCollection({
+      blockstoreBytes: 5000,
+      watermarks,
+      records: [staged],
+      now: 1000
+    })
+
+    assert.equal(plan.shouldCollect, true)
+    assert.deepEqual(plan.expired, [])
+    assert.deepEqual(plan.evicted, [])
+    assert.deepEqual(plan.retained, [staged])
+  })
 })

@@ -2,6 +2,7 @@ import { CID } from 'multiformats/cid'
 import type { IpfsNode } from '../ipfs-node.js'
 import type { GarbageCollectionConfig } from './config.js'
 import { isProtected, pinFile, unpinFile } from './pinning.js'
+import { restoreReplicaStage } from './replicaStage.js'
 import { FileRegistry, isExpired, protectedStorageBytes, type FileRecord } from './registry.js'
 
 export type Watermarks = Pick<GarbageCollectionConfig, 'highWatermarkBytes' | 'lowWatermarkBytes'>
@@ -59,17 +60,25 @@ export interface GcPlan {
  *    until the estimate drops below the low watermark. Hysteresis between the
  *    two thresholds stops the collector from running on every tick.
  *
- * Confirmed files are never selected, so durable content cannot be reclaimed.
+ * Confirmed files and live transaction-owned replica stages are never selected,
+ * so durable content cannot be reclaimed and a strict acknowledgement cannot
+ * disappear before its source settles it. An abandoned stage becomes eligible
+ * normally once its TTL expires.
  */
 export function planGarbageCollection(input: GcPlanInput): GcPlan {
   const now = input.now ?? Date.now()
   const { highWatermarkBytes, lowWatermarkBytes } = input.watermarks
 
   const confirmed = input.records.filter((record) => record.state === 'confirmed')
-  const releasable = input.records.filter((record) => record.state !== 'confirmed')
+  const unconfirmed = input.records.filter((record) => record.state !== 'confirmed')
 
-  const expired = releasable.filter((record) => isExpired(record, now))
-  const alive = releasable.filter((record) => !isExpired(record, now))
+  const expired = unconfirmed.filter((record) => isExpired(record, now))
+  const prepared = unconfirmed.filter(
+    (record) => record.replicaStage !== undefined && !isExpired(record, now)
+  )
+  const alive = unconfirmed.filter(
+    (record) => record.replicaStage === undefined && !isExpired(record, now)
+  )
 
   // Helia GC removes every unpinned block, including read cache and files a
   // previous handover already released. Count that space before selecting a
@@ -138,7 +147,11 @@ export function planGarbageCollection(input: GcPlanInput): GcPlan {
     trigger,
     expired,
     evicted,
-    retained: [...confirmed, ...alive.filter((record) => !releasedCids.has(record.cid))],
+    retained: [
+      ...confirmed,
+      ...prepared,
+      ...alive.filter((record) => !releasedCids.has(record.cid))
+    ],
     estimatedBytesAfter: Math.max(0, estimatedBytesAfter)
   }
 }
@@ -357,6 +370,14 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
             return undefined
           }
 
+          // A strict upload that disappeared before commit leaves a temporary
+          // prepared replica. Its durable compensation data restores the old
+          // expired lifecycle (or an expired placeholder for a new record)
+          // instead of letting generic expiry retain transaction ownership.
+          if (current.replicaStage !== undefined) {
+            return restoreReplicaStage(registry, options.node, current, true)
+          }
+
           const cid = CID.parse(record.cid)
           const removedPin = await unpinFile(options.node, cid)
 
@@ -365,7 +386,9 @@ export async function runGarbageCollection(options: GcRunOptions): Promise<GcRep
               ...current,
               state: 'expired',
               pinned: false,
-              heldLocally: false
+              heldLocally: false,
+              admissionId: undefined,
+              replicaStage: undefined
             })
           } catch (err) {
             if (removedPin && current.pinned) {

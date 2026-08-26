@@ -8,11 +8,14 @@ import { FsBlockstore } from 'blockstore-fs'
 import { FsDatastore } from 'datastore-fs'
 import { CID } from 'multiformats/cid'
 import { createIpfsNode, type IpfsNode } from '../../src/ipfs-node.js'
-import { isDirectlyPinned, pinFile } from '../../src/storage/pinning.js'
+import { isDirectlyPinned, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import {
   probeAccept,
   probeHave,
   registerReplicationProtocol,
+  requestAbort,
+  requestCommit,
+  requestStage,
   requestStore,
   type ReplicationHandlers
 } from '../../src/storage/replicationProtocol.js'
@@ -55,6 +58,8 @@ let holderFs: UnixFS
 let authorized: Set<string>
 let refusals: string[]
 let hasRoom = true
+let committed: string[]
+let aborted: string[]
 
 before(async () => {
   sender = await startNode()
@@ -64,6 +69,8 @@ before(async () => {
 
   authorized = new Set([sender.node.libp2p.peerId.toString()])
   refusals = []
+  committed = []
+  aborted = []
 
   const handlers: ReplicationHandlers = {
     isAuthorized: (peerId) => authorized.has(peerId),
@@ -71,6 +78,18 @@ before(async () => {
       await pinFile(holder.node, CID.parse(cid), AbortSignal.timeout(CALL.timeoutMs))
       const stats = await holderFs.stat(CID.parse(cid), { extended: true, offline: true })
       return Number(stats.deduplicatedDagSize)
+    },
+    stage: async (cid) => {
+      await pinFile(holder.node, CID.parse(cid), AbortSignal.timeout(CALL.timeoutMs))
+      const stats = await holderFs.stat(CID.parse(cid), { extended: true, offline: true })
+      return { storedBytes: Number(stats.deduplicatedDagSize), staged: true }
+    },
+    commit: async (cid, transactionId) => {
+      committed.push(`${cid}:${transactionId}`)
+    },
+    abort: async (cid, transactionId) => {
+      aborted.push(`${cid}:${transactionId}`)
+      await unpinFile(holder.node, CID.parse(cid))
     },
     have: async (cid) => isDirectlyPinned(holder.node, CID.parse(cid)),
     willAccept: async () => hasRoom,
@@ -177,5 +196,29 @@ describe('replication over libp2p', () => {
         timeoutMs: 2000
       })
     )
+  })
+
+  it('stages and settles a strict-upload copy with its transaction id', async () => {
+    const commitCid = await senderFs.addBytes(deterministicBytes(1200, 'protocol-commit'))
+    const abortCid = await senderFs.addBytes(deterministicBytes(1300, 'protocol-abort'))
+    const peer = holder.node.libp2p.getMultiaddrs()[0]
+
+    const preparedCommit = await requestStage(
+      sender.node,
+      peer,
+      commitCid.toString(),
+      'tx-commit',
+      CALL
+    )
+    assert.equal(preparedCommit.staged, true)
+    assert.equal(await isDirectlyPinned(holder.node, commitCid), true)
+
+    await requestCommit(sender.node, peer, commitCid.toString(), 'tx-commit', CALL)
+    assert.deepEqual(committed, [`${commitCid}:tx-commit`])
+
+    await requestStage(sender.node, peer, abortCid.toString(), 'tx-abort', CALL)
+    await requestAbort(sender.node, peer, abortCid.toString(), 'tx-abort', CALL)
+    assert.deepEqual(aborted, [`${abortCid}:tx-abort`])
+    assert.equal(await isDirectlyPinned(holder.node, abortCid), false)
   })
 })

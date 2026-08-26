@@ -33,6 +33,7 @@ import { ConcurrencyLimiter } from '../../src/storage/limits.js'
 import { StorageOperationLock } from '../../src/storage/operationLock.js'
 import { isDirectlyPinned, isProtected, pinFile, unpinFile } from '../../src/storage/pinning.js'
 import { FileRegistry, type FileRecord } from '../../src/storage/registry.js'
+import { abortReplica, commitReplica, stageReplica } from '../../src/storage/replicaStage.js'
 import { UploadSession } from '../../src/storage/uploadSession.js'
 import { deterministicBytes } from '../fixtures.js'
 
@@ -1293,6 +1294,129 @@ describe('lifecycle transitions', () => {
     assert.equal(restored?.state, 'confirmed')
     assert.equal(restored?.pinned, true)
     assert.equal(restored?.heldLocally, true)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+})
+
+describe('strict-upload replica staging', () => {
+  const stage = (registry: FileRegistry, cid: CID, transactionId: string, now = 1000) =>
+    stageReplica({
+      node,
+      unixfs: ifs,
+      registry,
+      cid,
+      transactionId,
+      temporaryTtlMs: 1000,
+      now
+    })
+
+  it('removes a new prepared copy when its transaction aborts', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(20_000, 'replica-stage-abort'))
+
+    const prepared = await stage(registry, cid, 'tx-abort')
+
+    assert.equal(prepared.staged, true)
+    assert.equal(prepared.record.state, 'temporary')
+    assert.deepEqual(prepared.record.replicaStage?.transactionIds, ['tx-abort'])
+    assert.equal(await isDirectlyPinned(node, cid), true)
+
+    await abortReplica({ node, registry, cid, transactionId: 'tx-abort' })
+
+    assert.equal(await registry.get(cid.toString()), undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('keeps a shared stage until one transaction commits it', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_000, 'replica-stage-shared'))
+
+    await stage(registry, cid, 'tx-one')
+    await stage(registry, cid, 'tx-two')
+    await abortReplica({ node, registry, cid, transactionId: 'tx-one' })
+
+    assert.deepEqual((await registry.get(cid.toString()))?.replicaStage?.transactionIds, ['tx-two'])
+    assert.equal(await isDirectlyPinned(node, cid), true)
+
+    await commitReplica({ node, registry, cid, transactionId: 'tx-two', now: 3000 })
+
+    const committed = await registry.get(cid.toString())
+    assert.equal(committed?.state, 'confirmed')
+    assert.equal(committed?.replicaStage, undefined)
+    assert.equal(committed?.confirmedAt, 3000)
+    assert.equal(await isDirectlyPinned(node, cid), true)
+  })
+
+  it('restores an expired record after a prepared copy aborts', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(22_000, 'replica-stage-restore'))
+    const previous = await registry.save({
+      cid: cid.toString(),
+      name: 'released.bin',
+      state: 'expired',
+      createdAt: 100,
+      expiresAt: 200,
+      confirmedAt: 150,
+      fileSize: 22_000,
+      storedBytes: 22_000,
+      protectedBytes: 22_000,
+      pinned: false,
+      heldLocally: false,
+      replicas: ['old-holder']
+    })
+
+    await stage(registry, cid, 'tx-restore')
+    await abortReplica({ node, registry, cid, transactionId: 'tx-restore' })
+
+    const restored = await registry.get(cid.toString())
+    assert.equal(restored?.state, previous.state)
+    assert.equal(restored?.expiresAt, previous.expiresAt)
+    assert.equal(restored?.confirmedAt, previous.confirmedAt)
+    assert.equal(restored?.name, previous.name)
+    assert.deepEqual(restored?.replicas, previous.replicas)
+    assert.equal(restored?.replicaStage, undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('expires a stage left behind by a disappeared coordinator', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(23_000, 'replica-stage-expiry'))
+
+    await stage(registry, cid, 'tx-lost', 1000)
+    await runGarbageCollection({
+      node,
+      registry,
+      watermarks: WATERMARKS,
+      blockstoreBytes: 23_000,
+      now: 2001,
+      withCollectionLease: runWithoutOtherWriters
+    })
+
+    const expired = await registry.get(cid.toString())
+    assert.equal(expired?.state, 'expired')
+    assert.equal(expired?.replicaStage, undefined)
+    assert.equal(await isDirectlyPinned(node, cid), false)
+  })
+
+  it('keeps a live stage pinned while collection runs under pressure', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(24_000, 'replica-stage-pressure'))
+
+    await stage(registry, cid, 'tx-active', 1000)
+    const report = await runGarbageCollection({
+      node,
+      registry,
+      watermarks: { highWatermarkBytes: 1, lowWatermarkBytes: 0 },
+      blockstoreBytes: 24_000,
+      now: 1500,
+      withCollectionLease: runWithoutOtherWriters
+    })
+
+    const prepared = await registry.get(cid.toString())
+    assert.equal(report.collected, true)
+    assert.deepEqual(report.releasedCids, [])
+    assert.equal(prepared?.state, 'temporary')
+    assert.deepEqual(prepared?.replicaStage?.transactionIds, ['tx-active'])
     assert.equal(await isDirectlyPinned(node, cid), true)
   })
 })

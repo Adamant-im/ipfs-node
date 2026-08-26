@@ -411,6 +411,22 @@ describe('FileRegistry', () => {
     assert.equal(await registry.get(CID_A), undefined)
   })
 
+  it('preserves upload ownership across replica metadata refreshes', async () => {
+    const registry = createRegistry()
+    const written = await registry.withExclusiveCids([CID_A], (locked) =>
+      locked.registerReplacing(newFile(), {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'upload-one'
+      })
+    )
+
+    const refreshed = await registry.setReplicas(CID_A, ['n2'])
+
+    assert.notEqual(refreshed?.revision, written.record.revision)
+    assert.equal(refreshed?.admissionId, 'upload-one')
+  })
+
   it('refuses a public mutator called from inside its own lock', async () => {
     // The two ways to change a record — the locking mutators and the view
     // handed to withExclusiveCids — cannot be mixed: the inner call queues

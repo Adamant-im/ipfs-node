@@ -147,6 +147,28 @@ describe('replicate', () => {
     assert.ok(report.attempts.every((attempt) => !attempt.ok))
   })
 
+  it('reports which accepted copies still belong to the upload transaction', async () => {
+    let first = true
+    const report = await replicate({
+      cid: CID,
+      ageMs: 0,
+      selfPeerId: SELF,
+      peers: PEERS,
+      config: { ...baseConfig, ackQuorum: 3 },
+      store: async () => {
+        if (first) {
+          first = false
+          return { outcome: 'stored', staged: true }
+        }
+        throw new Error('offline')
+      }
+    })
+
+    assert.equal(report.satisfied, false)
+    assert.equal(report.acknowledged, 2)
+    assert.equal(report.attempts.filter((attempt) => attempt.staged === true).length, 1)
+  })
+
   it('does not demand a quorum the network cannot reach', async () => {
     const single = [peer('ipfs2')]
 

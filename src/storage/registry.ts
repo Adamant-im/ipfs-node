@@ -15,6 +15,23 @@ const decoder = new TextDecoder()
 /** Lifecycle state of a file known to this node. */
 export type FileState = 'temporary' | 'confirmed' | 'expired'
 
+/** Lifecycle state restored when a staged replica is abandoned. */
+export interface ReplicaStageBaseline {
+  state: 'expired'
+  expiresAt: number | null
+  confirmedAt: number | null
+  pinned: false
+  heldLocally: false
+}
+
+/** Durable compensation data for copies prepared for a strict upload. */
+export interface ReplicaStage {
+  /** Upload transactions that currently need this prepared copy. */
+  transactionIds: string[]
+  /** `null` when the stage created the registry entry. */
+  previous: ReplicaStageBaseline | null
+}
+
 export interface FileRecord {
   cid: string
   name: string
@@ -49,6 +66,17 @@ export interface FileRecord {
   /** Names of peer nodes that acknowledged holding a copy. */
   replicas: string[]
   /**
+   * Upload request that most recently registered this local lifecycle.
+   *
+   * Replica bookkeeping preserves the token, while a lifecycle adoption
+   * replaces or clears it. A post-replication rollback can therefore distinguish
+   * its own write from somebody else's lifecycle without treating every metrics
+   * update as a new owner.
+   */
+  admissionId?: string
+  /** A remote copy prepared for one or more strict upload transactions. */
+  replicaStage?: ReplicaStage
+  /**
    * Opaque stamp of the write that stored this record.
    *
    * It exists so a caller can tell a planned lifecycle action apart from a
@@ -71,6 +99,32 @@ function isNullableTimestamp(value: unknown): value is number | null {
   return value === null || isFiniteNonNegative(value)
 }
 
+function isReplicaStage(value: unknown): value is ReplicaStage {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const stage = value as Partial<ReplicaStage>
+  const previous = stage.previous as Partial<ReplicaStageBaseline> | null | undefined
+  const previousIsValid =
+    previous === null ||
+    (typeof previous === 'object' &&
+      previous !== null &&
+      previous.state === 'expired' &&
+      isNullableTimestamp(previous.expiresAt) &&
+      isNullableTimestamp(previous.confirmedAt) &&
+      previous.pinned === false &&
+      previous.heldLocally === false)
+
+  return (
+    Array.isArray(stage.transactionIds) &&
+    stage.transactionIds.length > 0 &&
+    new Set(stage.transactionIds).size === stage.transactionIds.length &&
+    stage.transactionIds.every((id) => typeof id === 'string' && id.length > 0) &&
+    previousIsValid
+  )
+}
+
 /** Validate the durable shape before lifecycle policy is allowed to trust it. */
 function isFileRecord(value: unknown): value is FileRecord {
   if (typeof value !== 'object' || value === null) {
@@ -83,6 +137,16 @@ function isFileRecord(value: unknown): value is FileRecord {
     record.revision === undefined ||
     (typeof record.revision === 'string' && record.revision.length > 0) ||
     isFiniteNonNegative(record.revision)
+  const admissionIsValid =
+    record.admissionId === undefined ||
+    (typeof record.admissionId === 'string' && record.admissionId.length > 0)
+  const replicaStageIsValid =
+    record.replicaStage === undefined ||
+    (record.state === 'temporary' &&
+      record.pinned === true &&
+      record.heldLocally === true &&
+      record.expiresAt !== null &&
+      isReplicaStage(record.replicaStage))
 
   return (
     typeof record.cid === 'string' &&
@@ -100,7 +164,9 @@ function isFileRecord(value: unknown): value is FileRecord {
     typeof record.heldLocally === 'boolean' &&
     Array.isArray(record.replicas) &&
     record.replicas.every((peer) => typeof peer === 'string') &&
-    revisionIsValid
+    revisionIsValid &&
+    admissionIsValid &&
+    replicaStageIsValid
   )
 }
 
@@ -126,6 +192,14 @@ export interface NewFileRecord {
   protectedBytes?: number
 }
 
+export interface RegisterFileOptions {
+  confirmationRequired: boolean
+  temporaryTtlMs: number
+  now?: number
+  /** Request that owns the write until post-replication settlement. */
+  admissionId?: string
+}
+
 /**
  * Registry operations that are safe to compose while their CID locks are held.
  *
@@ -140,7 +214,7 @@ export interface LockedFileRegistry {
   remove(cid: string): Promise<void>
   registerReplacing(
     file: NewFileRecord,
-    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+    options: RegisterFileOptions
   ): Promise<{ record: FileRecord; previous: FileRecord | undefined }>
 }
 
@@ -452,7 +526,7 @@ export class FileRegistry {
    */
   private async registerExclusively(
     file: NewFileRecord,
-    options: { confirmationRequired: boolean; temporaryTtlMs: number; now?: number }
+    options: RegisterFileOptions
   ): Promise<{ record: FileRecord; previous: FileRecord | undefined }> {
     const now = options.now ?? Date.now()
     const existing = await this.get(file.cid)
@@ -469,7 +543,9 @@ export class FileRegistry {
         ),
         fileSize: file.fileSize > 0 ? file.fileSize : existing.fileSize,
         pinned: true,
-        heldLocally: true
+        heldLocally: true,
+        admissionId: options.admissionId,
+        replicaStage: undefined
       })
 
       return { record, previous: existing }
@@ -489,7 +565,9 @@ export class FileRegistry {
       protectedBytes: file.protectedBytes ?? Math.max(file.storedBytes, file.fileSize),
       pinned: true,
       heldLocally: true,
-      replicas: existing?.replicas ?? []
+      replicas: existing?.replicas ?? [],
+      admissionId: options.admissionId,
+      replicaStage: undefined
     })
 
     return { record, previous: existing }

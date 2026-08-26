@@ -37,12 +37,18 @@ export const REPLICATION_PROTOCOL = `/adamant/replication/${REPLICATION_PROTOCOL
  */
 export const SUPPORTED_REPLICATION_PROTOCOLS = [REPLICATION_PROTOCOL]
 
-/** Requests are two short fields; anything larger is a protocol violation. */
+/** Control messages are short; anything larger is a protocol violation. */
 const MAX_MESSAGE_BYTES = 4096
 
 export type ReplicationRequest =
   /** Store and pin `cid`, pulling the blocks from the requesting peer. */
   | { op: 'store'; cid: string }
+  /** Prepare a pin that becomes permanent only after the upload commits. */
+  | { op: 'stage'; cid: string; transactionId: string }
+  /** Make a prepared copy permanent. */
+  | { op: 'commit'; cid: string; transactionId: string }
+  /** Withdraw one upload's claim on a prepared copy. */
+  | { op: 'abort'; cid: string; transactionId: string }
   /** Report whether this node deliberately holds `cid`. */
   | { op: 'have'; cid: string }
   /** Report whether this node has room to take another copy. */
@@ -58,6 +64,9 @@ export type ReplicationRequest =
 
 export type ReplicationResponse =
   | { ok: true; op: 'store'; storedBytes: number }
+  | { ok: true; op: 'stage'; storedBytes: number; staged: boolean }
+  | { ok: true; op: 'commit' }
+  | { ok: true; op: 'abort' }
   | { ok: true; op: 'have'; has: boolean }
   | { ok: true; op: 'accept'; willAccept: boolean }
   | { ok: true; op: 'cache'; cachedBytes: number }
@@ -79,6 +88,12 @@ export interface ReplicationHandlers {
   isAuthorized(peerId: string): boolean
   /** Pin `cid` and register it, returning the bytes now held for it. */
   store(cid: string): Promise<number>
+  /** Prepare a rollback-capable copy for a strict upload. */
+  stage(cid: string, transactionId: string): Promise<{ storedBytes: number; staged: boolean }>
+  /** Commit a prepared copy. */
+  commit(cid: string, transactionId: string): Promise<void>
+  /** Abort one transaction's claim on a prepared copy. */
+  abort(cid: string, transactionId: string): Promise<void>
   /** Whether this node holds `cid` durably, not merely cached. */
   have(cid: string): Promise<boolean>
   /**
@@ -179,11 +194,29 @@ function parseRequest(value: unknown): ReplicationRequest {
     throw new Error('Replication request is missing a CID')
   }
 
-  const operations: ReplicationRequest['op'][] = ['store', 'have', 'accept', 'cache']
+  const operations: ReplicationRequest['op'][] = [
+    'store',
+    'stage',
+    'commit',
+    'abort',
+    'have',
+    'accept',
+    'cache'
+  ]
   const op = operations.find((known) => known === message.op)
 
   if (op === undefined) {
     throw new Error('Unknown replication operation')
+  }
+
+  if (op === 'stage' || op === 'commit' || op === 'abort') {
+    const transactionId = (value as { transactionId?: unknown }).transactionId
+
+    if (typeof transactionId !== 'string' || transactionId.length === 0) {
+      throw new Error('Replication request is missing a transaction id')
+    }
+
+    return { op, cid: message.cid, transactionId }
   }
 
   return { op, cid: message.cid }
@@ -225,6 +258,24 @@ async function respond(
 
   if (request.op === 'accept') {
     sendMessage(stream, { ok: true, op: 'accept', willAccept: await handlers.willAccept() })
+    return
+  }
+
+  if (request.op === 'stage') {
+    const staged = await handlers.stage(request.cid, request.transactionId)
+    sendMessage(stream, { ok: true, op: 'stage', ...staged })
+    return
+  }
+
+  if (request.op === 'commit') {
+    await handlers.commit(request.cid, request.transactionId)
+    sendMessage(stream, { ok: true, op: 'commit' })
+    return
+  }
+
+  if (request.op === 'abort') {
+    await handlers.abort(request.cid, request.transactionId)
+    sendMessage(stream, { ok: true, op: 'abort' })
     return
   }
 
@@ -294,6 +345,51 @@ export async function requestStore(
 ): Promise<number> {
   const response = await call(node, peer, { op: 'store', cid }, options)
   return response.ok && response.op === 'store' ? response.storedBytes : 0
+}
+
+/** Prepare a rollback-capable copy for a strict upload. */
+export async function requestStage(
+  node: IpfsNode,
+  peer: PeerId | Multiaddr,
+  cid: string,
+  transactionId: string,
+  options: ReplicationCallOptions
+): Promise<{ storedBytes: number; staged: boolean }> {
+  const response = await call(node, peer, { op: 'stage', cid, transactionId }, options)
+
+  return response.ok && response.op === 'stage'
+    ? { storedBytes: response.storedBytes, staged: response.staged }
+    : { storedBytes: 0, staged: false }
+}
+
+/** Commit a copy prepared by {@link requestStage}. */
+export async function requestCommit(
+  node: IpfsNode,
+  peer: PeerId | Multiaddr,
+  cid: string,
+  transactionId: string,
+  options: ReplicationCallOptions
+): Promise<void> {
+  const response = await call(node, peer, { op: 'commit', cid, transactionId }, options)
+
+  if (!response.ok || response.op !== 'commit') {
+    throw new Error('Unexpected replication commit response')
+  }
+}
+
+/** Abort one transaction's claim on a prepared copy. */
+export async function requestAbort(
+  node: IpfsNode,
+  peer: PeerId | Multiaddr,
+  cid: string,
+  transactionId: string,
+  options: ReplicationCallOptions
+): Promise<void> {
+  const response = await call(node, peer, { op: 'abort', cid, transactionId }, options)
+
+  if (!response.ok || response.op !== 'abort') {
+    throw new Error('Unexpected replication abort response')
+  }
 }
 
 /**
