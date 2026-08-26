@@ -234,4 +234,31 @@ describe('rollbackUpload', () => {
     assert.equal(await registry.get(CID_A), undefined)
     assert.equal(pinned, false)
   })
+
+  it('lets a later upload take over a settled leftover admission token', async () => {
+    const registry = createRegistry()
+    await registry.withExclusiveCids([CID_A], async (locked) => {
+      await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'mine'
+      })
+      const current = await locked.get(CID_A)
+
+      if (current === undefined) {
+        throw new Error('expected a registered file')
+      }
+
+      await locked.save({ ...current, admissionSettledAt: 1 })
+
+      const next = await locked.registerReplacing(file, {
+        confirmationRequired: false,
+        temporaryTtlMs: TTL,
+        admissionId: 'theirs'
+      })
+
+      assert.equal(next.record.admissionId, 'theirs')
+      assert.equal(next.record.admissionSettledAt, undefined)
+    })
+  })
 })

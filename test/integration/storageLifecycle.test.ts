@@ -1441,6 +1441,42 @@ describe('strict-upload replica staging', () => {
     await abortReplica({ node, registry, cid, transactionId: 'tx-admin' })
   })
 
+  it('allows confirm and release when only a settled admission residue remains', async () => {
+    const registry = createRegistry()
+    const cid = await ifs.addBytes(deterministicBytes(21_660, 'replica-settled-residue'))
+    await pinFile(node, cid)
+    await registry.save({
+      cid: cid.toString(),
+      name: cid.toString(),
+      state: 'confirmed',
+      createdAt: 1000,
+      expiresAt: null,
+      confirmedAt: 1000,
+      fileSize: 21_660,
+      storedBytes: 21_660,
+      protectedBytes: 21_660,
+      pinned: true,
+      heldLocally: true,
+      replicas: [],
+      admissionId: 'leftover',
+      admissionSettledAt: 2000
+    })
+
+    const confirmed = await confirmStoredFile({
+      node,
+      registry,
+      unixfs: ifs,
+      cid,
+      temporaryTtlMs: 60_000
+    })
+
+    assert.equal(confirmed?.admissionId, undefined)
+    assert.equal(confirmed?.state, 'confirmed')
+
+    const released = await releaseStoredFile({ node, registry, cid })
+    assert.equal(released?.state, 'expired')
+  })
+
   it('does not count an unsettled local upload as a stable replica', async () => {
     const registry = createRegistry()
     const cid = await ifs.addBytes(deterministicBytes(21_700, 'replica-stage-admission'))

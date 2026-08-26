@@ -53,4 +53,17 @@ describe('upload admission recovery', () => {
     assert.equal((await registry.get(CID_A))?.admissionId, undefined)
     assert.equal((await registry.get(CID_B))?.admissionId, currentId)
   })
+
+  it('keeps a settled token from an earlier process for commit retry', async () => {
+    const registry = new FileRegistry(datastore, '/adm/admission-recovery-settled')
+    await registry.save({
+      ...record(CID_A, 'previous-process:settled'),
+      admissionSettledAt: 1
+    })
+
+    const report = await recoverInterruptedAdmissions(registry)
+
+    assert.deepEqual(report, { checked: 0, recovered: 0, errors: [] })
+    assert.equal((await registry.get(CID_A))?.admissionId, 'previous-process:settled')
+  })
 })

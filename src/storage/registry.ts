@@ -557,7 +557,11 @@ export class FileRegistry {
       return { record: existing, previous: existing }
     }
 
-    if (existing?.admissionId !== undefined && existing.admissionId !== options.admissionId) {
+    if (
+      existing !== undefined &&
+      !isAdmissionSettled(existing) &&
+      existing.admissionId !== options.admissionId
+    ) {
       throw new FileLifecycleBusyError(file.cid)
     }
 
@@ -661,6 +665,16 @@ export function isSettledHeldFile(record: FileRecord): boolean {
 /** Whether an upload can no longer roll this local lifecycle back. */
 export function isAdmissionSettled(record: FileRecord): boolean {
   return record.admissionId === undefined || record.admissionSettledAt !== undefined
+}
+
+/**
+ * True while a replica stage or an unsettled local upload still owns this CID.
+ *
+ * A leftover admission token after settlement is not busy: nothing can roll the
+ * local decision back, and repair uses that token to retry `commit`.
+ */
+export function isLifecycleBusy(record: FileRecord): boolean {
+  return record.replicaStage !== undefined || !isAdmissionSettled(record)
 }
 
 export function countByState(records: FileRecord[]): Record<FileState, number> {

@@ -256,25 +256,34 @@ prepared copies concurrently. A commit acknowledgement proves the permanent
 write; when that acknowledgement is lost, the source asks `have` and accepts the
 peer only if it reports the copy as durable. The HTTP request returns success
 only while the verified permanent copies still satisfy `ackQuorum`. If they do
-not, the route returns `500`, keeps the local file pinned, and lets the ordinary
-repair sweep recreate the missing copies. It does not report `503`, because a
-peer may already have committed and the outcome is no longer safe to roll back.
+not, the route returns `500` and keeps the local file pinned. The admission
+token stays on that CID so the ordinary repair sweep can retry `commit` on
+peers that still hold the prepared pin, then `store` onto empty peers. It does
+not report `503`, because a peer may already have committed and the outcome is
+no longer safe to roll back. Clients that treat `500` as "not saved" may retry:
+content-addressed dedup absorbs a second upload of the same bytes.
 
 Extra prepared copies that were not needed for the verified quorum stay
 temporary. Their TTL (three replication request timeouts) eventually restores
 the prior expired state or releases a newly created copy. An abort marker kept
-for the same window prevents a slow `stage` from appearing after its coordinator
-already aborted it. Transaction owners and restoration baselines live in the
-datastore, so restarting a peer does not turn a prepared copy into a permanent
-one. Live stages are kept through watermark pressure for that short window;
+in memory for the same window prevents a slow `stage` from appearing after its
+coordinator already aborted it. The marker does not survive a restart of this
+node: if a late `stage` is still in flight then, the copy can appear until TTL,
+which is the same bound used for any abandoned stage. A coordinator that already
+aborted will not reuse that transaction id, so a source restart is a new
+request. Transaction owners and restoration baselines live in the datastore, so
+restarting a peer does not turn a prepared copy into a permanent one. Live
+stages are kept through watermark pressure for that short window;
 `GET /api/storage/metrics` reports how many remain as `stagedReplicas`.
 
 The local admission token remains until replica settlement finishes. A failed
-cleanup write is harmless because a settled timestamp keeps the record visible
-to `have`, repair, and handover. On startup, tokens belonging to a previous
-process are cleared in the background; no stopped request can still roll them
-back. Manual confirm, pin, and unpin operations return `409` while an upload or
-replica transaction owns that CID.
+cleanup write, or a `500` after an unverified commit, leaves the token in place.
+`admissionSettledAt` still makes the record visible to `have`, repair, and
+handover, and repair clears the token once the durable copies are confirmed.
+Manual confirm, pin, and unpin return `409` while a replica stage or an
+_unsettled_ local upload owns that CID; a leftover settled token does not block
+them. On startup, _unsettled_ tokens belonging to a previous process are cleared
+in the background; settled tokens are left for repair.
 
 Turning it off with `replication.enabled: false` makes the node store content
 **best effort** instead: one copy, on this node, pinned, with no promise that

@@ -71,7 +71,7 @@ async function serveUpload(
       cid: string,
       transactionId: string,
       report: ReplicationReport
-    ) => Promise<void>
+    ) => Promise<ReplicationReport>
     abortReplicas?: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
     unpin?: (cid: CID) => Promise<void>
   } = {}
@@ -111,7 +111,7 @@ async function serveUpload(
           replicated.push(cid)
           return bestEffort()
         }),
-      commitReplicas: overrides.commitReplicas ?? (async () => undefined),
+      commitReplicas: overrides.commitReplicas ?? (async (_cid, _transactionId, report) => report),
       abortReplicas: overrides.abortReplicas ?? (async () => undefined),
       unpin: overrides.unpin,
       log: { info: () => undefined, error: () => undefined }
@@ -504,7 +504,8 @@ describe('the upload endpoint end to end', () => {
       assert.equal(response.status, 500)
       assert.equal(commitAttempts, 1)
       assert.equal(record?.state, 'confirmed')
-      assert.equal(record?.admissionId, undefined)
+      assert.ok(record?.admissionId !== undefined)
+      assert.ok(record?.admissionSettledAt !== undefined)
       assert.equal(await isDirectlyPinned(node, CID.parse(cid)), true)
     } finally {
       harness.server.close()
@@ -551,6 +552,7 @@ describe('the upload endpoint end to end', () => {
             setTimeout(() => reject(new Error('commits were serialized')), 1000)
           )
         ])
+        return report()
       }
     })
 

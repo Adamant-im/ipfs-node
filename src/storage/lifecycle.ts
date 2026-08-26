@@ -4,6 +4,7 @@ import type { IpfsNode } from '../ipfs-node.js'
 import { isDirectlyPinned, pinFile, unpinFile } from './pinning.js'
 import {
   FileLifecycleBusyError,
+  isLifecycleBusy,
   type FileRecord,
   type FileRegistry,
   type LockedFileRegistry
@@ -186,7 +187,7 @@ export async function confirmStoredFile(options: ConfirmOptions): Promise<FileRe
         : undefined
     }
 
-    if (current.replicaStage !== undefined || current.admissionId !== undefined) {
+    if (isLifecycleBusy(current)) {
       throw new FileLifecycleBusyError(key)
     }
 
@@ -249,7 +250,7 @@ export async function releaseStoredFile(options: ReleaseOptions): Promise<FileRe
       return undefined
     }
 
-    if (current.replicaStage !== undefined || current.admissionId !== undefined) {
+    if (isLifecycleBusy(current)) {
       throw new FileLifecycleBusyError(key)
     }
 

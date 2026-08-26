@@ -28,7 +28,11 @@ export interface UploadRouteDependencies {
   /** Prepare remote copies when `transactionId` is present. */
   replicate: (cid: string, transactionId?: string) => Promise<ReplicationReport>
   /** Make prepared copies permanent after the local decision commits. */
-  commitReplicas: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
+  commitReplicas: (
+    cid: string,
+    transactionId: string,
+    report: ReplicationReport
+  ) => Promise<ReplicationReport>
   /** Withdraw prepared copies before reporting a strict rejection. */
   abortReplicas: (cid: string, transactionId: string, report: ReplicationReport) => Promise<void>
   /** Test seam for pin-datastore failure paths. */
@@ -175,18 +179,27 @@ async function finalizeAdmitted(
 
 /**
  * Remove admission tokens after remote settlement and persist the verified
- * replica set. A failed cleanup does not change durability:
- * `admissionSettledAt` keeps the record visible to `have`, repair and handover.
+ * replica set. Only CIDs whose remote commit was verified are passed in; a
+ * failed commit keeps the token so repair can retry it. A failed cleanup does
+ * not change durability: `admissionSettledAt` keeps the record visible to
+ * `have`, repair and handover.
  */
 async function clearSettledAdmissions(
   registry: FileRegistry,
   finalized: Map<string, FileRecord>,
   reports: Map<string, ReplicationReport>,
   admissionId: string,
-  log: UploadRouteLog
+  log: UploadRouteLog,
+  cids: Iterable<string>
 ): Promise<void> {
-  await registry.withExclusiveCids(finalized.keys(), async (locked) => {
-    for (const [cid] of finalized) {
+  const keys = [...cids]
+
+  if (keys.length === 0) {
+    return
+  }
+
+  await registry.withExclusiveCids(keys, async (locked) => {
+    for (const cid of keys) {
       let current: FileRecord | undefined
 
       try {
@@ -467,8 +480,17 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
 
       if (dependencies.requireQuorumOnUpload) {
         const commits = await Promise.allSettled(
-          replication.map((item) => dependencies.commitReplicas(item.cid, admissionId, item.report))
+          replication.map(async (item) => {
+            const committed = await dependencies.commitReplicas(item.cid, admissionId, item.report)
+            item.report = committed
+            reportByCid.set(item.cid, committed)
+            return item.cid
+          })
         )
+        const committedCids = commits.flatMap((result, index) => {
+          const cid = replication[index]?.cid
+          return result.status === 'fulfilled' && cid !== undefined ? [cid] : []
+        })
         const failures = commits.flatMap((result, index) =>
           result.status === 'rejected'
             ? [
@@ -479,7 +501,17 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
             : []
         )
 
-        await clearSettledAdmissions(registry, finalized, reportByCid, admissionId, log)
+        // Keep the token on files whose commit was not verified so repair can
+        // retry `commit` with the original transaction id. Files that did
+        // commit drop the token here.
+        await clearSettledAdmissions(
+          registry,
+          finalized,
+          reportByCid,
+          admissionId,
+          log,
+          committedCids
+        )
 
         if (failures.length > 0) {
           // The local decision is durable and must not be rolled back after a
@@ -488,7 +520,14 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
           throw new AggregateError(failures, 'Could not commit every required replica')
         }
       } else {
-        await clearSettledAdmissions(registry, finalized, reportByCid, admissionId, log)
+        await clearSettledAdmissions(
+          registry,
+          finalized,
+          reportByCid,
+          admissionId,
+          log,
+          finalized.keys()
+        )
       }
 
       const records = outcome.records.map((record) => finalized.get(record.cid) ?? record)

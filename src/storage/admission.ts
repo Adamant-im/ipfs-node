@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { FileRegistry } from './registry.js'
+import { isAdmissionSettled, type FileRegistry } from './registry.js'
 
 const processAdmissionPrefix = `${randomUUID()}:`
 
@@ -23,15 +23,22 @@ export interface AdmissionRecoveryReport {
  * Clear upload ownership left by a process that stopped before cleanup.
  *
  * A current-process token is skipped because its request can still compensate
- * the record. A previous process cannot resume that request; retaining its token
- * would hide a confirmed pin from repair and handover forever. The file itself
- * stays exactly as it was — only stale transaction ownership is removed.
+ * the record. A previous process cannot resume an unsettled request; retaining
+ * that token would hide a confirmed pin from repair and handover forever. The
+ * file itself stays exactly as it was — only stale transaction ownership is
+ * removed.
+ *
+ * A settled token is kept. Repair uses it to retry `commit` on peers that still
+ * hold a prepared copy, then clears it once those copies are durable.
  */
 export async function recoverInterruptedAdmissions(
   registry: FileRegistry
 ): Promise<AdmissionRecoveryReport> {
   const candidates = (await registry.all()).filter(
-    (record) => record.admissionId !== undefined && !isCurrentAdmissionId(record.admissionId)
+    (record) =>
+      record.admissionId !== undefined &&
+      !isCurrentAdmissionId(record.admissionId) &&
+      !isAdmissionSettled(record)
   )
   const report: AdmissionRecoveryReport = { checked: candidates.length, recovered: 0, errors: [] }
 
@@ -40,7 +47,11 @@ export async function recoverInterruptedAdmissions(
       const recovered = await registry.withExclusiveCids([candidate.cid], async (locked) => {
         const current = await locked.get(candidate.cid)
 
-        if (current?.admissionId === undefined || isCurrentAdmissionId(current.admissionId)) {
+        if (
+          current?.admissionId === undefined ||
+          isCurrentAdmissionId(current.admissionId) ||
+          isAdmissionSettled(current)
+        ) {
           return false
         }
 

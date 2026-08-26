@@ -8,6 +8,7 @@ import { Key } from 'interface-datastore'
 import {
   FileRegistry,
   isExpired,
+  isLifecycleBusy,
   isReclaimable,
   isSettledHeldFile,
   type FileRecord
@@ -584,5 +585,16 @@ describe('expiry rules', () => {
       true
     )
     assert.equal(isSettledHeldFile({ ...held, heldLocally: false }), false)
+  })
+
+  it('treats replica stages and unsettled admissions as busy', () => {
+    const held: FileRecord = { ...record, state: 'confirmed', expiresAt: null }
+
+    assert.equal(isLifecycleBusy(held), false)
+    assert.equal(isLifecycleBusy({ ...held, admissionId: 'upload-one' }), true)
+    assert.equal(
+      isLifecycleBusy({ ...held, admissionId: 'upload-one', admissionSettledAt: 1234 }),
+      false
+    )
   })
 })

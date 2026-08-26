@@ -15,6 +15,7 @@ import {
   type LifecycleTarget
 } from './lifecycle.js'
 import {
+  FileLifecycleBusyError,
   isAdmissionSettled,
   isSettledHeldFile,
   protectedStorageBytes,
@@ -99,7 +100,7 @@ function placementFor(cid: string, createdAt: number, peers: ReplicationPeer[]):
 async function placeReplicas(
   cid: string,
   createdAt: number,
-  transactionId?: string
+  store: (peer: ReplicationPeer) => Promise<PlacementOutcome | ReplicationStoreResult>
 ): Promise<ReplicationReport> {
   return replicate({
     cid,
@@ -107,7 +108,7 @@ async function placeReplicas(
     selfPeerId: selfPeerId(),
     peers: getReplicationPeers(),
     config: config.replication,
-    store: (peer) => placeCopy(peer, cid, transactionId),
+    store,
     cacheOnly: async (peer) => {
       await requestCache(helia, peer.multiAddr, cid, callOptions())
     }
@@ -126,7 +127,9 @@ export async function replicateUploadedFile(
   transactionId?: string
 ): Promise<ReplicationReport> {
   const record = await fileRegistry.get(cid)
-  return placeReplicas(cid, record?.createdAt ?? Date.now(), transactionId)
+  return placeReplicas(cid, record?.createdAt ?? Date.now(), (peer) =>
+    placeCopy(peer, cid, transactionId)
+  )
 }
 
 /** Peers whose copies still belong to this upload transaction. */
@@ -152,12 +155,16 @@ function stagedPeers(
  * A lost commit acknowledgement is followed by `have`: if the peer applied the
  * decision, its durable state is authoritative. The upload response is withheld
  * when fewer than `required` copies can be proved permanent.
+ *
+ * Returns a new report. The placement object passed in is left unchanged so the
+ * caller can keep the original `attempts` for abort without sharing a mutated
+ * replica list.
  */
 export async function commitUploadedReplicas(
   cid: string,
   transactionId: string,
   report: ReplicationReport
-): Promise<void> {
+): Promise<ReplicationReport> {
   const peers = stagedPeers(report, { includeFailed: false })
   const results = await Promise.allSettled(
     peers.map(async (peer) => {
@@ -189,11 +196,16 @@ export async function commitUploadedReplicas(
   const committed = results.flatMap((result) =>
     result.status === 'fulfilled' ? [result.value] : []
   )
-  report.replicas = [...new Set([...stable, ...committed])]
-  report.acknowledged = report.replicas.length + 1
-  report.satisfied = report.acknowledged >= report.required
+  const verified: ReplicationReport = {
+    ...report,
+    replicas: [...new Set([...stable, ...committed])],
+    acknowledged: 0,
+    satisfied: false
+  }
+  verified.acknowledged = verified.replicas.length + 1
+  verified.satisfied = verified.acknowledged >= verified.required
 
-  if (!report.satisfied) {
+  if (!verified.satisfied) {
     const failures = results.flatMap((result, index) =>
       result.status === 'rejected'
         ? [new Error(`Could not commit replica on ${peers[index]?.name}: ${result.reason}`)]
@@ -201,9 +213,11 @@ export async function commitUploadedReplicas(
     )
     throw new AggregateError(
       failures,
-      `Committed replica quorum not reached for ${cid}: ${report.acknowledged}/${report.required}`
+      `Committed replica quorum not reached for ${cid}: ${verified.acknowledged}/${verified.required}`
     )
   }
+
+  return verified
 }
 
 /** Withdraw every prepared remote copy before reporting a strict rejection. */
@@ -230,7 +244,9 @@ export async function abortUploadedReplicas(
 /** Place copies of a known file and persist the peers that acknowledged it. */
 export async function replicateFile(cid: string): Promise<ReplicationReport> {
   const record = await fileRegistry.get(cid)
-  const report = await placeReplicas(cid, record?.createdAt ?? Date.now())
+  const report = await placeReplicas(cid, record?.createdAt ?? Date.now(), (peer) =>
+    repairCopy(peer, cid, record?.admissionId)
+  )
 
   if (report.mode === 'quorum') {
     await fileRegistry.setReplicas(cid, report.replicas)
@@ -300,6 +316,51 @@ async function placeCopy(
         // reach it; the copy must not count towards the quorum.
         return { outcome: 'failed', staged: true, error: (err as Error).message }
       }
+    }
+
+    await requestStore(helia, peer.multiAddr, cid, callOptions())
+    return { outcome: 'stored', staged: false }
+  } catch (err) {
+    if (!(err as Error).message.includes('Not authorized')) {
+      throw err
+    }
+
+    await requestCache(helia, peer.multiAddr, cid, callOptions())
+    return 'cached'
+  }
+}
+
+/**
+ * Restore a missing durable copy without creating a new upload transaction.
+ *
+ * When the origin still has a settled admission token, `commit` is tried first:
+ * a peer that kept the prepared pin can promote it instead of waiting for TTL
+ * and a later `store`. `store` remains the fallback for an empty peer, and it
+ * still refuses a live stage it does not own.
+ */
+async function repairCopy(
+  peer: ReplicationPeer,
+  cid: string,
+  commitTransactionId?: string
+): Promise<PlacementOutcome | ReplicationStoreResult> {
+  try {
+    if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+      return { outcome: 'stored', staged: false }
+    }
+
+    if (commitTransactionId !== undefined) {
+      try {
+        await requestCommit(helia, peer.multiAddr, cid, commitTransactionId, callOptions())
+        if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+          return { outcome: 'stored', staged: false }
+        }
+      } catch {
+        // No matching stage, or the peer is still temporary; `store` is next.
+      }
+    }
+
+    if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+      throw new Error('peer has no room for another copy')
     }
 
     await requestStore(helia, peer.multiAddr, cid, callOptions())
@@ -395,7 +456,7 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
       // A strict upload still owns this copy. Promoting it would make abort a
       // no-op, while returning success would let repair count a temporary pin
       // as durable.
-      throw new Error(`CID ${cid} has an active replica transaction`)
+      throw new FileLifecycleBusyError(cid)
     }
 
     // Pulling the DAG first is what bounds this. Pinning would fetch it too, but
@@ -413,7 +474,7 @@ export async function acceptReplica(cid: string): Promise<FileRecord> {
     if (stored.replicaStage !== undefined) {
       // A stage may have appeared while this request was pulling the DAG. The
       // registry correctly kept it; do not turn that no-op into a durable ack.
-      throw new Error(`CID ${cid} has an active replica transaction`)
+      throw new FileLifecycleBusyError(cid)
     }
 
     return stored
@@ -663,6 +724,30 @@ export interface RepairReport {
   rescued: string[]
 }
 
+/**
+ * Drop a leftover admission token once this node no longer needs it to retry
+ * `commit`. Unsettled tokens are left alone: their request can still roll back.
+ */
+async function clearSettledAdmission(record: FileRecord): Promise<void> {
+  if (record.admissionId === undefined) {
+    return
+  }
+
+  await fileRegistry.withExclusiveCids([record.cid], async (locked) => {
+    const current = await locked.get(record.cid)
+
+    if (
+      current === undefined ||
+      current.admissionId === undefined ||
+      !isAdmissionSettled(current)
+    ) {
+      return
+    }
+
+    await locked.save({ ...current, admissionId: undefined, admissionSettledAt: undefined })
+  })
+}
+
 /** Ask the designated peers which durable copies exist right now. */
 async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise<string[]> {
   const answers = await Promise.all(
@@ -830,6 +915,7 @@ export async function repairReplication(): Promise<RepairReport> {
     await fileRegistry.setReplicas(record.cid, live)
 
     if (!isUnderReplicated(live.length, placement, self)) {
+      await clearSettledAdmission(record)
       continue
     }
 
@@ -842,6 +928,7 @@ export async function repairReplication(): Promise<RepairReport> {
       report.stillMissing.push(record.cid)
     } else {
       report.repaired.push(record.cid)
+      await clearSettledAdmission(record)
     }
   }
 

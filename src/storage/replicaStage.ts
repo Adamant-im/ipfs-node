@@ -13,8 +13,10 @@ import { isAdmissionSettled, protectedStorageBytes } from './registry.js'
 /**
  * Abort markers close the race where an abort reaches the peer while its stage
  * request is still pulling blocks and has not written transaction ownership.
- * They only need to survive that in-process request; a restart cancels both
- * sides of the race.
+ * They live in this process. A coordinator that already aborted will not reuse
+ * the same transaction id, so a source restart is a new request. If this node
+ * restarts while a late `stage` is still in flight, that copy can appear until
+ * settlement TTL — the same bound already used for abandoned stages.
  */
 const abortedTransactions = new Map<string, number>()
 const DEFAULT_ABORT_TOMBSTONE_TTL_MS = 5 * 60 * 1000
