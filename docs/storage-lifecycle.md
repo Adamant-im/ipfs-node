@@ -130,7 +130,7 @@ than being open, so a node cannot be filled with permanently pinned content by
 an anonymous caller.
 
 Replication between nodes is not an HTTP route and uses no key at all. It runs
-on the libp2p protocol `/adamant/replication/1.1.0`, where the handshake already
+on the libp2p protocol `/adamant/replication/1.0.0`, where the handshake already
 proves the calling peer id cryptographically. Nothing has to be distributed, and
 a peer needs no HTTP address to be reachable.
 
@@ -441,17 +441,15 @@ copies are withdrawn as described above.
 
 ### Protocol version
 
-Copies are placed over the libp2p protocol `/adamant/replication/1.1.0`. The
+Copies are placed over the libp2p protocol `/adamant/replication/1.0.0`. The
 version in that identifier belongs to the wire format, not to the release: it
 says what two nodes must agree on to talk to each other, and that changes far
 less often than the software. Taking it from `package.json` would break
 interoperability on every release for no reason.
 
 Raise it when an older node can no longer read what a newer one sends — a new
-required field, different framing, or an operation this node sends that an older
-handler would reject. Adding an operation that older nodes never send does not
-require it. `stage`, `commit`, and `abort` are sent by this node, which is why
-the identifier is `1.1.0`.
+required field, different framing, or an operation whose meaning changed. Adding
+an operation that older nodes never send does not require it.
 
 libp2p negotiates the newest version both ends offer, so listing an older one
 alongside the current one is what allows a network to be upgraded one node at a
