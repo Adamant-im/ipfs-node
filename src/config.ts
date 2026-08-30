@@ -53,12 +53,32 @@ export interface ConfigNode {
   multiAddr: string
 }
 
+/** Policy used to produce a bounded, network-aware health checkpoint. */
+export interface HealthConfig {
+  /** Length of one checkpoint round, in milliseconds. */
+  checkpointIntervalMs: number
+  /** Maximum age of the last completed checkpoint before it becomes stale. */
+  maxCheckpointAgeMs: number
+  /** Maximum age of the cached storage scan accepted by a checkpoint. */
+  storageMaxAgeMs: number
+  /** Maximum age of a completed full repair sweep. */
+  repairMaxAgeMs: number
+  /** Allowed clock difference between two attesting peers. */
+  clockSkewToleranceMs: number
+  /** Bound for one peer attestation call. */
+  peerAttestationTimeoutMs: number
+  /** Minimum number of configured remote peers that must attest a round. */
+  requiredPeerCount: number
+}
+
 export interface Config {
   /** Known ADAMANT IPFS nodes. Their multiaddrs are also the connection manager allow list. */
   nodes: ConfigNode[]
   /** File storage directory, resolved from the user's home directory. */
   storeFolder: string
   logLevel: LogLevel
+  /** Enable human-oriented log formatting explicitly for local development. */
+  prettyLogs: boolean
   peerDiscovery: {
     /** Multiaddrs dialled on startup to join the ADAMANT peer set. */
     bootstrap: string[]
@@ -94,6 +114,8 @@ export interface Config {
   storage: StorageConfig
   /** Cross-node durability policy; see `src/storage/config.ts`. */
   replication: ReplicationConfig
+  /** Network-aware readiness and checkpoint policy. */
+  health: HealthConfig
 }
 
 /**
@@ -176,6 +198,71 @@ function requireInteger(value: unknown, path: string, min: number): number {
   return value
 }
 
+function optionalInteger(value: unknown, path: string, fallback: number, min: number): number {
+  return value === undefined ? fallback : requireInteger(value, path, min)
+}
+
+/** Resolve health defaults without breaking configuration files from earlier releases. */
+function resolveHealthConfig(value: unknown, nodeCount: number): HealthConfig {
+  const raw = value === undefined ? {} : requireObject(value, 'health')
+  const checkpointIntervalMs = optionalInteger(
+    raw.checkpointIntervalMs,
+    'health.checkpointIntervalMs',
+    60_000,
+    1_000
+  )
+  const maxCheckpointAgeMs = optionalInteger(
+    raw.maxCheckpointAgeMs,
+    'health.maxCheckpointAgeMs',
+    checkpointIntervalMs * 3,
+    checkpointIntervalMs
+  )
+  const storageMaxAgeMs = optionalInteger(
+    raw.storageMaxAgeMs,
+    'health.storageMaxAgeMs',
+    checkpointIntervalMs * 2,
+    checkpointIntervalMs
+  )
+  const repairMaxAgeMs = optionalInteger(
+    raw.repairMaxAgeMs,
+    'health.repairMaxAgeMs',
+    3_600_000,
+    checkpointIntervalMs
+  )
+  const clockSkewToleranceMs = optionalInteger(
+    raw.clockSkewToleranceMs,
+    'health.clockSkewToleranceMs',
+    10_000,
+    0
+  )
+  const peerAttestationTimeoutMs = optionalInteger(
+    raw.peerAttestationTimeoutMs,
+    'health.peerAttestationTimeoutMs',
+    5_000,
+    1
+  )
+  const requiredPeerCount = optionalInteger(
+    raw.requiredPeerCount,
+    'health.requiredPeerCount',
+    nodeCount > 1 ? 1 : 0,
+    0
+  )
+
+  if (requiredPeerCount > Math.max(0, nodeCount - 1)) {
+    fail('health.requiredPeerCount', 'cannot exceed the number of configured remote peers')
+  }
+
+  return {
+    checkpointIntervalMs,
+    maxCheckpointAgeMs,
+    storageMaxAgeMs,
+    repairMaxAgeMs,
+    clockSkewToleranceMs,
+    peerAttestationTimeoutMs,
+    requiredPeerCount
+  }
+}
+
 /**
  * Validate an untrusted parsed config object and return it as a typed `Config`.
  *
@@ -252,9 +339,11 @@ export function validateConfig(raw: unknown): Config {
   // files written before this feature keep working.
   let storage: StorageConfig
   let replication: ReplicationConfig
+  let health: HealthConfig
   try {
     storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
     replication = resolveReplicationConfig(root.replication)
+    health = resolveHealthConfig(root.health, nodes.length)
   } catch (err) {
     if (err instanceof ConfigError) {
       throw err
@@ -273,6 +362,7 @@ export function validateConfig(raw: unknown): Config {
     nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
     storeFolder,
     logLevel: logLevel as LogLevel,
+    prettyLogs: root.prettyLogs === true,
     peerDiscovery: { bootstrap, listen },
     serverPort,
     diskUsageScanPeriod,
@@ -286,7 +376,8 @@ export function validateConfig(raw: unknown): Config {
     adminApiKey: (root.adminApiKey ?? '') as string,
     enableDebugApi: root.enableDebugApi === true,
     storage,
-    replication
+    replication,
+    health
   }
 }
 

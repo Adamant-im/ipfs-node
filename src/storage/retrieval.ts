@@ -76,7 +76,8 @@ export function retrievalTargets(
 export async function connectToHolders(
   node: IpfsNode,
   targets: ReplicationPeer[],
-  timeoutMs: number = HOLDER_DIAL_TIMEOUT_MS
+  timeoutMs: number = HOLDER_DIAL_TIMEOUT_MS,
+  externalSignal?: AbortSignal
 ): Promise<number> {
   const connected = new Set(node.libp2p.getPeers().map((peer) => peer.toString()))
   const missing = targets.filter((peer) => !connected.has(peer.peerId))
@@ -86,9 +87,13 @@ export async function connectToHolders(
   }
 
   const results = await Promise.allSettled(
-    missing.map(async (peer) =>
-      node.libp2p.dial(peer.multiAddr, { signal: AbortSignal.timeout(timeoutMs) })
-    )
+    missing.map(async (peer) => {
+      const timeoutSignal = AbortSignal.timeout(timeoutMs)
+      const signal = externalSignal
+        ? AbortSignal.any([timeoutSignal, externalSignal])
+        : timeoutSignal
+      return node.libp2p.dial(peer.multiAddr, { signal })
+    })
   )
 
   return results.filter((result) => result.status === 'fulfilled').length
@@ -104,11 +109,12 @@ export async function prepareRetrieval(
   node: IpfsNode,
   cid: CID,
   targets: () => ReplicationPeer[],
-  timeoutMs: number = HOLDER_DIAL_TIMEOUT_MS
+  timeoutMs: number = HOLDER_DIAL_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<void> {
   if (await node.blockstore.has(cid)) {
     return
   }
 
-  await connectToHolders(node, targets(), timeoutMs)
+  await connectToHolders(node, targets(), timeoutMs, signal)
 }

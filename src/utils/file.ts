@@ -1,15 +1,15 @@
 import { CID } from 'multiformats/cid'
-import { Readable } from 'node:stream'
 import { clearTimeout } from 'node:timers'
 import { config } from '../config.js'
 import { ifs } from '../helia.js'
 import { FileNotFoundError } from './fileErrors.js'
+import { createTimedReadable, type TimedReadable } from './timedStream.js'
 
 /**
  * Return file statistics by CID.
  * Throws a timeout error if the file is not found.
  */
-export async function getFileStats(cid: CID) {
+export async function getFileStats(cid: CID, externalSignal?: AbortSignal) {
   let timeout: NodeJS.Timeout | undefined
   try {
     const abortController = new AbortController()
@@ -17,7 +17,10 @@ export async function getFileStats(cid: CID) {
       abortController.abort(new Error('Cannot find requested CID. Request timed out.'))
     }, config.findFileTimeout)
 
-    const stats = await ifs.stat(cid, { signal: abortController.signal })
+    const signal = externalSignal
+      ? AbortSignal.any([abortController.signal, externalSignal])
+      : abortController.signal
+    const stats = await ifs.stat(cid, { signal })
     return stats
   } catch {
     throw new FileNotFoundError('Cannot find requested CID. Request timed out.')
@@ -32,35 +35,14 @@ export async function getFileStats(cid: CID) {
  * Return a file stream by CID.
  * Throws a timeout error if the file is not found.
  */
-export function downloadFile(cid: CID) {
-  const abortController = new AbortController()
-
-  let aborted = false
-  const abort = () => {
-    if (aborted) return
-
-    aborted = true
-    abortController.abort(new FileNotFoundError('Unable to retrieve the file. Request timed out.'))
-  }
-  const abortTimer = setTimeout(abort, config.findFileTimeout)
-
-  const stream = Readable.from(
-    ifs.cat(cid, {
-      signal: abortController.signal
-    })
+export function downloadFile(
+  cid: CID,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): TimedReadable {
+  return createTimedReadable(
+    (signal) => ifs.cat(cid, { signal }),
+    options.timeoutMs ?? config.findFileTimeout,
+    () => new FileNotFoundError('Unable to retrieve the file. Request timed out.'),
+    options.signal
   )
-  stream.on('data', () => {
-    clearTimeout(abortTimer)
-  })
-  stream.on('end', () => {
-    clearTimeout(abortTimer)
-  })
-  stream.on('error', () => {
-    clearTimeout(abortTimer)
-  })
-  stream.on('close', () => {
-    clearTimeout(abortTimer)
-  })
-
-  return stream
 }

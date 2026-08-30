@@ -1,0 +1,239 @@
+openapi: 3.1.0
+info:
+  title: ADAMANT IPFS Node API
+  version: 0.1.0
+  description: >-
+    Stable client, lifecycle, and node-health contract. Low-level Helia,
+    libp2p, and optional debug operator routes are intentionally excluded.
+servers:
+  - url: https://ipfs.example.org
+paths:
+  /api/node/health:
+    get:
+      summary: Read the network-aware node checkpoint
+      responses:
+        '200':
+          description: The current state; inspect status because this route is always 200
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /api/node/info:
+    get:
+      summary: Read sanitized legacy PWA and iOS node information
+      responses:
+        '200':
+          description: Legacy node information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyNodeInfo'
+  /api/node/details:
+    get:
+      summary: Read detailed operator state
+      security:
+        - AdminApiKey: []
+      responses:
+        '200':
+          description: Node identity, storage, health, and bounded HTTP metrics
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AdminNotConfigured'
+  /api/file/upload:
+    post:
+      summary: Upload one or more files
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '200':
+          description: Files were stored and pinned
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          description: Request or file limit exceeded
+        '429':
+          description: Upload rate or concurrency limit exceeded
+        '503':
+          description: Required replication quorum was not reached
+        '507':
+          description: The disk reserve would be consumed
+  /api/file/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/Cid'
+    get:
+      summary: Download a complete immutable file
+      responses:
+        '200':
+          description: Complete file attachment
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+            Accept-Ranges:
+              schema: { type: string, const: none }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '408':
+          description: Discovery or complete retrieval timed out
+        '416':
+          description: Range requests are not supported
+        '429':
+          description: Read rate limit exceeded
+  /api/file/{cid}/status:
+    parameters:
+      - $ref: '#/components/parameters/Cid'
+    get:
+      summary: Read public lifecycle and replication counts
+      responses:
+        '200': { description: File lifecycle state }
+        '404': { description: Unknown CID }
+  /api/file/{cid}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/Cid'
+    post:
+      summary: Promote a temporary file to durable storage
+      security:
+        - AdminApiKey: []
+      responses:
+        '200': { description: File confirmed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Unknown CID }
+  /api/file/{cid}/unpin:
+    parameters:
+      - $ref: '#/components/parameters/Cid'
+    post:
+      summary: Release durable content
+      security:
+        - AdminApiKey: []
+      responses:
+        '200': { description: File released for later collection }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Unknown CID }
+  /api/storage/metrics:
+    get:
+      summary: Read public bounded storage and replication counts
+      responses:
+        '200': { description: Cached storage metrics }
+  /api/storage/policy:
+    get:
+      summary: Read upload, lifecycle, and durability policy
+      responses:
+        '200': { description: Public storage policy }
+  /api/storage/gc:
+    post:
+      summary: Run or preview garbage collection
+      security:
+        - AdminApiKey: []
+      parameters:
+        - name: dryRun
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200': { description: Garbage collection report }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Garbage collection is already running }
+  /api/storage/repair:
+    post:
+      summary: Run the next bounded replication repair batch
+      security:
+        - AdminApiKey: []
+      responses:
+        '200': { description: Repair batch and cycle progress }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Replication repair is already running }
+components:
+  securitySchemes:
+    AdminApiKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+  parameters:
+    Cid:
+      name: cid
+      in: path
+      required: true
+      schema: { type: string }
+  schemas:
+    Health:
+      type: object
+      required:
+        - status
+        - height
+        - timestamp
+        - checkpointIntervalMs
+        - membershipVersion
+        - checks
+        - peerAttestations
+      properties:
+        status:
+          type: string
+          enum: [starting, ready, stale, degraded]
+        height:
+          type: integer
+          minimum: 0
+          description: Persisted Unix milliseconds at the start of the last valid fixed round
+        timestamp: { type: integer }
+        checkpointIntervalMs: { type: integer, minimum: 1000 }
+        membershipVersion: { type: string, pattern: '^[a-f0-9]{64}$' }
+        checks:
+          type: object
+          additionalProperties: { type: boolean }
+        peerAttestations:
+          type: object
+          required: [required, received]
+          properties:
+            required: { type: integer, minimum: 0 }
+            received: { type: integer, minimum: 0 }
+    LegacyNodeInfo:
+      type: object
+      required:
+        - version
+        - timestamp
+        - heliaStatus
+        - blockstoreSizeMb
+        - datastoreSizeMb
+        - availableSizeInMb
+      properties:
+        version: { type: string }
+        timestamp: { type: integer }
+        heliaStatus: { type: string }
+        blockstoreSizeMb: { type: number }
+        datastoreSizeMb: { type: number }
+        availableSizeInMb: { type: number }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Administrative API key is missing or invalid
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    AdminNotConfigured:
+      description: Administrative API key is not configured
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

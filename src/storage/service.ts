@@ -56,7 +56,7 @@ import {
 } from './meter.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter, storageOperationLock } from './state.js'
-import { nextSweepBatch } from './sweep.js'
+import { nextSweepBatch, sweepBatch } from './sweep.js'
 import { claimRepairRecord, releaseRepairRecord } from './repairClaim.js'
 
 const callOptions = (): ReplicationCallOptions => ({
@@ -282,9 +282,13 @@ export async function replicateFile(cid: string): Promise<ReplicationReport> {
  * not one of its holders. Placement tells it exactly which nodes to reach, so
  * the read does not depend on a holder happening to be connected already.
  */
-export async function prepareFileRetrieval(cid: CID): Promise<void> {
-  await prepareRetrieval(helia, cid, () =>
-    retrievalTargets(cid.toString(), config.replication, selfPeerId(), getReplicationPeers())
+export async function prepareFileRetrieval(cid: CID, signal?: AbortSignal): Promise<void> {
+  await prepareRetrieval(
+    helia,
+    cid,
+    () => retrievalTargets(cid.toString(), config.replication, selfPeerId(), getReplicationPeers()),
+    undefined,
+    signal
   )
 }
 
@@ -794,6 +798,12 @@ export interface RepairReport {
   stillMissing: string[]
   /** Files nobody was found holding, whose local blocks were pinned again. */
   rescued: string[]
+  /** Files no designated peer holds and whose local DAG is no longer complete. */
+  unrecoverable: string[]
+  /** This pass reached the end of a complete bounded repair cycle. */
+  cycleCompleted: boolean
+  /** Durable resume cursor for the next pass. */
+  nextCursor?: string
 }
 
 /** Ask the designated peers which durable copies exist right now. */
@@ -826,23 +836,16 @@ async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise
 async function rescueOrphanedFiles(
   records: FileRecord[],
   peers: ReplicationPeer[]
-): Promise<string[]> {
+): Promise<{ rescued: string[]; unrecoverable: string[] }> {
   const self = selfPeerId()
   const rescued: string[] = []
+  const unrecoverable: string[] = []
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
-  const candidates = nextSweepBatch(
-    'rescue',
-    records.filter((record) => record.state === 'confirmed' && !record.heldLocally)
-  )
+  const candidates = records.filter((record) => record.state === 'confirmed' && !record.heldLocally)
 
   for (const record of candidates) {
     const cid = CID.parse(record.cid)
-
-    if (!(await helia.blockstore.has(cid))) {
-      continue
-    }
-
     const holders = storageTargets(placementFor(record.cid, record.createdAt, peers), self)
       .map((peerId) => byPeerId.get(peerId))
       .filter((peer): peer is ReplicationPeer => peer !== undefined)
@@ -858,6 +861,12 @@ async function rescueOrphanedFiles(
     )
 
     if (answers.some(Boolean)) {
+      continue
+    }
+
+    if (!(await helia.blockstore.has(cid))) {
+      unrecoverable.push(record.cid)
+      logger.error(`No configured node reports holding ${record.cid}`)
       continue
     }
 
@@ -917,7 +926,7 @@ async function rescueOrphanedFiles(
     }
   }
 
-  return rescued
+  return { rescued, unrecoverable }
 }
 
 /**
@@ -927,13 +936,15 @@ async function rescueOrphanedFiles(
  * may disappear by policy, and a file this node released is another node's
  * responsibility.
  */
-export async function repairReplication(): Promise<RepairReport> {
+export async function repairReplication(options: { cursor?: string } = {}): Promise<RepairReport> {
   const report: RepairReport = {
     checked: 0,
     underReplicated: 0,
     repaired: [],
     stillMissing: [],
-    rescued: []
+    rescued: [],
+    unrecoverable: [],
+    cycleCompleted: true
   }
 
   if (!config.replication.enabled) {
@@ -943,13 +954,23 @@ export async function repairReplication(): Promise<RepairReport> {
   const peers = getReplicationPeers()
   const self = selfPeerId()
   const records = await fileRegistry.all()
-  const candidates = nextSweepBatch('repair', records.filter(isSettledHeldFile))
+  const selected = sweepBatch(
+    'repair',
+    records.filter((record) => record.state === 'confirmed' && !isLifecycleBusy(record)),
+    options.cursor
+  )
+  const candidates = selected.records
+  report.cycleCompleted = selected.cycleCompleted
+  report.nextCursor = selected.nextCursor
 
   report.checked = candidates.length
 
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
   for (const record of candidates) {
+    if (!isSettledHeldFile(record)) {
+      continue
+    }
     if (!(await claimRepairRecord(fileRegistry, record))) {
       continue
     }
@@ -988,7 +1009,9 @@ export async function repairReplication(): Promise<RepairReport> {
     }
   }
 
-  report.rescued = await rescueOrphanedFiles(records, peers)
+  const rescue = await rescueOrphanedFiles(candidates, peers)
+  report.rescued = rescue.rescued
+  report.unrecoverable = rescue.unrecoverable
 
   return report
 }

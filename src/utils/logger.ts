@@ -5,19 +5,21 @@ import { config } from '../config.js'
 /**
  * Application logger.
  *
- * `pino-pretty` is loaded as a transport at runtime, so it is a runtime
- * dependency rather than a development one.
+ * Production output is newline-delimited JSON. Pretty output is opt-in because
+ * formatting destroys fields that log collectors use for querying and alerts.
  */
 export const logger = pino({
   level: config.logLevel,
-  transport: {
-    target: 'pino-pretty',
-    options: {
-      colorize: true,
-      translateTime: 'dd.mm.yy HH:MM:ss Z',
-      ignore: 'pid,hostname'
-    }
-  }
+  transport: config.prettyLogs
+    ? {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          translateTime: 'dd.mm.yy HH:MM:ss Z',
+          ignore: 'pid,hostname'
+        }
+      }
+    : undefined
 })
 
 /**

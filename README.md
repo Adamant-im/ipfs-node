@@ -4,6 +4,8 @@ This service embeds a Helia/libp2p node and exposes the file-transfer API used b
 
 The application is not a Kubo wrapper. It is a Node.js service with an Express REST API around an in-process Helia node.
 
+The stable client and lifecycle contract is also available as [OpenAPI 3.1](docs/openapi.yaml).
+
 ## Requirements
 
 - Node.js 24 LTS. The repository ships an `.nvmrc`, so `nvm use` selects it
@@ -57,6 +59,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   },
   "adminApiKey": "",
   "enableDebugApi": false,
+  "prettyLogs": false,
   "peeringSchedule": "*/30 * * * * *",
   "storage": {
     "maxRequestSizeBytes": 536870912,
@@ -83,11 +86,22 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "requestTimeoutMs": 30000,
     "repairEnabled": true,
     "repairSchedule": "0 */30 * * * *"
+  },
+  "health": {
+    "checkpointIntervalMs": 60000,
+    "maxCheckpointAgeMs": 180000,
+    "storageMaxAgeMs": 120000,
+    "repairMaxAgeMs": 3600000,
+    "clockSkewToleranceMs": 10000,
+    "peerAttestationTimeoutMs": 5000,
+    "requiredPeerCount": 1
   }
 }
 ```
 
-`storage` and `replication` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Both sections are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
+`storage`, `replication`, and `health` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Storage and replication are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
+
+Logs are newline-delimited JSON by default. Set `prettyLogs: true` only for an interactive development terminal; production collectors should keep the structured fields emitted by Pino and the health checkpoint.
 
 Generate the administrative secret before enabling operator endpoints:
 
@@ -110,21 +124,22 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - `storage.gc.enabled` is on by default and frees blocks only when the blockstore passes `highWatermarkBytes` or free space falls into `diskReserveBytes`; released files stay readable until then
 - `replication.enabled` is on by default and needs no key and no extra address: copies travel on a libp2p protocol between the peers already listed in `nodes`. Turning it off leaves every file in a single copy
 - Tune `replication.placement` if the deployment wants a different number of copies per file age
+- Keep `health.requiredPeerCount` within the number of configured remote peers. A single-node or test deployment may set it to `0`
 - `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did
 
 Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 
 ## HTTP access policy
 
-| Class                | Routes                                                                                                                                                 | Policy                                                                                                                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                                                                                                                                                                     |
-| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                                                              |
-| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                                                                                                                                                                            |
-| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                                                             |
-| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake. Pin, store, stage, commit, and abort are accepted only from the peers listed in `nodes`. `cache` is open to any peer (same effect as a public read), bounded by disk reserve and intake budget |
-| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                                                             |
-| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                                                                                                                                                                 |
+| Class                | Routes                                                                                                                                                    | Policy                                                                                                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`, `GET /api/node/info`                                                                                                     | No authentication. `/info` is the sanitized legacy PWA/iOS contract                                                                                                                         |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                             | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                    |
+| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                        | No authentication; no filename or peer topology is exposed                                                                                                                                  |
+| Administrative       | `GET /api/node/details`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                   |
+| Peer protocols       | libp2p `/adamant/replication/1.0.0` and `/adamant/health/1.0.0`, not HTTP routes                                                                          | Authenticated by the libp2p handshake. Health attestations and durable replication operations are accepted only from peers listed in `nodes`; open cache remains bounded like a public read |
+| Disabled by default  | all `/api/debug/*`                                                                                                                                        | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                   |
+| Authenticated user   | None                                                                                                                                                      | The service has no end-user identity or session layer                                                                                                                                       |
 
 Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
 
@@ -228,7 +243,7 @@ Three configurations share one set of compiler options:
 Type-check everything without emitting:
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 ```
 
 Pass no file arguments to `tsc`. Naming a file on the command line makes TypeScript ignore `tsconfig.json` entirely, so `outDir` is not applied — the `.js` file is written next to its source — and the project's `lib`, `module`, and `moduleResolution` settings are replaced by defaults, which reports module-resolution and missing-`@types/node` errors that the project itself does not have.
@@ -336,9 +351,10 @@ Download responses use the following stable status contract:
 | `400 Bad Request`           | The CID is invalid                                                     |
 | `408 Request Timeout`       | The file could not be found or retrieved before the configured timeout |
 | `429 Too Many Requests`     | The read rate limit was exceeded                                       |
+| `416 Range Not Satisfiable` | Range retrieval is intentionally unsupported                           |
 | `500 Internal Server Error` | An unexpected internal failure occurred before streaming started       |
 
-The timeout status remains `408 Request Timeout` for compatibility with existing clients. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
+The timeout covers the complete transfer, not only discovery or the first chunk, and remains `408 Request Timeout` for compatibility with existing clients. Client disconnect cancels the underlying retrieval. Successful immutable-CID responses include `ETag`, long-lived immutable caching, and `Accept-Ranges: none`. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
 
 ### Check public health
 
@@ -350,18 +366,42 @@ Example response:
 
 ```json
 {
+  "status": "ready",
+  "height": 1720614960000,
   "timestamp": 1720614998797,
-  "heliaStatus": "started"
+  "checkpointIntervalMs": 60000,
+  "membershipVersion": "d0f1...",
+  "checks": {
+    "helia": true,
+    "startupReconciliation": true,
+    "storageFresh": true,
+    "storageReserve": true,
+    "repairFresh": true,
+    "peerAttestations": true
+  },
+  "peerAttestations": { "required": 1, "received": 2 }
 }
 ```
+
+The endpoint always returns `200`; consumers must inspect `status`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle, and the configured peer attestations all pass. It freezes on failure. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
+
+### Get legacy client node information
+
+```bash
+curl --fail-with-body https://ipfs.example.org/api/node/info
+```
+
+This public compatibility route retains `version`, `timestamp`, `heliaStatus`, `blockstoreSizeMb`, `datastoreSizeMb`, and `availableSizeInMb` for the current PWA and iOS application. It does not expose peer identity or topology.
 
 ### Get administrative node information
 
 ```bash
 curl --fail-with-body \
   --header 'x-api-key: your-generated-key' \
-  https://ipfs.example.org/api/node/info
+  https://ipfs.example.org/api/node/details
 ```
+
+The authenticated response adds peer addresses, byte-accurate storage figures, checkpoint detail, and bounded HTTP counters without paths, CIDs, IP addresses, or user-controlled metric labels.
 
 ### Run garbage collection
 

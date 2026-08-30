@@ -15,6 +15,8 @@
   ],
   storeFolder: '.adm-ipfs',
   logLevel: 'debug',
+  // Production logs are structured JSON. Enable this only for local terminals.
+  prettyLogs: false,
   peerDiscovery: {
     bootstrap: [
       '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq', // ipfs1
@@ -95,5 +97,14 @@
     requestTimeoutMs: 30000,
     repairEnabled: true,
     repairSchedule: '0 */30 * * * *'
+  },
+  health: {
+    checkpointIntervalMs: 60000,
+    maxCheckpointAgeMs: 180000,
+    storageMaxAgeMs: 120000,
+    repairMaxAgeMs: 3600000,
+    clockSkewToleranceMs: 10000,
+    peerAttestationTimeoutMs: 5000,
+    requiredPeerCount: 1
   }
 }

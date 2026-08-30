@@ -1,11 +1,27 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { nextSweepBatch, SWEEP_BATCHES } from '../src/storage/sweep.js'
+import { nextSweepBatch, sweepBatch, SWEEP_BATCHES } from '../src/storage/sweep.js'
 
 const records = (count: number) =>
   Array.from({ length: count }, (unused, i) => ({ cid: `cid-${i}` }))
 
 describe('nextSweepBatch', () => {
+  it('exposes a durable cursor and an unambiguous full-cycle boundary', () => {
+    const all = records(SWEEP_BATCHES.repair + 3)
+    const first = sweepBatch('repair', all)
+    const second = sweepBatch('repair', all, first.nextCursor)
+
+    assert.equal(first.cycleCompleted, false)
+    assert.equal(first.records.length, SWEEP_BATCHES.repair)
+    assert.equal(second.cycleCompleted, true)
+    assert.equal(second.records.length, 3)
+    assert.equal(second.nextCursor, undefined)
+    assert.equal(
+      new Set([...first.records, ...second.records].map((item) => item.cid)).size,
+      all.length
+    )
+  })
+
   it('returns everything when the set fits in one pass', () => {
     const all = records(3)
 

@@ -49,6 +49,9 @@ describe('validateConfig', () => {
     assert.deepEqual(parsed.peerDiscovery.listen, ['/ip4/0.0.0.0/tcp/4001'])
     assert.deepEqual(parsed.cors.allowedOrigins, ['https://adm.im'])
     assert.equal(parsed.enableDebugApi, false)
+    assert.equal(parsed.prettyLogs, false)
+    assert.equal(parsed.health.checkpointIntervalMs, 60_000)
+    assert.equal(parsed.health.requiredPeerCount, 0)
   })
 
   it('ignores unknown keys so deployments can carry extras', () => {
@@ -164,6 +167,17 @@ describe('validateConfig', () => {
           replication: { ackQuorum: 2, requireQuorumOnUpload: true }
         }),
       /requireQuorumOnUpload/
+    )
+  })
+
+  it('validates health timing and peer coverage', () => {
+    assert.throws(
+      () => validateConfig({ ...validRaw(), health: { checkpointIntervalMs: 999 } }),
+      /health\.checkpointIntervalMs/
+    )
+    assert.throws(
+      () => validateConfig({ ...validRaw(), health: { requiredPeerCount: 1 } }),
+      /health\.requiredPeerCount/
     )
   })
 })

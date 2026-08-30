@@ -96,23 +96,36 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
 })
 
 router.get('/:cid', readLimiter, async (req, res, next) => {
+  const requestController = new AbortController()
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      requestController.abort(new Error('Download client disconnected'))
+    }
+  })
+
   try {
+    if (req.headers.range !== undefined) {
+      res.set('Accept-Ranges', 'none')
+      return res.status(416).send({ error: 'Range requests are not supported' })
+    }
+
     const cid = parseCid(req.params.cid)
 
     // Reach the file's holders first. Without this the read only succeeds if a
     // peer that has the file is already connected, which stops being true as
     // soon as the network is larger than the connection limit.
-    await prepareFileRetrieval(cid)
+    await prepareFileRetrieval(cid, requestController.signal)
 
-    const fileStats = await getFileStats(cid)
-    const stream = downloadFile(cid)
+    const fileStats = await getFileStats(cid, requestController.signal)
+    const download = downloadFile(cid, { signal: requestController.signal })
 
     sendDownloadStream(
-      stream,
+      download.stream,
       res,
       { cid: cid.toString(), fileSize: fileStats.size },
       next,
-      (error) => logger.error(error)
+      (error) => logger.error(error),
+      () => download.abort(new Error('Download client disconnected'))
     )
   } catch (error) {
     next(error)

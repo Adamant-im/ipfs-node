@@ -71,6 +71,9 @@ describe('download response streaming', () => {
       assert.equal(response.status, 200)
       assert.equal(response.headers.get('content-type'), 'application/octet-stream')
       assert.equal(response.headers.get('content-disposition'), 'attachment; filename="bafytest"')
+      assert.equal(response.headers.get('etag'), '"bafytest"')
+      assert.equal(response.headers.get('accept-ranges'), 'none')
+      assert.match(response.headers.get('cache-control') ?? '', /immutable/)
       await assert.rejects(response.arrayBuffer())
       assert.equal(lateErrors, 1)
     } finally {

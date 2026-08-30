@@ -458,6 +458,13 @@ The repair job (`replication.repairSchedule`, or `POST /api/storage/repair`)
 lists confirmed files this node holds whose designated peers have not all
 acknowledged, and places the missing copies again.
 
+Each scheduled pass remains bounded to 50 held files. Its sorted cursor and
+aggregate result are persisted under the node datastore, so restart resumes the
+same cycle. A repair checkpoint is recorded only after a pass reaches the end
+of the candidate set; a pass over one batch is not presented as full-fleet
+evidence. A cycle containing an unresolved shortfall is complete but unhealthy,
+and therefore cannot advance the node health checkpoint.
+
 Replication needs the peers to be connected over libp2p, because the copy itself
 travels by bitswap. Startup peering opens those connections before the API
 starts serving, so the first upload after a restart already has somewhere to
@@ -536,8 +543,9 @@ A collection report also lists `demoted`: files whose local copy was handed over
 to their designated holders during that pass.
 
 Values are refreshed on the `diskUsageScanPeriod` schedule, because a directory
-scan and a full registry sweep are too expensive for a request path. A subset is
-also included in `GET /api/node/info`.
+scan and a full registry sweep are too expensive for a request path. A legacy
+megabyte subset is included in public `GET /api/node/info`; detailed byte values
+are included in authenticated `GET /api/node/details`.
 
 ## Recovery and rollback
 
