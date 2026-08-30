@@ -11,7 +11,11 @@ const router = Router()
 
 publicNodeRouter.get('/health', async (req, res, next) => {
   try {
-    res.status(200).send(getHealthSnapshot())
+    res.status(200).send({
+      version: packageJson.version,
+      uptimeMs: Math.floor(process.uptime() * 1000),
+      ...getHealthSnapshot()
+    })
   } catch (err) {
     next(err)
   }

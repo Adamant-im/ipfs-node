@@ -26,6 +26,7 @@ interface RepairCycleEvidence {
   unrecoverable: number
   lastCompletedAt: number | null
   lastCompletedSuccessfully: boolean
+  lastCompletedBacklog: number
 }
 
 let evidence: RepairCycleEvidence | null = null
@@ -45,7 +46,8 @@ function emptyEvidence(now = Date.now()): RepairCycleEvidence {
     stillMissing: 0,
     unrecoverable: 0,
     lastCompletedAt: config.replication.enabled && config.replication.repairEnabled ? null : now,
-    lastCompletedSuccessfully: !config.replication.enabled || !config.replication.repairEnabled
+    lastCompletedSuccessfully: !config.replication.enabled || !config.replication.repairEnabled,
+    lastCompletedBacklog: 0
   }
 }
 
@@ -72,7 +74,8 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       Number.isSafeInteger(parsed.stillMissing) &&
       Number.isSafeInteger(parsed.unrecoverable) &&
       (parsed.lastCompletedAt === null || Number.isSafeInteger(parsed.lastCompletedAt)) &&
-      typeof parsed.lastCompletedSuccessfully === 'boolean'
+      typeof parsed.lastCompletedSuccessfully === 'boolean' &&
+      Number.isSafeInteger(parsed.lastCompletedBacklog)
         ? (parsed as RepairCycleEvidence)
         : emptyEvidence()
   } catch (err) {
@@ -133,7 +136,8 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
         ? {
             ...emptyEvidence(),
             lastCompletedAt: completedAt,
-            lastCompletedSuccessfully: completedSuccessfully
+            lastCompletedSuccessfully: completedSuccessfully,
+            lastCompletedBacklog: aggregate.stillMissing + aggregate.unrecoverable
           }
         : {
             ...current,
@@ -185,7 +189,8 @@ export function getReplicationState() {
           stillMissing: evidence.stillMissing,
           unrecoverable: evidence.unrecoverable,
           lastCompletedAt: evidence.lastCompletedAt,
-          lastCompletedSuccessfully: evidence.lastCompletedSuccessfully
+          lastCompletedSuccessfully: evidence.lastCompletedSuccessfully,
+          lastCompletedBacklog: evidence.lastCompletedBacklog
         }
       : null,
     lastRun: lastReport
@@ -210,13 +215,15 @@ export async function initializeReplicationRepairState(): Promise<void> {
 export function getRepairHealthEvidence(): {
   required: boolean
   completedAt: number | null
+  healthy: boolean
+  backlog: number
 } {
   const required = config.replication.enabled && config.replication.repairEnabled
+  const activeBacklog = (evidence?.stillMissing ?? 0) + (evidence?.unrecoverable ?? 0)
   return {
     required,
-    completedAt:
-      !required || evidence?.lastCompletedSuccessfully === true
-        ? (evidence?.lastCompletedAt ?? Date.now())
-        : null
+    completedAt: evidence?.lastCompletedAt ?? (required ? null : Date.now()),
+    healthy: !required || evidence?.lastCompletedSuccessfully === true,
+    backlog: required ? Math.max(evidence?.lastCompletedBacklog ?? 0, activeBacklog) : 0
   }
 }

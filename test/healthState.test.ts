@@ -23,6 +23,8 @@ const healthy = (now: number) => ({
   storageReservedBytes: 1_000,
   repairRequired: true,
   repairCompletedAt: now,
+  repairHealthy: true,
+  repairBacklog: 0,
   attestedPeers: 1,
   membershipVersion: 'a'.repeat(64),
   previous: null
@@ -33,9 +35,12 @@ describe('health checkpoint state', () => {
     assert.equal(checkpointRound(12_345, 1_000), 12_000)
     const result = evaluateHealth(policy, healthy(12_345))
 
-    assert.equal(result.snapshot.status, 'ready')
+    assert.equal(result.snapshot.state, 'ready')
     assert.equal(result.snapshot.height, 12_000)
     assert.equal(result.snapshot.timestamp, 12_345)
+    assert.equal(result.snapshot.checkpoint.observedAt, 12_345)
+    assert.equal(result.snapshot.storage.measurementAgeMs, 0)
+    assert.equal(result.snapshot.replication.backlog, 0)
   })
 
   it('freezes height when peer coverage is lost', () => {
@@ -46,7 +51,7 @@ describe('health checkpoint state', () => {
       previous: prior
     })
 
-    assert.equal(result.snapshot.status, 'degraded')
+    assert.equal(result.snapshot.state, 'degraded')
     assert.equal(result.snapshot.height, 12_000)
     assert.equal(result.completed, undefined)
   })
@@ -59,7 +64,7 @@ describe('health checkpoint state', () => {
       previous: prior
     })
 
-    assert.equal(result.snapshot.status, 'stale')
+    assert.equal(result.snapshot.state, 'stale')
     assert.equal(result.snapshot.height, prior.height)
   })
 
@@ -74,7 +79,18 @@ describe('health checkpoint state', () => {
       startupHealthy: false
     })
 
-    assert.equal(starting.snapshot.status, 'starting')
-    assert.equal(failed.snapshot.status, 'degraded')
+    assert.equal(starting.snapshot.state, 'starting')
+    assert.equal(failed.snapshot.state, 'degraded')
+  })
+
+  it('does not advance while a known repair backlog remains', () => {
+    const result = evaluateHealth(policy, {
+      ...healthy(12_345),
+      repairBacklog: 1
+    })
+
+    assert.equal(result.snapshot.state, 'degraded')
+    assert.equal(result.snapshot.checks.repairFresh, false)
+    assert.equal(result.completed, undefined)
   })
 })

@@ -366,11 +366,35 @@ Example response:
 
 ```json
 {
-  "status": "ready",
+  "version": "0.1.0",
+  "uptimeMs": 123456,
+  "state": "ready",
   "height": 1720614960000,
   "timestamp": 1720614998797,
-  "checkpointIntervalMs": 60000,
-  "membershipVersion": "d0f1...",
+  "checkpoint": {
+    "intervalMs": 60000,
+    "observedAt": 1720614998700,
+    "ageMs": 97,
+    "maxAgeMs": 180000
+  },
+  "membership": {
+    "version": "d0f1...",
+    "requiredPeers": 1,
+    "attestedPeers": 2
+  },
+  "startup": { "complete": true, "healthy": true },
+  "storage": {
+    "measuredAt": 1720614980000,
+    "measurementAgeMs": 18797,
+    "availableBytes": 8589934592,
+    "reservedBytes": 5368709120
+  },
+  "replication": {
+    "repairRequired": true,
+    "lastCompleteAt": 1720614900000,
+    "ageMs": 98797,
+    "backlog": 0
+  },
   "checks": {
     "helia": true,
     "startupReconciliation": true,
@@ -378,12 +402,11 @@ Example response:
     "storageReserve": true,
     "repairFresh": true,
     "peerAttestations": true
-  },
-  "peerAttestations": { "required": 1, "received": 2 }
+  }
 }
 ```
 
-The endpoint always returns `200`; consumers must inspect `status`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle, and the configured peer attestations all pass. It freezes on failure. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
+The endpoint always returns `200`; consumers must inspect `state`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle with no known backlog, and the configured peer attestations all pass. It freezes on failure. Observation timestamps and ages let clients reject an absolutely stale cluster even when every node reports the same height. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
 
 ### Get legacy client node information
 

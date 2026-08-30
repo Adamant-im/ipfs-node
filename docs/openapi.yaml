@@ -173,15 +173,21 @@ components:
     Health:
       type: object
       required:
-        - status
+        - version
+        - uptimeMs
+        - state
         - height
         - timestamp
-        - checkpointIntervalMs
-        - membershipVersion
+        - checkpoint
+        - membership
+        - startup
+        - storage
+        - replication
         - checks
-        - peerAttestations
       properties:
-        status:
+        version: { type: string }
+        uptimeMs: { type: integer, minimum: 0 }
+        state:
           type: string
           enum: [starting, ready, stale, degraded]
         height:
@@ -189,17 +195,46 @@ components:
           minimum: 0
           description: Persisted Unix milliseconds at the start of the last valid fixed round
         timestamp: { type: integer }
-        checkpointIntervalMs: { type: integer, minimum: 1000 }
-        membershipVersion: { type: string, pattern: '^[a-f0-9]{64}$' }
+        checkpoint:
+          type: object
+          required: [intervalMs, observedAt, ageMs, maxAgeMs]
+          properties:
+            intervalMs: { type: integer, minimum: 1000 }
+            observedAt: { type: [integer, 'null'] }
+            ageMs: { type: [integer, 'null'], minimum: 0 }
+            maxAgeMs: { type: integer, minimum: 1000 }
+        membership:
+          type: object
+          required: [version, requiredPeers, attestedPeers]
+          properties:
+            version: { type: string, pattern: '^[a-f0-9]{64}$' }
+            requiredPeers: { type: integer, minimum: 0 }
+            attestedPeers: { type: integer, minimum: 0 }
+        startup:
+          type: object
+          required: [complete, healthy]
+          properties:
+            complete: { type: boolean }
+            healthy: { type: boolean }
+        storage:
+          type: object
+          required: [measuredAt, measurementAgeMs, availableBytes, reservedBytes]
+          properties:
+            measuredAt: { type: [integer, 'null'] }
+            measurementAgeMs: { type: [integer, 'null'], minimum: 0 }
+            availableBytes: { type: integer, minimum: 0 }
+            reservedBytes: { type: integer, minimum: 0 }
+        replication:
+          type: object
+          required: [repairRequired, lastCompleteAt, ageMs, backlog]
+          properties:
+            repairRequired: { type: boolean }
+            lastCompleteAt: { type: [integer, 'null'] }
+            ageMs: { type: [integer, 'null'], minimum: 0 }
+            backlog: { type: integer, minimum: 0 }
         checks:
           type: object
           additionalProperties: { type: boolean }
-        peerAttestations:
-          type: object
-          required: [required, received]
-          properties:
-            required: { type: integer, minimum: 0 }
-            received: { type: integer, minimum: 0 }
     LegacyNodeInfo:
       type: object
       required:

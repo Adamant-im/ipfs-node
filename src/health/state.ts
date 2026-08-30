@@ -1,6 +1,6 @@
 import type { HealthConfig } from '../config.js'
 
-export type HealthStatus = 'starting' | 'ready' | 'stale' | 'degraded'
+export type HealthState = 'starting' | 'ready' | 'stale' | 'degraded'
 
 export interface HealthCheckpoint {
   /** Unix milliseconds at the start of the validated fixed round. */
@@ -20,18 +20,45 @@ export interface HealthInputs {
   storageReservedBytes: number
   repairRequired: boolean
   repairCompletedAt: number | null
+  repairHealthy: boolean
+  repairBacklog: number
   attestedPeers: number
   membershipVersion: string
   previous: HealthCheckpoint | null
 }
 
 export interface HealthSnapshot {
-  status: HealthStatus
+  state: HealthState
   /** Monotonic checkpoint height, never a request timestamp. */
   height: number
   timestamp: number
-  checkpointIntervalMs: number
-  membershipVersion: string
+  checkpoint: {
+    intervalMs: number
+    observedAt: number | null
+    ageMs: number | null
+    maxAgeMs: number
+  }
+  membership: {
+    version: string
+    requiredPeers: number
+    attestedPeers: number
+  }
+  startup: {
+    complete: boolean
+    healthy: boolean
+  }
+  storage: {
+    measuredAt: number | null
+    measurementAgeMs: number | null
+    availableBytes: number
+    reservedBytes: number
+  }
+  replication: {
+    repairRequired: boolean
+    lastCompleteAt: number | null
+    ageMs: number | null
+    backlog: number
+  }
   checks: {
     helia: boolean
     startupReconciliation: boolean
@@ -40,10 +67,10 @@ export interface HealthSnapshot {
     repairFresh: boolean
     peerAttestations: boolean
   }
-  peerAttestations: {
-    required: number
-    received: number
-  }
+}
+
+function age(now: number, observedAt: number | null): number | null {
+  return observedAt === null ? null : Math.max(0, now - observedAt)
 }
 
 /** Return the fixed checkpoint round containing `time`. */
@@ -71,13 +98,15 @@ export function evaluateHealth(
     storageReserve: input.storageAvailableBytes >= input.storageReservedBytes,
     repairFresh:
       !input.repairRequired ||
-      (input.repairCompletedAt !== null &&
+      (input.repairHealthy &&
+        input.repairBacklog === 0 &&
+        input.repairCompletedAt !== null &&
         input.now - input.repairCompletedAt <= policy.repairMaxAgeMs),
     peerAttestations: input.attestedPeers >= policy.requiredPeerCount
   }
   const complete = Object.values(checks).every(Boolean)
   const previousAge = input.previous === null ? null : input.now - input.previous.completedAt
-  const status: HealthStatus = complete
+  const state: HealthState = complete
     ? 'ready'
     : !input.startupComplete
       ? 'starting'
@@ -98,16 +127,37 @@ export function evaluateHealth(
 
   return {
     snapshot: {
-      status,
+      state,
       height: completed?.height ?? input.previous?.height ?? 0,
       timestamp: input.now,
-      checkpointIntervalMs: policy.checkpointIntervalMs,
-      membershipVersion: input.membershipVersion,
-      checks,
-      peerAttestations: {
-        required: policy.requiredPeerCount,
-        received: input.attestedPeers
-      }
+      checkpoint: {
+        intervalMs: policy.checkpointIntervalMs,
+        observedAt: completed?.completedAt ?? input.previous?.completedAt ?? null,
+        ageMs: age(input.now, completed?.completedAt ?? input.previous?.completedAt ?? null),
+        maxAgeMs: policy.maxCheckpointAgeMs
+      },
+      membership: {
+        version: input.membershipVersion,
+        requiredPeers: policy.requiredPeerCount,
+        attestedPeers: input.attestedPeers
+      },
+      startup: {
+        complete: input.startupComplete,
+        healthy: input.startupHealthy
+      },
+      storage: {
+        measuredAt: input.storageUpdatedAt,
+        measurementAgeMs: age(input.now, input.storageUpdatedAt),
+        availableBytes: input.storageAvailableBytes,
+        reservedBytes: input.storageReservedBytes
+      },
+      replication: {
+        repairRequired: input.repairRequired,
+        lastCompleteAt: input.repairCompletedAt,
+        ageMs: age(input.now, input.repairCompletedAt),
+        backlog: input.repairBacklog
+      },
+      checks
     },
     completed
   }

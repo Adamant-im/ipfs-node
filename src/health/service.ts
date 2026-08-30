@@ -33,6 +33,8 @@ let snapshot: HealthSnapshot = evaluateHealth(config.health, {
   storageReservedBytes: config.storage.diskReserveBytes,
   repairRequired: config.replication.enabled && config.replication.repairEnabled,
   repairCompletedAt: null,
+  repairHealthy: !config.replication.enabled || !config.replication.repairEnabled,
+  repairBacklog: 0,
   attestedPeers: 0,
   membershipVersion: networkMembershipVersion,
   previous: null
@@ -90,6 +92,8 @@ export async function runHealthCheckpoint(): Promise<HealthSnapshot> {
       storageReservedBytes: storage.reservedBytes,
       repairRequired: repair.required,
       repairCompletedAt: repair.completedAt,
+      repairHealthy: repair.healthy,
+      repairBacklog: repair.backlog,
       attestedPeers,
       membershipVersion: networkMembershipVersion,
       previous
@@ -104,7 +108,7 @@ export async function runHealthCheckpoint(): Promise<HealthSnapshot> {
     logger.info(
       {
         event: 'health_checkpoint',
-        status: snapshot.status,
+        state: snapshot.state,
         height: snapshot.height,
         checks: snapshot.checks,
         attestedPeers
@@ -165,5 +169,24 @@ export function stopHealthService(): void {
 
 /** Cached, read-only response for the always-200 health endpoint. */
 export function getHealthSnapshot(): HealthSnapshot {
-  return { ...snapshot, timestamp: Date.now() }
+  const timestamp = Date.now()
+  const currentAge = (observedAt: number | null): number | null =>
+    observedAt === null ? null : Math.max(0, timestamp - observedAt)
+
+  return {
+    ...snapshot,
+    timestamp,
+    checkpoint: {
+      ...snapshot.checkpoint,
+      ageMs: currentAge(snapshot.checkpoint.observedAt)
+    },
+    storage: {
+      ...snapshot.storage,
+      measurementAgeMs: currentAge(snapshot.storage.measuredAt)
+    },
+    replication: {
+      ...snapshot.replication,
+      ageMs: currentAge(snapshot.replication.lastCompleteAt)
+    }
+  }
 }
