@@ -101,6 +101,10 @@ export interface Config {
   maxFileCount: number
   /** Time limit, in milliseconds, for locating a file on the IPFS network. */
   findFileTimeout: number
+  /** Maximum pause between download chunks before retrieval is cancelled. */
+  downloadIdleTimeout: number
+  /** Minimum sustained rate used to derive a size-aware complete-transfer deadline. */
+  downloadMinBytesPerSecond: number
   cors: {
     /** Exact origins and left-most subdomain wildcards; see `src/security/cors.ts`. */
     allowedOrigins: string[]
@@ -326,6 +330,18 @@ export function validateConfig(raw: unknown): Config {
       ? DEFAULT_PEERING_SCHEDULE
       : requireString(root.peeringSchedule, 'peeringSchedule')
   const findFileTimeout = requireInteger(root.findFileTimeout, 'findFileTimeout', 1)
+  const downloadIdleTimeout = optionalInteger(
+    root.downloadIdleTimeout,
+    'downloadIdleTimeout',
+    findFileTimeout,
+    1
+  )
+  const downloadMinBytesPerSecond = optionalInteger(
+    root.downloadMinBytesPerSecond,
+    'downloadMinBytesPerSecond',
+    32 * 1024,
+    1
+  )
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
   // Owns cors, trustProxy, adminApiKey, enableDebugApi, rateLimits,
@@ -370,6 +386,8 @@ export function validateConfig(raw: unknown): Config {
     uploadLimitSizeBytes: root.uploadLimitSizeBytes as number,
     maxFileCount: root.maxFileCount as number,
     findFileTimeout,
+    downloadIdleTimeout,
+    downloadMinBytesPerSecond,
     cors: { allowedOrigins: cors.allowedOrigins as string[] },
     trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
     rateLimits: root.rateLimits as Config['rateLimits'],

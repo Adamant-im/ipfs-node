@@ -136,6 +136,21 @@ describe('health attestations over libp2p', () => {
     )
   })
 
+  it('accepts an adjacent fixed round from an authorized peer', async () => {
+    const localRound = Math.floor(HEALTH_NOW / 60_000) * 60_000
+
+    await requestHealthAttestation(
+      sender.node,
+      holder.node.libp2p.getMultiaddrs()[0],
+      {
+        round: localRound - 60_000,
+        timestamp: HEALTH_NOW,
+        membershipVersion: HEALTH_MEMBERSHIP
+      },
+      { timeoutMs: 1_000, clockSkewToleranceMs: 10_000 }
+    )
+  })
+
   it('rejects a different membership version', async () => {
     await assert.rejects(
       requestHealthAttestation(

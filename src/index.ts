@@ -10,7 +10,11 @@ import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
 import { garbageCollectionCron, admissionRecoveryCron } from './gc.cron.js'
-import { initializeReplicationRepairState, replicationRepairCron } from './replication.cron.js'
+import {
+  initializeReplicationRepairState,
+  startReplicationRepair,
+  stopReplicationRepair
+} from './replication.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
@@ -70,7 +74,7 @@ function startLifecycleJobs(): void {
 
   if (config.replication.enabled) {
     if (config.replication.repairEnabled) {
-      replicationRepairCron.start()
+      startReplicationRepair()
     }
   } else {
     logger.info('Replication is disabled. Uploaded content is stored best effort on this node.')
@@ -170,8 +174,7 @@ function shutdown(signal: string): void {
   peeringCron.stop()
   garbageCollectionCron.stop()
   admissionRecoveryCron.stop()
-  replicationRepairCron.stop()
-  stopHealthService()
+  const backgroundStopped = Promise.allSettled([stopReplicationRepair(), stopHealthService()])
 
   const forceTimer = setTimeout(() => {
     logger.warn('Shutdown timed out')
@@ -189,8 +192,15 @@ function shutdown(signal: string): void {
 
   server.close(() => {
     clearTimeout(closeIdle)
-    void helia
-      .stop()
+    void backgroundStopped
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            logger.error(`Background shutdown failed: ${String(result.reason)}`)
+          }
+        }
+        return helia.stop()
+      })
       .catch((err: Error) => logger.error(`helia.stop failed: ${err.message}`))
       .finally(() => {
         clearTimeout(forceTimer)

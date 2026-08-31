@@ -52,6 +52,8 @@ describe('validateConfig', () => {
     assert.equal(parsed.prettyLogs, false)
     assert.equal(parsed.health.checkpointIntervalMs, 60_000)
     assert.equal(parsed.health.requiredPeerCount, 0)
+    assert.equal(parsed.downloadIdleTimeout, 20_000)
+    assert.equal(parsed.downloadMinBytesPerSecond, 32 * 1024)
   })
 
   it('ignores unknown keys so deployments can carry extras', () => {
@@ -123,6 +125,20 @@ describe('validateConfig', () => {
         raw.findFileTimeout = -1
       },
       /findFileTimeout/
+    ],
+    [
+      'download idle timeout is invalid',
+      (raw) => {
+        raw.downloadIdleTimeout = 0
+      },
+      /downloadIdleTimeout/
+    ],
+    [
+      'download minimum throughput is invalid',
+      (raw) => {
+        raw.downloadMinBytesPerSecond = 0
+      },
+      /downloadMinBytesPerSecond/
     ]
   ]
 

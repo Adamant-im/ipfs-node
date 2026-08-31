@@ -11,6 +11,7 @@ import { HEALTH_PROTOCOL, registerHealthProtocol, requestHealthAttestation } fro
 import {
   checkpointRound,
   evaluateHealth,
+  refreshHealthSnapshot,
   type HealthCheckpoint,
   type HealthSnapshot
 } from './state.js'
@@ -19,9 +20,10 @@ const networkMembershipVersion = membershipVersion(config.nodes)
 let previous: HealthCheckpoint | null = null
 let startupComplete = false
 let startupHealthy = false
-let running = false
 let rerunRequested = false
+let stopping = false
 let timer: NodeJS.Timeout | undefined
+let inFlight: Promise<HealthSnapshot> | undefined
 
 let snapshot: HealthSnapshot = evaluateHealth(config.health, {
   now: Date.now(),
@@ -68,19 +70,16 @@ async function countAttestations(now: number): Promise<number> {
 }
 
 /** Run one bounded health checkpoint attempt. Overlapping attempts are skipped. */
-export async function runHealthCheckpoint(): Promise<HealthSnapshot> {
-  if (running) {
+export function runHealthCheckpoint(): Promise<HealthSnapshot> {
+  if (inFlight !== undefined) {
     rerunRequested = true
-    return snapshot
+    return Promise.resolve(snapshot)
   }
-  running = true
 
-  try {
+  const run = (async () => {
     const now = Date.now()
-    const [attestedPeers, repair] = await Promise.all([
-      countAttestations(now),
-      Promise.resolve(getRepairHealthEvidence())
-    ])
+    const repair = getRepairHealthEvidence()
+    const attestedPeers = await countAttestations(now)
     const storage = getStorageMetrics()
     const evaluated = evaluateHealth(config.health, {
       now,
@@ -116,16 +115,22 @@ export async function runHealthCheckpoint(): Promise<HealthSnapshot> {
       'Health checkpoint evaluated'
     )
     return snapshot
-  } finally {
-    running = false
-    if (rerunRequested) {
+  })()
+  inFlight = run
+  const finish = (): void => {
+    if (inFlight === run) inFlight = undefined
+    if (rerunRequested && !stopping) {
       rerunRequested = false
       scheduleCheckpoint()
     }
   }
+  void run.then(finish, finish)
+  return run
 }
 
 function scheduleCheckpoint(): void {
+  if (stopping) return
+
   void runHealthCheckpoint().catch((err: Error) => {
     logger.error({ event: 'health_checkpoint_error', err }, 'Health checkpoint failed')
   })
@@ -133,6 +138,7 @@ function scheduleCheckpoint(): void {
 
 /** Start the health protocol and the fixed-round checkpoint scheduler. */
 export async function startHealthService(): Promise<void> {
+  stopping = false
   previous = await loadHealthCheckpoint(datastore)
   if (previous?.membershipVersion !== networkMembershipVersion) previous = null
 
@@ -162,31 +168,15 @@ export function setStartupReconciliationResult(healthy: boolean): void {
 }
 
 /** Stop scheduling new health work during graceful shutdown. */
-export function stopHealthService(): void {
+export async function stopHealthService(): Promise<void> {
+  stopping = true
+  rerunRequested = false
   if (timer !== undefined) clearInterval(timer)
   timer = undefined
+  await inFlight
 }
 
 /** Cached, read-only response for the always-200 health endpoint. */
 export function getHealthSnapshot(): HealthSnapshot {
-  const timestamp = Date.now()
-  const currentAge = (observedAt: number | null): number | null =>
-    observedAt === null ? null : Math.max(0, timestamp - observedAt)
-
-  return {
-    ...snapshot,
-    timestamp,
-    checkpoint: {
-      ...snapshot.checkpoint,
-      ageMs: currentAge(snapshot.checkpoint.observedAt)
-    },
-    storage: {
-      ...snapshot.storage,
-      measurementAgeMs: currentAge(snapshot.storage.measuredAt)
-    },
-    replication: {
-      ...snapshot.replication,
-      ageMs: currentAge(snapshot.replication.lastCompleteAt)
-    }
-  }
+  return refreshHealthSnapshot(snapshot, Date.now())
 }

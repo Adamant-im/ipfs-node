@@ -11,7 +11,11 @@ describe('complete stream deadline', () => {
       })
     }
 
-    const { stream } = createTimedReadable(source, 20, () => new Error('complete timeout'))
+    const { stream } = createTimedReadable(
+      source,
+      { idleTimeoutMs: 20, totalTimeoutMs: 100 },
+      () => new Error('complete timeout')
+    )
     const chunks: Buffer[] = []
 
     await assert.rejects(async () => {
@@ -31,7 +35,7 @@ describe('complete stream deadline', () => {
     }
     const { stream } = createTimedReadable(
       source,
-      10_000,
+      { idleTimeoutMs: 10_000, totalTimeoutMs: 10_000 },
       () => new Error('timeout'),
       controller.signal
     )
@@ -40,5 +44,39 @@ describe('complete stream deadline', () => {
     await assert.rejects(async () => {
       for await (const unused of stream) void unused
     }, /client left/)
+  })
+
+  it('propagates an already-aborted external signal', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('already gone'))
+    const { stream } = createTimedReadable(
+      async function* () {
+        yield Buffer.from('unexpected')
+      },
+      { idleTimeoutMs: 10_000, totalTimeoutMs: 10_000 },
+      () => new Error('timeout'),
+      controller.signal
+    )
+
+    await assert.rejects(async () => {
+      for await (const unused of stream) void unused
+    }, /already gone/)
+  })
+
+  it('resets the idle deadline while chunks continue arriving', async () => {
+    const { stream } = createTimedReadable(
+      async function* () {
+        for (let index = 0; index < 3; index += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+          yield Buffer.from(String(index))
+        }
+      },
+      { idleTimeoutMs: 20, totalTimeoutMs: 100 },
+      () => new Error('timeout')
+    )
+
+    const chunks: Buffer[] = []
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+    assert.equal(Buffer.concat(chunks).toString(), '012')
   })
 })

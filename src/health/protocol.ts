@@ -14,6 +14,15 @@ export interface Attestation {
   membershipVersion: string
 }
 
+/** Accept the local fixed round or one adjacent round during a tolerated clock skew. */
+export function isCompatibleRound(
+  requestedRound: number,
+  localRound: number,
+  intervalMs: number
+): boolean {
+  return Math.abs(requestedRound - localRound) <= intervalMs
+}
+
 function encode(message: unknown): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(message))
   const frame = new Uint8Array(LENGTH_PREFIX_BYTES + body.byteLength)
@@ -108,14 +117,16 @@ export async function registerHealthProtocol(
 
       if (
         request.membershipVersion !== options.membershipVersion ||
-        request.round !== localRound ||
+        !isCompatibleRound(request.round, localRound, options.checkpointIntervalMs) ||
         Math.abs(timestamp - request.timestamp) > options.clockSkewToleranceMs
       ) {
         throw new Error('Health attestation does not match the local round')
       }
 
       send(stream, {
-        round: localRound,
+        // Echo the accepted request round so the caller gets an attestation for
+        // the checkpoint it is currently evaluating across the boundary.
+        round: request.round,
         timestamp,
         membershipVersion: options.membershipVersion
       })

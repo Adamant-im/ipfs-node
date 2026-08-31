@@ -19,6 +19,7 @@ interface RepairCycleEvidence {
   policyVersion: string
   cursor?: string
   startedAt: number
+  examined: number
   checked: number
   underReplicated: number
   repaired: number
@@ -40,6 +41,7 @@ function emptyEvidence(now = Date.now()): RepairCycleEvidence {
     membershipVersion: membershipVersion(config.nodes),
     policyVersion: currentPolicyVersion(),
     startedAt: now,
+    examined: 0,
     checked: 0,
     underReplicated: 0,
     repaired: 0,
@@ -68,6 +70,7 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       typeof parsed.policyVersion === 'string' &&
       (parsed.cursor === undefined || typeof parsed.cursor === 'string') &&
       Number.isSafeInteger(parsed.startedAt) &&
+      (parsed.examined === undefined || Number.isSafeInteger(parsed.examined)) &&
       Number.isSafeInteger(parsed.checked) &&
       Number.isSafeInteger(parsed.underReplicated) &&
       Number.isSafeInteger(parsed.repaired) &&
@@ -76,7 +79,7 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       (parsed.lastCompletedAt === null || Number.isSafeInteger(parsed.lastCompletedAt)) &&
       typeof parsed.lastCompletedSuccessfully === 'boolean' &&
       Number.isSafeInteger(parsed.lastCompletedBacklog)
-        ? (parsed as RepairCycleEvidence)
+        ? ({ ...parsed, examined: parsed.examined ?? parsed.checked } as RepairCycleEvidence)
         : emptyEvidence()
   } catch (err) {
     if ((err as { code?: string }).code !== 'ERR_NOT_FOUND') throw err
@@ -120,6 +123,7 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
     lastReport = await repairReplication({ cursor: current.cursor })
 
     const aggregate = {
+      examined: current.examined + lastReport.examined,
       checked: current.checked + lastReport.checked,
       underReplicated: current.underReplicated + lastReport.underReplicated,
       repaired: current.repaired + lastReport.repaired.length,
@@ -160,13 +164,47 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
 }
 
 export const replicationRepairCron = new CronJob(config.replication.repairSchedule, () => {
-  if (running) {
-    return
-  }
+  void runScheduledRepair()
+})
+
+let stopping = false
+let continuationTimer: NodeJS.Timeout | undefined
+let scheduledInFlight: Promise<void> | undefined
+
+async function runScheduledRepair(): Promise<void> {
+  if (stopping || running || continuationTimer !== undefined) return
 
   logger.info('[Cron] Running "replicationRepair" cronjob.')
-  repairUnderReplicatedFiles().catch((err) => logger.error(`${err.message}\n${err.stack}`))
-})
+  const run = repairUnderReplicatedFiles()
+    .then((report) => {
+      if (stopping || report.cycleCompleted) return
+      continuationTimer = setTimeout(() => {
+        continuationTimer = undefined
+        void runScheduledRepair()
+      }, config.replication.repairBatchDelayMs)
+      continuationTimer.unref()
+    })
+    .catch((err: Error) => logger.error(`${err.message}\n${err.stack}`))
+  scheduledInFlight = run
+  await run
+  if (scheduledInFlight === run) scheduledInFlight = undefined
+}
+
+/** Start the periodic repair job and immediately begin the first full cycle. */
+export function startReplicationRepair(): void {
+  stopping = false
+  replicationRepairCron.start()
+  void runScheduledRepair()
+}
+
+/** Stop scheduled repair work and wait for the active bounded pass. */
+export async function stopReplicationRepair(): Promise<void> {
+  stopping = true
+  replicationRepairCron.stop()
+  if (continuationTimer !== undefined) clearTimeout(continuationTimer)
+  continuationTimer = undefined
+  await scheduledInFlight
+}
 
 export function getReplicationState() {
   return {
@@ -183,6 +221,7 @@ export function getReplicationState() {
     cycle: evidence
       ? {
           startedAt: evidence.startedAt,
+          examined: evidence.examined,
           checked: evidence.checked,
           underReplicated: evidence.underReplicated,
           repaired: evidence.repaired,
@@ -195,7 +234,9 @@ export function getReplicationState() {
       : null,
     lastRun: lastReport
       ? {
+          examined: lastReport.examined,
           checked: lastReport.checked,
+          releasedChecked: lastReport.releasedChecked,
           underReplicated: lastReport.underReplicated,
           repaired: lastReport.repaired.length,
           stillMissing: lastReport.stillMissing.length,

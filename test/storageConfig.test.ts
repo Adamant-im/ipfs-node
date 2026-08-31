@@ -156,4 +156,9 @@ describe('resolveReplicationConfig', () => {
       /ackQuorum/
     )
   })
+
+  it('validates the pause between bounded repair passes', () => {
+    assert.equal(resolveReplicationConfig({ repairBatchDelayMs: 0 }).repairBatchDelayMs, 0)
+    assert.throws(() => resolveReplicationConfig({ repairBatchDelayMs: -1 }), /repairBatchDelayMs/)
+  })
 })

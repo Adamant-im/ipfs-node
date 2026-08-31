@@ -41,10 +41,15 @@ export const collectHttpMetrics: RequestHandler = (req, res, next) => {
 
 /** Snapshot suitable for the authenticated operator details endpoint. */
 export function getHttpMetrics(): HttpMetrics & { averageResponseTimeMs: number } {
+  const completedResponses = Object.values(metrics.responses).reduce(
+    (total, count) => total + count,
+    0
+  )
+
   return {
     ...metrics,
     responses: { ...metrics.responses },
     averageResponseTimeMs:
-      metrics.requests === 0 ? 0 : metrics.totalResponseTimeMs / metrics.requests
+      completedResponses === 0 ? 0 : metrics.totalResponseTimeMs / completedResponses
   }
 }

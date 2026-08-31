@@ -36,6 +36,10 @@ paths:
       responses:
         '200':
           description: Node identity, storage, health, and bounded HTTP metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NodeDetails'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '503':
@@ -73,7 +77,8 @@ paths:
     parameters:
       - $ref: '#/components/parameters/Cid'
     get:
-      summary: Download a complete immutable file
+      summary: Download a complete content-addressed file
+      description: Range headers are ignored and return the complete 200 representation
       responses:
         '200':
           description: Complete file attachment
@@ -87,12 +92,12 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string, format: binary }
+        '304':
+          description: The validated CID representation has not changed
         '400':
           $ref: '#/components/responses/BadRequest'
         '408':
           description: Discovery or complete retrieval timed out
-        '416':
-          description: Range requests are not supported
         '429':
           description: Read rate limit exceeded
   /api/file/{cid}/status:
@@ -207,7 +212,10 @@ components:
           type: object
           required: [version, requiredPeers, attestedPeers]
           properties:
-            version: { type: string, pattern: '^[a-f0-9]{64}$' }
+            version:
+              type: string
+              pattern: '^[a-f0-9]{64}$'
+              description: Peer-set epoch; compare checkpoint heights only when versions match
             requiredPeers: { type: integer, minimum: 0 }
             attestedPeers: { type: integer, minimum: 0 }
         startup:
@@ -218,12 +226,11 @@ components:
             healthy: { type: boolean }
         storage:
           type: object
-          required: [measuredAt, measurementAgeMs, availableBytes, reservedBytes]
+          required: [measuredAt, measurementAgeMs, reserveHealthy]
           properties:
             measuredAt: { type: [integer, 'null'] }
             measurementAgeMs: { type: [integer, 'null'], minimum: 0 }
-            availableBytes: { type: integer, minimum: 0 }
-            reservedBytes: { type: integer, minimum: 0 }
+            reserveHealthy: { type: boolean }
         replication:
           type: object
           required: [repairRequired, lastCompleteAt, ageMs, backlog]
@@ -235,6 +242,63 @@ components:
         checks:
           type: object
           additionalProperties: { type: boolean }
+    HttpMetrics:
+      type: object
+      required:
+        - requests
+        - responses
+        - inFlight
+        - totalResponseTimeMs
+        - maxResponseTimeMs
+        - averageResponseTimeMs
+      properties:
+        requests: { type: integer, minimum: 0 }
+        responses:
+          type: object
+          required: [2xx, 3xx, 4xx, 5xx]
+          properties:
+            2xx: { type: integer, minimum: 0 }
+            3xx: { type: integer, minimum: 0 }
+            4xx: { type: integer, minimum: 0 }
+            5xx: { type: integer, minimum: 0 }
+        inFlight: { type: integer, minimum: 0 }
+        totalResponseTimeMs: { type: number, minimum: 0 }
+        maxResponseTimeMs: { type: number, minimum: 0 }
+        averageResponseTimeMs: { type: number, minimum: 0 }
+    NodeDetails:
+      type: object
+      required:
+        - version
+        - timestamp
+        - heliaStatus
+        - peerId
+        - multiAddresses
+        - blockstoreSizeMb
+        - datastoreSizeMb
+        - availableSizeInMb
+        - pinnedBytes
+        - reclaimableBytes
+        - availableBytes
+        - reservedBytes
+        - health
+        - http
+      properties:
+        version: { type: string }
+        timestamp: { type: integer }
+        heliaStatus: { type: string }
+        peerId: { type: string }
+        multiAddresses:
+          type: array
+          items: { type: string }
+        blockstoreSizeMb: { type: number }
+        datastoreSizeMb: { type: number }
+        availableSizeInMb: { type: number }
+        pinnedBytes: { type: integer, minimum: 0 }
+        reclaimableBytes: { type: integer, minimum: 0 }
+        availableBytes: { type: integer, minimum: 0 }
+        reservedBytes: { type: integer, minimum: 0 }
+        health: { $ref: '#/components/schemas/Health' }
+        http: { $ref: '#/components/schemas/HttpMetrics' }
     LegacyNodeInfo:
       type: object
       required:

@@ -48,6 +48,9 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   "serverPort": 4000,
   "uploadLimitSizeBytes": 268435456,
   "maxFileCount": 10,
+  "findFileTimeout": 20000,
+  "downloadIdleTimeout": 20000,
+  "downloadMinBytesPerSecond": 32768,
   "cors": {
     "allowedOrigins": ["https://adm.im", "https://*.adamant.im", "http://localhost:8080"]
   },
@@ -85,7 +88,8 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "requireQuorumOnUpload": false,
     "requestTimeoutMs": 30000,
     "repairEnabled": true,
-    "repairSchedule": "0 */30 * * * *"
+    "repairSchedule": "0 */30 * * * *",
+    "repairBatchDelayMs": 1000
   },
   "health": {
     "checkpointIntervalMs": 60000,
@@ -98,6 +102,11 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   }
 }
 ```
+
+`findFileTimeout` bounds discovery, while `downloadIdleTimeout` (defaulting to
+`findFileTimeout`) bounds a stalled transfer. `downloadMinBytesPerSecond`
+(default `32768`) derives a complete-transfer deadline from the file size, so a
+large active download is not cut off by the short discovery timeout.
 
 `storage`, `replication`, and `health` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Storage and replication are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
 
@@ -351,10 +360,9 @@ Download responses use the following stable status contract:
 | `400 Bad Request`           | The CID is invalid                                                     |
 | `408 Request Timeout`       | The file could not be found or retrieved before the configured timeout |
 | `429 Too Many Requests`     | The read rate limit was exceeded                                       |
-| `416 Range Not Satisfiable` | Range retrieval is intentionally unsupported                           |
 | `500 Internal Server Error` | An unexpected internal failure occurred before streaming started       |
 
-The timeout covers the complete transfer, not only discovery or the first chunk, and remains `408 Request Timeout` for compatibility with existing clients. Client disconnect cancels the underlying retrieval. Successful immutable-CID responses include `ETag`, long-lived immutable caching, and `Accept-Ranges: none`. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
+Discovery, idle transfer time, and the size-aware complete transfer all have bounded timeouts and remain `408 Request Timeout` for compatibility with existing clients. Client disconnect cancels the underlying retrieval. Range headers are ignored and the server returns the complete `200` representation with `Accept-Ranges: none`, preserving current PWA/iOS behavior. Successful responses include an `ETag` and private one-hour caching with revalidation; a matching `If-None-Match` returns `304` after availability has been checked. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
 
 ### Check public health
 
@@ -386,8 +394,7 @@ Example response:
   "storage": {
     "measuredAt": 1720614980000,
     "measurementAgeMs": 18797,
-    "availableBytes": 8589934592,
-    "reservedBytes": 5368709120
+    "reserveHealthy": true
   },
   "replication": {
     "repairRequired": true,
@@ -407,6 +414,10 @@ Example response:
 ```
 
 The endpoint always returns `200`; consumers must inspect `state`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle with no known backlog, and the configured peer attestations all pass. It freezes on failure. Observation timestamps and ages let clients reject an absolutely stale cluster even when every node reports the same height. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
+
+`membership.version` identifies the configured peer-set epoch. Changing the node list resets the persisted checkpoint for that node: `height` remains `0` until the first valid checkpoint under the new membership. Clients must compare heights only when membership versions match and treat a version change as a new epoch.
+
+Repair runs in bounded 50-record passes. A scheduled run starts a full cycle immediately and continues its remaining passes after `replication.repairBatchDelayMs`; `repairSchedule` controls when a new completed cycle is refreshed. Set `health.repairMaxAgeMs` longer than the largest expected full-cycle duration plus the schedule interval. An incomplete or backlogged cycle intentionally keeps health degraded.
 
 ### Get legacy client node information
 

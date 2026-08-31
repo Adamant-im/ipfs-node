@@ -5,6 +5,13 @@ export interface TimedReadable {
   abort: (reason?: Error) => void
 }
 
+export interface StreamTimeouts {
+  /** Maximum time without receiving another chunk. */
+  idleTimeoutMs: number
+  /** Maximum time for the complete iteration. */
+  totalTimeoutMs: number
+}
+
 /**
  * Create a readable whose deadline covers the complete iteration.
  *
@@ -13,7 +20,7 @@ export interface TimedReadable {
  */
 export function createTimedReadable(
   source: (signal: AbortSignal) => AsyncIterable<Uint8Array>,
-  timeoutMs: number,
+  timeouts: StreamTimeouts,
   timeoutError: () => Error,
   externalSignal?: AbortSignal
 ): TimedReadable {
@@ -30,15 +37,22 @@ export function createTimedReadable(
         ? externalSignal.reason
         : new Error('Stream request was cancelled')
     )
-  externalSignal?.addEventListener('abort', externalAbort, { once: true })
-  const timer = setTimeout(abort, timeoutMs)
+  if (externalSignal?.aborted) externalAbort()
+  else externalSignal?.addEventListener('abort', externalAbort, { once: true })
+  const totalTimer = setTimeout(abort, timeouts.totalTimeoutMs)
+  let idleTimer = setTimeout(abort, timeouts.idleTimeoutMs)
   const guardedSource = async function* (): AsyncGenerator<Uint8Array> {
     if (controller.signal.aborted) throw controller.signal.reason
-    yield* source(controller.signal)
+    for await (const chunk of source(controller.signal)) {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(abort, timeouts.idleTimeoutMs)
+      yield chunk
+    }
   }
   const stream = Readable.from(guardedSource())
   const cleanup = (): void => {
-    clearTimeout(timer)
+    clearTimeout(totalTimer)
+    clearTimeout(idleTimer)
     externalSignal?.removeEventListener('abort', externalAbort)
   }
   stream.once('end', cleanup)

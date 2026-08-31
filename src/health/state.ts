@@ -50,8 +50,7 @@ export interface HealthSnapshot {
   storage: {
     measuredAt: number | null
     measurementAgeMs: number | null
-    availableBytes: number
-    reservedBytes: number
+    reserveHealthy: boolean
   }
   replication: {
     repairRequired: boolean
@@ -148,8 +147,7 @@ export function evaluateHealth(
       storage: {
         measuredAt: input.storageUpdatedAt,
         measurementAgeMs: age(input.now, input.storageUpdatedAt),
-        availableBytes: input.storageAvailableBytes,
-        reservedBytes: input.storageReservedBytes
+        reserveHealthy: checks.storageReserve
       },
       replication: {
         repairRequired: input.repairRequired,
@@ -160,5 +158,33 @@ export function evaluateHealth(
       checks
     },
     completed
+  }
+}
+
+/** Refresh elapsed ages and stale state without performing checkpoint I/O. */
+export function refreshHealthSnapshot(current: HealthSnapshot, timestamp: number): HealthSnapshot {
+  const checkpointAge = age(timestamp, current.checkpoint.observedAt)
+
+  return {
+    ...current,
+    state:
+      current.state !== 'starting' &&
+      checkpointAge !== null &&
+      checkpointAge > current.checkpoint.maxAgeMs
+        ? 'stale'
+        : current.state,
+    timestamp,
+    checkpoint: {
+      ...current.checkpoint,
+      ageMs: checkpointAge
+    },
+    storage: {
+      ...current.storage,
+      measurementAgeMs: age(timestamp, current.storage.measuredAt)
+    },
+    replication: {
+      ...current.replication,
+      ageMs: age(timestamp, current.replication.lastCompleteAt)
+    }
   }
 }

@@ -83,6 +83,8 @@ export interface ReplicationConfig {
   requestTimeoutMs: number
   repairEnabled: boolean
   repairSchedule: string
+  /** Pause between bounded passes while completing one full repair cycle. */
+  repairBatchDelayMs: number
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
@@ -110,7 +112,8 @@ export const DEFAULT_REPLICATION_CONFIG: ReplicationConfig = {
   requireQuorumOnUpload: false,
   requestTimeoutMs: 30000,
   repairEnabled: true,
-  repairSchedule: '0 */30 * * * *'
+  repairSchedule: '0 */30 * * * *',
+  repairBatchDelayMs: 1_000
 }
 
 function fail(path: string, expectation: string): never {
@@ -316,6 +319,12 @@ export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
       input.repairSchedule,
       'replication.repairSchedule',
       defaults.repairSchedule
+    ),
+    repairBatchDelayMs: optionalInteger(
+      input.repairBatchDelayMs,
+      'replication.repairBatchDelayMs',
+      defaults.repairBatchDelayMs,
+      0
     )
   }
 

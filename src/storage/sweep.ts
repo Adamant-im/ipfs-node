@@ -5,7 +5,7 @@
  * records into a source of steady chatter. Repair may transfer a file, so it
  * gets the smallest batch; the others only exchange short messages.
  */
-export const SWEEP_BATCHES = { repair: 50, demote: 200, rescue: 50 }
+export const SWEEP_BATCHES = { repair: 50, demote: 200 }
 
 export type SweepName = keyof typeof SWEEP_BATCHES
 
@@ -33,7 +33,11 @@ export function sweepBatch<T extends { cid: string }>(
   cursor?: string
 ): SweepBatch<T> {
   const size = SWEEP_BATCHES[sweep]
-  const ordered = [...records].sort((left, right) => left.cid.localeCompare(right.cid))
+  // Cursor lookup below uses JavaScript code-unit ordering. Keep sorting on the
+  // same deterministic relation instead of the host's locale-dependent ICU rules.
+  const ordered = [...records].sort((left, right) =>
+    left.cid < right.cid ? -1 : left.cid > right.cid ? 1 : 0
+  )
   let start = 0
 
   if (cursor !== undefined) {
@@ -67,7 +71,7 @@ export function sweepBatch<T extends { cid: string }>(
  * it. Candidates are sorted by CID first: resume compares CIDs lexicographically,
  * and datastore listing order is not sorted. A cursor pointing at a record that
  * has since gone resumes at the first remaining CID greater than it, so a
- * successful demote/rescue of the last batch element does not rewind to the head.
+ * successful demotion of the last batch element does not rewind to the head.
  *
  * @param sweep Which sweep is asking; each keeps its own position
  * @param records Every candidate; order is ignored and replaced by CID order

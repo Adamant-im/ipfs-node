@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import type { HealthConfig } from '../src/config.js'
-import { checkpointRound, evaluateHealth } from '../src/health/state.js'
+import { isCompatibleRound } from '../src/health/protocol.js'
+import { checkpointRound, evaluateHealth, refreshHealthSnapshot } from '../src/health/state.js'
 
 const policy: HealthConfig = {
   checkpointIntervalMs: 1_000,
@@ -31,6 +32,11 @@ const healthy = (now: number) => ({
 })
 
 describe('health checkpoint state', () => {
+  it('accepts adjacent fixed rounds during tolerated boundary skew', () => {
+    assert.equal(isCompatibleRound(12_000, 13_000, 1_000), true)
+    assert.equal(isCompatibleRound(12_000, 14_000, 1_000), false)
+  })
+
   it('uses a fixed Unix-millisecond round rather than the request timestamp', () => {
     assert.equal(checkpointRound(12_345, 1_000), 12_000)
     const result = evaluateHealth(policy, healthy(12_345))
@@ -40,6 +46,7 @@ describe('health checkpoint state', () => {
     assert.equal(result.snapshot.timestamp, 12_345)
     assert.equal(result.snapshot.checkpoint.observedAt, 12_345)
     assert.equal(result.snapshot.storage.measurementAgeMs, 0)
+    assert.equal(result.snapshot.storage.reserveHealthy, true)
     assert.equal(result.snapshot.replication.backlog, 0)
   })
 
@@ -92,5 +99,14 @@ describe('health checkpoint state', () => {
     assert.equal(result.snapshot.state, 'degraded')
     assert.equal(result.snapshot.checks.repairFresh, false)
     assert.equal(result.completed, undefined)
+  })
+
+  it('reports a cached ready checkpoint as stale when its age expires', () => {
+    const ready = evaluateHealth(policy, healthy(12_345)).snapshot
+    const refreshed = refreshHealthSnapshot(ready, 16_000)
+
+    assert.equal(refreshed.state, 'stale')
+    assert.equal(refreshed.checkpoint.ageMs, 3_655)
+    assert.equal(refreshed.height, ready.height)
   })
 })

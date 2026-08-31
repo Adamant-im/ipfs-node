@@ -458,7 +458,7 @@ The repair job (`replication.repairSchedule`, or `POST /api/storage/repair`)
 lists confirmed files this node holds whose designated peers have not all
 acknowledged, and places the missing copies again.
 
-Each scheduled pass remains bounded to 50 held files. Its sorted cursor and
+Each scheduled pass remains bounded to 50 confirmed records. Its sorted cursor and
 aggregate result are persisted under the node datastore, so restart resumes the
 same cycle. A repair checkpoint is recorded only after a pass reaches the end
 of the candidate set; a pass over one batch is not presented as full-fleet

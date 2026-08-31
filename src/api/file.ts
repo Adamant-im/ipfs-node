@@ -16,7 +16,11 @@ import {
 import { fileRegistry } from '../storage/state.js'
 import { createUploadHandler } from './uploadRoute.js'
 import { parseCid } from '../utils/cid.js'
-import { sendDownloadStream } from '../utils/downloadResponse.js'
+import {
+  matchesDownloadEtag,
+  sendDownloadStream,
+  setDownloadHeaders
+} from '../utils/downloadResponse.js'
 import { downloadFile, getFileStats } from '../utils/file.js'
 import { logger } from '../utils/logger.js'
 
@@ -104,11 +108,6 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
   })
 
   try {
-    if (req.headers.range !== undefined) {
-      res.set('Accept-Ranges', 'none')
-      return res.status(416).send({ error: 'Range requests are not supported' })
-    }
-
     const cid = parseCid(req.params.cid)
 
     // Reach the file's holders first. Without this the read only succeeds if a
@@ -117,17 +116,29 @@ router.get('/:cid', readLimiter, async (req, res, next) => {
     await prepareFileRetrieval(cid, requestController.signal)
 
     const fileStats = await getFileStats(cid, requestController.signal)
-    const download = downloadFile(cid, { signal: requestController.signal })
+    const metadata = { cid: cid.toString(), fileSize: fileStats.size }
+
+    // Range is deliberately ignored and the complete representation is sent.
+    // This preserves established PWA/iOS behavior without advertising ranges.
+    if (matchesDownloadEtag(req.headers['if-none-match'], metadata.cid)) {
+      setDownloadHeaders(res, metadata)
+      res.removeHeader('Content-Length')
+      res.removeHeader('Content-Disposition')
+      return res.status(304).end()
+    }
+
+    const download = downloadFile(cid, fileStats.size, { signal: requestController.signal })
 
     sendDownloadStream(
       download.stream,
       res,
-      { cid: cid.toString(), fileSize: fileStats.size },
+      metadata,
       next,
       (error) => logger.error(error),
       () => download.abort(new Error('Download client disconnected'))
     )
   } catch (error) {
+    if (requestController.signal.aborted || res.destroyed) return
     next(error)
   }
 })

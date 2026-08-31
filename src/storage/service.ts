@@ -792,7 +792,12 @@ async function cacheFileLocallyUnderLock(cid: string, peerId: string): Promise<n
 }
 
 export interface RepairReport {
+  /** Confirmed records visited by this bounded pass. */
+  examined: number
+  /** Locally held records checked against their placement. */
   checked: number
+  /** Released records checked for a remaining durable holder. */
+  releasedChecked: number
   underReplicated: number
   repaired: string[]
   stillMissing: string[]
@@ -828,105 +833,116 @@ async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise
  * later left is nobody's responsibility and disappears silently while every
  * registry still calls it confirmed.
  *
- * The check is cheap because it starts with a local lookup: a node can only
- * rescue a file whose blocks it still has, and blocks are kept until space runs
- * short, so shortly after a handover they usually are. Anything already
- * reclaimed is skipped without touching the network.
+ * Peer probes use a small worker pool so a large batch cannot turn one slow
+ * peer into a fully sequential repair pass or fan every record out at once.
  */
 async function rescueOrphanedFiles(
   records: FileRecord[],
   peers: ReplicationPeer[]
-): Promise<{ rescued: string[]; unrecoverable: string[] }> {
+): Promise<{ checked: number; rescued: string[]; unrecoverable: string[] }> {
   const self = selfPeerId()
+  let checked = 0
   const rescued: string[] = []
   const unrecoverable: string[] = []
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
   const candidates = records.filter((record) => record.state === 'confirmed' && !record.heldLocally)
 
-  for (const record of candidates) {
-    const cid = CID.parse(record.cid)
-    const holders = storageTargets(placementFor(record.cid, record.createdAt, peers), self)
-      .map((peerId) => byPeerId.get(peerId))
-      .filter((peer): peer is ReplicationPeer => peer !== undefined)
+  let nextIndex = 0
+  const processNext = async (): Promise<void> => {
+    while (nextIndex < candidates.length) {
+      const record = candidates[nextIndex]
+      nextIndex += 1
+      checked += 1
+      const cid = CID.parse(record.cid)
+      const holders = storageTargets(placementFor(record.cid, record.createdAt, peers), self)
+        .map((peerId) => byPeerId.get(peerId))
+        .filter((peer): peer is ReplicationPeer => peer !== undefined)
 
-    const answers = await Promise.all(
-      holders.map(async (peer) => {
-        try {
-          return await probeHave(helia, peer.multiAddr, record.cid, callOptions())
-        } catch {
-          return false
-        }
-      })
-    )
-
-    if (answers.some(Boolean)) {
-      continue
-    }
-
-    if (!(await helia.blockstore.has(cid))) {
-      unrecoverable.push(record.cid)
-      logger.error(`No configured node reports holding ${record.cid}`)
-      continue
-    }
-
-    try {
-      const kept = await storageOperationLock.withShared(async () => {
-        // Only worth pinning if the whole DAG is still here; an offline stat says
-        // so without going near the network. Collection cannot invalidate that
-        // result before the following pin is committed.
-        await ifs.stat(cid, { extended: true, offline: true })
-
-        // The record was chosen before the probes, which take as long as the
-        // network does. Writing the snapshot back would undo whatever happened to
-        // the file meanwhile — a re-upload, a release, an updated replica list —
-        // so the pin and the state change happen together, against the record as
-        // it is now.
-        return fileRegistry.withExclusiveCids([record.cid], async (registry) => {
-          const current = await registry.get(record.cid)
-
-          if (
-            current === undefined ||
-            current.revision !== record.revision ||
-            current.state !== 'confirmed' ||
-            current.heldLocally
-          ) {
-            return undefined
-          }
-
-          const createdPin = await pinFile(helia, cid)
-
+      const answers = await Promise.all(
+        holders.map(async (peer) => {
           try {
-            return await registry.save({
-              ...current,
-              pinned: true,
-              heldLocally: true,
-              admissionId: undefined,
-              admissionSettledAt: undefined,
-              replicaStage: undefined
-            })
-          } catch (err) {
-            if (createdPin && current.pinned !== true) {
-              await unpinFile(helia, cid)
-            }
-            throw err
+            return await probeHave(helia, peer.multiAddr, record.cid, callOptions())
+          } catch {
+            return false
           }
         })
-      })
+      )
 
-      if (kept === undefined) {
+      if (answers.some(Boolean)) {
         continue
       }
 
-      rescued.push(record.cid)
-      logger.warn(`No node was holding ${record.cid}; kept the local copy instead`)
-    } catch {
-      // The blocks are only partly here, so there is nothing to rescue
-      continue
+      if (!(await helia.blockstore.has(cid))) {
+        unrecoverable.push(record.cid)
+        logger.error(`No configured node reports holding ${record.cid}`)
+        continue
+      }
+
+      try {
+        const kept = await storageOperationLock.withShared(async () => {
+          // Only worth pinning if the whole DAG is still here; an offline stat says
+          // so without going near the network. Collection cannot invalidate that
+          // result before the following pin is committed.
+          await ifs.stat(cid, { extended: true, offline: true })
+
+          // The record was chosen before the probes, which take as long as the
+          // network does. Writing the snapshot back would undo whatever happened to
+          // the file meanwhile — a re-upload, a release, an updated replica list —
+          // so the pin and the state change happen together, against the record as
+          // it is now.
+          return fileRegistry.withExclusiveCids([record.cid], async (registry) => {
+            const current = await registry.get(record.cid)
+
+            if (
+              current === undefined ||
+              current.revision !== record.revision ||
+              current.state !== 'confirmed' ||
+              current.heldLocally
+            ) {
+              return undefined
+            }
+
+            const createdPin = await pinFile(helia, cid)
+
+            try {
+              return await registry.save({
+                ...current,
+                pinned: true,
+                heldLocally: true,
+                admissionId: undefined,
+                admissionSettledAt: undefined,
+                replicaStage: undefined
+              })
+            } catch (err) {
+              if (createdPin && current.pinned !== true) {
+                await unpinFile(helia, cid)
+              }
+              throw err
+            }
+          })
+        })
+
+        if (kept === undefined) {
+          continue
+        }
+
+        rescued.push(record.cid)
+        logger.warn(`No node was holding ${record.cid}; kept the local copy instead`)
+      } catch {
+        // The blocks are only partly here, so there is nothing to rescue
+        continue
+      }
     }
   }
 
-  return { rescued, unrecoverable }
+  await Promise.all(
+    Array.from({ length: Math.min(4, candidates.length) }, async () => processNext())
+  )
+
+  rescued.sort()
+  unrecoverable.sort()
+  return { checked, rescued, unrecoverable }
 }
 
 /**
@@ -938,7 +954,9 @@ async function rescueOrphanedFiles(
  */
 export async function repairReplication(options: { cursor?: string } = {}): Promise<RepairReport> {
   const report: RepairReport = {
+    examined: 0,
     checked: 0,
+    releasedChecked: 0,
     underReplicated: 0,
     repaired: [],
     stillMissing: [],
@@ -963,7 +981,7 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
   report.cycleCompleted = selected.cycleCompleted
   report.nextCursor = selected.nextCursor
 
-  report.checked = candidates.length
+  report.examined = candidates.length
 
   const byPeerId = new Map(peers.map((peer) => [peer.peerId, peer]))
 
@@ -974,6 +992,7 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
     if (!(await claimRepairRecord(fileRegistry, record))) {
       continue
     }
+    report.checked += 1
 
     try {
       const placement = placementFor(record.cid, record.createdAt, peers)
@@ -1010,6 +1029,7 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
   }
 
   const rescue = await rescueOrphanedFiles(candidates, peers)
+  report.releasedChecked = rescue.checked
   report.rescued = rescue.rescued
   report.unrecoverable = rescue.unrecoverable
 

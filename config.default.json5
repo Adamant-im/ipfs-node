@@ -33,6 +33,9 @@
   uploadLimitSizeBytes: 268435456, // 256 Mb.
   maxFileCount: 10,
   findFileTimeout: 20000,
+  // A transfer may run longer than discovery while chunks keep arriving.
+  downloadIdleTimeout: 20000,
+  downloadMinBytesPerSecond: 32768,
   cors: {
     // Exact origins and left-most subdomain wildcards are supported.
     allowedOrigins: [
@@ -96,7 +99,9 @@
     requireQuorumOnUpload: false, // Incompatible with confirmationRequired; needs ackQuorum >= 2
     requestTimeoutMs: 30000,
     repairEnabled: true,
-    repairSchedule: '0 */30 * * * *'
+    repairSchedule: '0 */30 * * * *',
+    // Bounded passes continue until a complete repair cycle is recorded.
+    repairBatchDelayMs: 1000
   },
   health: {
     checkpointIntervalMs: 60000,

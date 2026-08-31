@@ -22,7 +22,8 @@ export async function getFileStats(cid: CID, externalSignal?: AbortSignal) {
       : abortController.signal
     const stats = await ifs.stat(cid, { signal })
     return stats
-  } catch {
+  } catch (error) {
+    if (externalSignal?.aborted) throw externalSignal.reason ?? error
     throw new FileNotFoundError('Cannot find requested CID. Request timed out.')
   } finally {
     if (timeout !== undefined) {
@@ -32,16 +33,29 @@ export async function getFileStats(cid: CID, externalSignal?: AbortSignal) {
 }
 
 /**
- * Return a file stream by CID.
- * Throws a timeout error if the file is not found.
+ * Return a file stream with idle and size-aware complete-transfer deadlines.
+ *
+ * @param cid Content identifier to retrieve
+ * @param fileSize Stat result used to derive a deadline that permits large active transfers
+ * @param options Request cancellation and test/operator timeout overrides
  */
 export function downloadFile(
   cid: CID,
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+  fileSize: bigint,
+  options: { signal?: AbortSignal; idleTimeoutMs?: number; totalTimeoutMs?: number } = {}
 ): TimedReadable {
+  const idleTimeoutMs = options.idleTimeoutMs ?? config.downloadIdleTimeout
+  const sizeAwareTimeoutMs =
+    Math.ceil(Number(fileSize) / config.downloadMinBytesPerSecond) * 1_000 + idleTimeoutMs
+
   return createTimedReadable(
     (signal) => ifs.cat(cid, { signal }),
-    options.timeoutMs ?? config.findFileTimeout,
+    {
+      idleTimeoutMs,
+      totalTimeoutMs:
+        options.totalTimeoutMs ??
+        Math.min(2_147_483_647, Math.max(idleTimeoutMs, sizeAwareTimeoutMs))
+    },
     () => new FileNotFoundError('Unable to retrieve the file. Request timed out.'),
     options.signal
   )
