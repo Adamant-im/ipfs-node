@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
 import express from 'express'
 import { createNodeRouters } from '../src/api/nodeRoutes.js'
+import { refreshHealthSnapshot } from '../src/health/state.js'
 import type { HealthSnapshot } from '../src/health/state.js'
 
 const health: HealthSnapshot = {
@@ -15,6 +16,7 @@ const health: HealthSnapshot = {
   storage: { measuredAt: 12_345, measurementAgeMs: 0, reserveHealthy: true },
   replication: { repairRequired: true, lastCompleteAt: 12_345, ageMs: 0, backlog: 0 },
   checks: {
+    checkpointFresh: true,
     helia: true,
     startupReconciliation: true,
     storageFresh: true,
@@ -28,15 +30,14 @@ describe('node HTTP contract', () => {
   let url = ''
   let close: (() => Promise<void>) | undefined
   let limited = 0
+  let healthNow = 12_345
 
   before(async () => {
     const routers = createNodeRouters({
       version: '1.2.3',
       now: () => 20_000,
       uptimeMs: () => 5_000,
-      readLimiter: (req, res, next) => {
-        void req
-        void res
+      readLimiter: (_req, _res, next) => {
         limited += 1
         next()
       },
@@ -54,7 +55,11 @@ describe('node HTTP contract', () => {
         availableBytes: 6,
         reservedBytes: 7
       }),
-      getHealthSnapshot: () => health,
+      getHealthSnapshot: () =>
+        refreshHealthSnapshot(health, healthNow, {
+          storageMaxAgeMs: 2_000,
+          repairMaxAgeMs: 5_000
+        }),
       getHttpMetrics: () => ({ requests: 1 })
     })
     const app = express()
@@ -81,7 +86,20 @@ describe('node HTTP contract', () => {
     assert.equal(body.version, '1.2.3')
     assert.equal(body.state, 'ready')
     assert.equal(body.height, 12_000)
+    assert.equal('peerId' in body, false)
+    assert.equal('multiAddresses' in body, false)
+    assert.equal('http' in body, false)
     assert.equal(limited, 0)
+  })
+
+  it('downgrades the cached response to stale on an HTTP read', async () => {
+    healthNow = 16_000
+    const response = await fetch(`${url}/api/node/health`)
+    const body = (await response.json()) as { state: string; checkpoint: { ageMs: number } }
+
+    assert.equal(response.status, 200)
+    assert.equal(body.state, 'stale')
+    assert.equal(body.checkpoint.ageMs, 3_655)
   })
 
   it('rate-limits the legacy public info route', async () => {

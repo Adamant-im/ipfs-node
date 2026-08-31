@@ -46,6 +46,7 @@ describe('resolveStorageConfig', () => {
 
   it('rejects limits that would disable a guarantee', () => {
     assert.throws(() => resolveStorageConfig({ maxConcurrentUploads: 0 }, UPLOAD_LIMIT))
+    assert.throws(() => resolveStorageConfig({ maxConcurrentDownloads: 0 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ temporaryTtlMs: 0 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ diskReserveBytes: -1 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ confirmationRequired: 'yes' }, UPLOAD_LIMIT))
@@ -160,5 +161,13 @@ describe('resolveReplicationConfig', () => {
   it('validates the pause between bounded repair passes', () => {
     assert.equal(resolveReplicationConfig({ repairBatchDelayMs: 0 }).repairBatchDelayMs, 0)
     assert.throws(() => resolveReplicationConfig({ repairBatchDelayMs: -1 }), /repairBatchDelayMs/)
+  })
+
+  it('validates repair probe concurrency', () => {
+    assert.equal(resolveReplicationConfig({ repairProbeConcurrency: 8 }).repairProbeConcurrency, 8)
+    assert.throws(
+      () => resolveReplicationConfig({ repairProbeConcurrency: 0 }),
+      /repairProbeConcurrency/
+    )
   })
 })

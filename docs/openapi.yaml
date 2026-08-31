@@ -99,7 +99,7 @@ paths:
         '408':
           description: Discovery or complete retrieval timed out
         '429':
-          description: Read rate limit exceeded
+          description: Read rate or global download concurrency limit exceeded
   /api/file/{cid}/status:
     parameters:
       - $ref: '#/components/parameters/Cid'
@@ -195,6 +195,7 @@ components:
         state:
           type: string
           enum: [starting, ready, stale, degraded]
+          description: Stale only after checkpoint age exceeds maxAgeMs; the exact limit is valid
         height:
           type: integer
           minimum: 0
@@ -210,6 +211,7 @@ components:
             maxAgeMs: { type: integer, minimum: 1000 }
         membership:
           type: object
+          description: Peer evidence captured when checkpoint.observedAt was evaluated
           required: [version, requiredPeers, attestedPeers]
           properties:
             version:
@@ -220,6 +222,7 @@ components:
             attestedPeers: { type: integer, minimum: 0 }
         startup:
           type: object
+          description: Startup evidence captured when checkpoint.observedAt was evaluated
           required: [complete, healthy]
           properties:
             complete: { type: boolean }
@@ -241,6 +244,7 @@ components:
             backlog: { type: integer, minimum: 0 }
         checks:
           type: object
+          description: Storage and repair freshness are updated at read time; other checks describe checkpoint.observedAt
           additionalProperties: { type: boolean }
     HttpMetrics:
       type: object

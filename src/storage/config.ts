@@ -43,6 +43,8 @@ export interface StorageConfig {
    * `429` for a person who did nothing wrong.
    */
   maxConcurrentUploads: number
+  /** Maximum number of file responses retrieving content at once. */
+  maxConcurrentDownloads: number
   /** Free space on the blockstore filesystem that uploads must never consume. */
   diskReserveBytes: number
   /** When true, an upload stays temporary until an authorized confirmation. */
@@ -85,11 +87,14 @@ export interface ReplicationConfig {
   repairSchedule: string
   /** Pause between bounded passes while completing one full repair cycle. */
   repairBatchDelayMs: number
+  /** Released records probed concurrently during one repair pass. */
+  repairProbeConcurrency: number
 }
 
 export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   maxRequestSizeBytes: 512 * MiB,
   maxConcurrentUploads: 32,
+  maxConcurrentDownloads: 64,
   diskReserveBytes: 5 * GiB,
   confirmationRequired: false,
   temporaryTtlMs: 24 * 60 * 60 * 1000,
@@ -113,7 +118,8 @@ export const DEFAULT_REPLICATION_CONFIG: ReplicationConfig = {
   requestTimeoutMs: 30000,
   repairEnabled: true,
   repairSchedule: '0 */30 * * * *',
-  repairBatchDelayMs: 1_000
+  repairBatchDelayMs: 1_000,
+  repairProbeConcurrency: 4
 }
 
 function fail(path: string, expectation: string): never {
@@ -209,6 +215,12 @@ export function resolveStorageConfig(raw: unknown, uploadLimitSizeBytes: number)
       input.maxConcurrentUploads,
       'storage.maxConcurrentUploads',
       defaults.maxConcurrentUploads,
+      1
+    ),
+    maxConcurrentDownloads: optionalInteger(
+      input.maxConcurrentDownloads,
+      'storage.maxConcurrentDownloads',
+      defaults.maxConcurrentDownloads,
       1
     ),
     diskReserveBytes: optionalInteger(
@@ -325,6 +337,12 @@ export function resolveReplicationConfig(raw: unknown): ReplicationConfig {
       'replication.repairBatchDelayMs',
       defaults.repairBatchDelayMs,
       0
+    ),
+    repairProbeConcurrency: optionalInteger(
+      input.repairProbeConcurrency,
+      'replication.repairProbeConcurrency',
+      defaults.repairProbeConcurrency,
+      1
     )
   }
 

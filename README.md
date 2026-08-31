@@ -51,6 +51,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   "findFileTimeout": 20000,
   "downloadIdleTimeout": 20000,
   "downloadMinBytesPerSecond": 32768,
+  "downloadMaxDurationMs": 14400000,
   "cors": {
     "allowedOrigins": ["https://adm.im", "https://*.adamant.im", "http://localhost:8080"]
   },
@@ -67,6 +68,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   "storage": {
     "maxRequestSizeBytes": 536870912,
     "maxConcurrentUploads": 32,
+    "maxConcurrentDownloads": 64,
     "diskReserveBytes": 5368709120,
     "confirmationRequired": false,
     "temporaryTtlMs": 86400000,
@@ -89,7 +91,8 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "requestTimeoutMs": 30000,
     "repairEnabled": true,
     "repairSchedule": "0 */30 * * * *",
-    "repairBatchDelayMs": 1000
+    "repairBatchDelayMs": 1000,
+    "repairProbeConcurrency": 4
   },
   "health": {
     "checkpointIntervalMs": 60000,
@@ -105,8 +108,11 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
 
 `findFileTimeout` bounds discovery, while `downloadIdleTimeout` (defaulting to
 `findFileTimeout`) bounds a stalled transfer. `downloadMinBytesPerSecond`
-(default `32768`) derives a complete-transfer deadline from the file size, so a
-large active download is not cut off by the short discovery timeout.
+(default `32768`) derives a complete-transfer deadline from the file size, while
+`downloadMaxDurationMs` (default four hours) provides an absolute ceiling.
+`storage.maxConcurrentDownloads` (default `64`) bounds sockets and UnixFS
+iterators globally. Discovery, stat, and streaming have separate bounds, so a
+failed request may spend more than one `findFileTimeout` before returning `408`.
 
 `storage`, `replication`, and `health` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Storage and replication are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
 
@@ -127,6 +133,7 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Use exact origins such as `https://adm.im` or any-depth subdomain suffix wildcards such as `https://*.adamant.im`
 - Set `adminApiKey` before using any administrative API
 - Leave `trustProxy` as `false` for direct connections; configure exact proxy addresses, CIDR ranges, or a verified hop count behind a proxy
+- Migrate operator scripts and dashboards from the former detailed `GET /api/node/info` response to authenticated `GET /api/node/details`; `/info` is now the public legacy PWA/iOS contract
 - Set `enableDebugApi: true` only when the authenticated debug route is operationally required
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
 - Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
@@ -403,6 +410,7 @@ Example response:
     "backlog": 0
   },
   "checks": {
+    "checkpointFresh": true,
     "helia": true,
     "startupReconciliation": true,
     "storageFresh": true,
@@ -417,7 +425,9 @@ The endpoint always returns `200`; consumers must inspect `state`. `height` is a
 
 `membership.version` identifies the configured peer-set epoch. Changing the node list resets the persisted checkpoint for that node: `height` remains `0` until the first valid checkpoint under the new membership. Clients must compare heights only when membership versions match and treat a version change as a new epoch.
 
-Repair runs in bounded 50-record passes. A scheduled run starts a full cycle immediately and continues its remaining passes after `replication.repairBatchDelayMs`; `repairSchedule` controls when a new completed cycle is refreshed. Set `health.repairMaxAgeMs` longer than the largest expected full-cycle duration plus the schedule interval. An incomplete or backlogged cycle intentionally keeps health degraded.
+During a staged deployment, older peers do not implement the health protocol. Set `health.requiredPeerCount` to `0` on the transitioning fleet, then raise it after every required peer is upgraded; otherwise prolonged `degraded` health is the expected fail-safe result.
+
+Repair runs in bounded 50-record passes. The same selected batch feeds both local-holder repair and released-record rescue. A scheduled run starts a full cycle immediately and continues its remaining passes after `replication.repairBatchDelayMs`; this delay and `replication.repairProbeConcurrency` control peer load, while `repairSchedule` controls when a new completed cycle is refreshed. Set `health.repairMaxAgeMs` longer than the largest expected full-cycle duration plus the schedule interval. An incomplete or backlogged cycle intentionally keeps health degraded.
 
 ### Get legacy client node information
 

@@ -7,6 +7,7 @@ import { datastore } from './store.js'
 import { Key } from 'interface-datastore'
 import { createHash } from 'node:crypto'
 import { membershipVersion } from './health/membership.js'
+import { RepairCycleDriver, type RepairTrigger } from './storage/repairCycleDriver.js'
 
 let running = false
 let lastReport: RepairReport | null = null
@@ -164,46 +165,45 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
 }
 
 export const replicationRepairCron = new CronJob(config.replication.repairSchedule, () => {
-  void runScheduledRepair()
+  repairCycleDriver.triggerSchedule()
 })
 
-let stopping = false
-let continuationTimer: NodeJS.Timeout | undefined
-let scheduledInFlight: Promise<void> | undefined
+function logRepairPass(trigger: RepairTrigger): void {
+  logger.info(
+    {
+      event: 'replication_repair_pass',
+      trigger,
+      cursor: evidence?.cursor ?? null
+    },
+    trigger === 'continuation'
+      ? 'Continuing replication repair cycle'
+      : 'Starting replication repair cycle'
+  )
+}
 
-async function runScheduledRepair(): Promise<void> {
-  if (stopping || running || continuationTimer !== undefined) return
+const repairCycleDriver = new RepairCycleDriver({
+  delayMs: config.replication.repairBatchDelayMs,
+  runPass: repairUnderReplicatedFiles,
+  busyError: () => new ReplicationRepairBusyError(),
+  onStart: logRepairPass,
+  onError: (err) => logger.error(`${err.message}\n${err.stack}`)
+})
 
-  logger.info('[Cron] Running "replicationRepair" cronjob.')
-  const run = repairUnderReplicatedFiles()
-    .then((report) => {
-      if (stopping || report.cycleCompleted) return
-      continuationTimer = setTimeout(() => {
-        continuationTimer = undefined
-        void runScheduledRepair()
-      }, config.replication.repairBatchDelayMs)
-      continuationTimer.unref()
-    })
-    .catch((err: Error) => logger.error(`${err.message}\n${err.stack}`))
-  scheduledInFlight = run
-  await run
-  if (scheduledInFlight === run) scheduledInFlight = undefined
+/** Run one manual pass without interrupting automatic cycle continuation. */
+export function runManualReplicationRepair(): Promise<RepairReport> {
+  return repairCycleDriver.runManual()
 }
 
 /** Start the periodic repair job and immediately begin the first full cycle. */
 export function startReplicationRepair(): void {
-  stopping = false
   replicationRepairCron.start()
-  void runScheduledRepair()
+  repairCycleDriver.start()
 }
 
 /** Stop scheduled repair work and wait for the active bounded pass. */
 export async function stopReplicationRepair(): Promise<void> {
-  stopping = true
   replicationRepairCron.stop()
-  if (continuationTimer !== undefined) clearTimeout(continuationTimer)
-  continuationTimer = undefined
-  await scheduledInFlight
+  await repairCycleDriver.stop()
 }
 
 export function getReplicationState() {

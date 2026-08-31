@@ -8,7 +8,7 @@ import {
 import { readLimiter } from '../middleware/rateLimiter.js'
 import {
   getReplicationState,
-  repairUnderReplicatedFiles,
+  runManualReplicationRepair,
   ReplicationRepairBusyError
 } from '../replication.cron.js'
 import { getStorageMetrics } from '../storage/metrics.js'
@@ -45,6 +45,7 @@ router.get('/policy', readLimiter, (req, res) => {
     uploadLimitSizeBytes: config.uploadLimitSizeBytes,
     maxRequestSizeBytes: config.storage.maxRequestSizeBytes,
     maxConcurrentUploads: config.storage.maxConcurrentUploads,
+    maxConcurrentDownloads: config.storage.maxConcurrentDownloads,
     confirmationRequired: config.storage.confirmationRequired,
     temporaryTtlMs: config.storage.temporaryTtlMs,
     durability: config.replication.enabled
@@ -105,7 +106,7 @@ storageAdminRouter.post('/gc', async (req, res, next) => {
 /** Detect and repair under-replicated durable content on demand. */
 storageAdminRouter.post('/repair', async (req, res, next) => {
   try {
-    res.send(await repairUnderReplicatedFiles())
+    res.send(await runManualReplicationRepair())
   } catch (err) {
     if (err instanceof ReplicationRepairBusyError) {
       return res.status(409).send({ error: 'Replication repair is already running' })

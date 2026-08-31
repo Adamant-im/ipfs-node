@@ -59,6 +59,7 @@ export interface HealthSnapshot {
     backlog: number
   }
   checks: {
+    checkpointFresh: boolean
     helia: boolean
     startupReconciliation: boolean
     storageFresh: boolean
@@ -88,7 +89,7 @@ export function evaluateHealth(
   policy: HealthConfig,
   input: HealthInputs
 ): { snapshot: HealthSnapshot; completed?: HealthCheckpoint } {
-  const checks = {
+  const prerequisiteChecks = {
     helia: input.heliaReady,
     startupReconciliation: input.startupComplete && input.startupHealthy,
     storageFresh:
@@ -103,7 +104,7 @@ export function evaluateHealth(
         input.now - input.repairCompletedAt <= policy.repairMaxAgeMs),
     peerAttestations: input.attestedPeers >= policy.requiredPeerCount
   }
-  const complete = Object.values(checks).every(Boolean)
+  const complete = Object.values(prerequisiteChecks).every(Boolean)
   const previousAge = input.previous === null ? null : input.now - input.previous.completedAt
   const state: HealthState = complete
     ? 'ready'
@@ -123,6 +124,13 @@ export function evaluateHealth(
         attestedPeers: input.attestedPeers
       }
     : undefined
+  const checkpointObservedAt = completed?.completedAt ?? input.previous?.completedAt ?? null
+  const checks = {
+    checkpointFresh:
+      checkpointObservedAt !== null &&
+      input.now - checkpointObservedAt <= policy.maxCheckpointAgeMs,
+    ...prerequisiteChecks
+  }
 
   return {
     snapshot: {
@@ -131,8 +139,8 @@ export function evaluateHealth(
       timestamp: input.now,
       checkpoint: {
         intervalMs: policy.checkpointIntervalMs,
-        observedAt: completed?.completedAt ?? input.previous?.completedAt ?? null,
-        ageMs: age(input.now, completed?.completedAt ?? input.previous?.completedAt ?? null),
+        observedAt: checkpointObservedAt,
+        ageMs: age(input.now, checkpointObservedAt),
         maxAgeMs: policy.maxCheckpointAgeMs
       },
       membership: {
@@ -161,9 +169,28 @@ export function evaluateHealth(
   }
 }
 
-/** Refresh elapsed ages and stale state without performing checkpoint I/O. */
-export function refreshHealthSnapshot(current: HealthSnapshot, timestamp: number): HealthSnapshot {
+/** Refresh elapsed ages and freshness checks without performing checkpoint I/O. */
+export function refreshHealthSnapshot(
+  current: HealthSnapshot,
+  timestamp: number,
+  policy: Pick<HealthConfig, 'storageMaxAgeMs' | 'repairMaxAgeMs'>
+): HealthSnapshot {
   const checkpointAge = age(timestamp, current.checkpoint.observedAt)
+  const storageAge = age(timestamp, current.storage.measuredAt)
+  const repairAge = age(timestamp, current.replication.lastCompleteAt)
+  const checks = {
+    ...current.checks,
+    checkpointFresh: checkpointAge !== null && checkpointAge <= current.checkpoint.maxAgeMs,
+    storageFresh:
+      current.checks.storageFresh && storageAge !== null && storageAge <= policy.storageMaxAgeMs,
+    repairFresh:
+      !current.replication.repairRequired ||
+      (current.checks.repairFresh &&
+        current.replication.backlog === 0 &&
+        repairAge !== null &&
+        repairAge <= policy.repairMaxAgeMs)
+  }
+  const freshnessFailed = !checks.storageFresh || !checks.repairFresh
 
   return {
     ...current,
@@ -172,7 +199,9 @@ export function refreshHealthSnapshot(current: HealthSnapshot, timestamp: number
       checkpointAge !== null &&
       checkpointAge > current.checkpoint.maxAgeMs
         ? 'stale'
-        : current.state,
+        : current.state === 'ready' && freshnessFailed
+          ? 'degraded'
+          : current.state,
     timestamp,
     checkpoint: {
       ...current.checkpoint,
@@ -180,11 +209,12 @@ export function refreshHealthSnapshot(current: HealthSnapshot, timestamp: number
     },
     storage: {
       ...current.storage,
-      measurementAgeMs: age(timestamp, current.storage.measuredAt)
+      measurementAgeMs: storageAge
     },
     replication: {
       ...current.replication,
-      ageMs: age(timestamp, current.replication.lastCompleteAt)
-    }
+      ageMs: repairAge
+    },
+    checks
   }
 }

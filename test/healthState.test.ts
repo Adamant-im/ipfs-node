@@ -103,10 +103,31 @@ describe('health checkpoint state', () => {
 
   it('reports a cached ready checkpoint as stale when its age expires', () => {
     const ready = evaluateHealth(policy, healthy(12_345)).snapshot
-    const refreshed = refreshHealthSnapshot(ready, 16_000)
+    const refreshed = refreshHealthSnapshot(ready, 16_000, policy)
 
     assert.equal(refreshed.state, 'stale')
+    assert.equal(refreshed.checks.checkpointFresh, false)
     assert.equal(refreshed.checkpoint.ageMs, 3_655)
     assert.equal(refreshed.height, ready.height)
+  })
+
+  it('expires cached storage and repair checks before the next checkpoint tick', () => {
+    const ready = evaluateHealth(policy, healthy(12_345)).snapshot
+    const storageExpired = refreshHealthSnapshot(ready, 14_500, policy)
+    const repairExpired = refreshHealthSnapshot(ready, 17_500, policy)
+
+    assert.equal(storageExpired.state, 'degraded')
+    assert.equal(storageExpired.checks.storageFresh, false)
+    assert.equal(storageExpired.checks.repairFresh, true)
+    assert.equal(repairExpired.state, 'stale')
+    assert.equal(repairExpired.checks.repairFresh, false)
+  })
+
+  it('keeps the maximum checkpoint age inclusive', () => {
+    const ready = evaluateHealth(policy, healthy(12_345)).snapshot
+    const boundary = refreshHealthSnapshot(ready, 15_345, policy)
+
+    assert.notEqual(boundary.state, 'stale')
+    assert.equal(boundary.checkpoint.ageMs, boundary.checkpoint.maxAgeMs)
   })
 })

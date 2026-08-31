@@ -105,6 +105,8 @@ export interface Config {
   downloadIdleTimeout: number
   /** Minimum sustained rate used to derive a size-aware complete-transfer deadline. */
   downloadMinBytesPerSecond: number
+  /** Absolute ceiling for one complete download response. */
+  downloadMaxDurationMs: number
   cors: {
     /** Exact origins and left-most subdomain wildcards; see `src/security/cors.ts`. */
     allowedOrigins: string[]
@@ -342,6 +344,15 @@ export function validateConfig(raw: unknown): Config {
     32 * 1024,
     1
   )
+  const downloadMaxDurationMs = optionalInteger(
+    root.downloadMaxDurationMs,
+    'downloadMaxDurationMs',
+    4 * 60 * 60 * 1_000,
+    1
+  )
+  if (downloadMaxDurationMs < downloadIdleTimeout) {
+    fail('downloadMaxDurationMs', 'must be greater than or equal to downloadIdleTimeout')
+  }
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
   // Owns cors, trustProxy, adminApiKey, enableDebugApi, rateLimits,
@@ -388,6 +399,7 @@ export function validateConfig(raw: unknown): Config {
     findFileTimeout,
     downloadIdleTimeout,
     downloadMinBytesPerSecond,
+    downloadMaxDurationMs,
     cors: { allowedOrigins: cors.allowedOrigins as string[] },
     trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
     rateLimits: root.rateLimits as Config['rateLimits'],

@@ -16,6 +16,9 @@ export const storageOperationLock = new StorageOperationLock()
 /** Guards how many uploads may write into the blockstore at the same time. */
 export const uploadLimiter = new ConcurrencyLimiter(config.storage.maxConcurrentUploads)
 
+/** Guards how many public downloads may hold a socket and UnixFS iterator. */
+export const downloadLimiter = new ConcurrencyLimiter(config.storage.maxConcurrentDownloads)
+
 /**
  * Share of the upload limit that incoming copies may occupy.
  *

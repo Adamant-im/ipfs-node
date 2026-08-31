@@ -1,9 +1,9 @@
 /**
  * How many files each periodic sweep looks at per pass.
  *
- * Every sweep asks peers something, so an unbounded one turns a node with many
- * records into a source of steady chatter. Repair may transfer a file, so it
- * gets the smallest batch; the others only exchange short messages.
+ * The batch caps memory, fan-out, and work claimed by one pass. Repair chains
+ * passes until a cycle completes; `repairBatchDelayMs` and probe concurrency
+ * separately control its sustained peer traffic.
  */
 export const SWEEP_BATCHES = { repair: 50, demote: 200 }
 

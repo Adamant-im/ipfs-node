@@ -3,6 +3,7 @@ import { config } from '../config.js'
 import { helia } from '../helia.js'
 import { admitUpload, getUploadSession } from '../middleware/uploadGuards.js'
 import { readLimiter, uploadLimiter } from '../middleware/rateLimiter.js'
+import { admitDownload } from '../middleware/downloadGuards.js'
 import { multerStorage } from '../multer.js'
 import {
   abortUploadedReplicas,
@@ -99,7 +100,7 @@ router.get('/:cid/status', readLimiter, async (req, res, next) => {
   }
 })
 
-router.get('/:cid', readLimiter, async (req, res, next) => {
+router.get('/:cid', readLimiter, admitDownload, async (req, res, next) => {
   const requestController = new AbortController()
   res.once('close', () => {
     if (!res.writableEnded) {

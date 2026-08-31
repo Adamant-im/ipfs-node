@@ -54,7 +54,11 @@ export function downloadFile(
       idleTimeoutMs,
       totalTimeoutMs:
         options.totalTimeoutMs ??
-        Math.min(2_147_483_647, Math.max(idleTimeoutMs, sizeAwareTimeoutMs))
+        Math.min(
+          2_147_483_647,
+          config.downloadMaxDurationMs,
+          Math.max(idleTimeoutMs, sizeAwareTimeoutMs)
+        )
     },
     () => new FileNotFoundError('Unable to retrieve the file. Request timed out.'),
     options.signal

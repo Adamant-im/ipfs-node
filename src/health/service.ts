@@ -73,7 +73,7 @@ async function countAttestations(now: number): Promise<number> {
 export function runHealthCheckpoint(): Promise<HealthSnapshot> {
   if (inFlight !== undefined) {
     rerunRequested = true
-    return Promise.resolve(snapshot)
+    return Promise.resolve(refreshHealthSnapshot(snapshot, Date.now(), config.health))
   }
 
   const run = (async () => {
@@ -178,5 +178,5 @@ export async function stopHealthService(): Promise<void> {
 
 /** Cached, read-only response for the always-200 health endpoint. */
 export function getHealthSnapshot(): HealthSnapshot {
-  return refreshHealthSnapshot(snapshot, Date.now())
+  return refreshHealthSnapshot(snapshot, Date.now(), config.health)
 }

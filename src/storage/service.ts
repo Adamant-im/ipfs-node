@@ -937,7 +937,10 @@ async function rescueOrphanedFiles(
   }
 
   await Promise.all(
-    Array.from({ length: Math.min(4, candidates.length) }, async () => processNext())
+    Array.from(
+      { length: Math.min(config.replication.repairProbeConcurrency, candidates.length) },
+      async () => processNext()
+    )
   )
 
   rescued.sort()

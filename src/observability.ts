@@ -17,8 +17,7 @@ const metrics: HttpMetrics = {
 }
 
 /** Bounded HTTP counters with no path, CID, IP, or user-controlled labels. */
-export const collectHttpMetrics: RequestHandler = (req, res, next) => {
-  void req
+export const collectHttpMetrics: RequestHandler = (_req, res, next) => {
   const started = performance.now()
   let settled = false
   metrics.requests += 1

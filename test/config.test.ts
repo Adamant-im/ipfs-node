@@ -54,6 +54,7 @@ describe('validateConfig', () => {
     assert.equal(parsed.health.requiredPeerCount, 0)
     assert.equal(parsed.downloadIdleTimeout, 20_000)
     assert.equal(parsed.downloadMinBytesPerSecond, 32 * 1024)
+    assert.equal(parsed.downloadMaxDurationMs, 4 * 60 * 60 * 1_000)
   })
 
   it('ignores unknown keys so deployments can carry extras', () => {
@@ -139,6 +140,13 @@ describe('validateConfig', () => {
         raw.downloadMinBytesPerSecond = 0
       },
       /downloadMinBytesPerSecond/
+    ],
+    [
+      'download maximum duration is below the idle timeout',
+      (raw) => {
+        raw.downloadMaxDurationMs = 1
+      },
+      /downloadMaxDurationMs/
     ]
   ]
 

@@ -33,8 +33,7 @@ export function createNodeRouters(deps: NodeRouteDependencies): {
   const publicNodeRouter = Router()
   const nodeRouter = Router()
 
-  publicNodeRouter.get('/health', (req, res, next) => {
-    void req
+  publicNodeRouter.get('/health', (_req, res, next) => {
     try {
       res.status(200).send({
         version: deps.version,
@@ -47,8 +46,7 @@ export function createNodeRouters(deps: NodeRouteDependencies): {
   })
 
   /** Legacy PWA/iOS contract. Keep public and free of node identity or operator data. */
-  publicNodeRouter.get('/info', deps.readLimiter, (req, res, next) => {
-    void req
+  publicNodeRouter.get('/info', deps.readLimiter, (_req, res, next) => {
     try {
       res.send({
         version: deps.version,
@@ -62,8 +60,7 @@ export function createNodeRouters(deps: NodeRouteDependencies): {
   })
 
   /** Detailed node identity and storage report for authenticated operators. */
-  nodeRouter.get('/details', (req, res, next) => {
-    void req
+  nodeRouter.get('/details', (_req, res, next) => {
     try {
       const storage = deps.getStorageMetrics()
       res.send({
@@ -79,6 +76,7 @@ export function createNodeRouters(deps: NodeRouteDependencies): {
         availableBytes: storage.availableBytes,
         reservedBytes: storage.reservedBytes,
         health: {
+          // Keep the complete public Health schema so the OpenAPI $ref remains exact.
           version: deps.version,
           uptimeMs: deps.uptimeMs(),
           ...deps.getHealthSnapshot()

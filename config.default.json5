@@ -36,6 +36,7 @@
   // A transfer may run longer than discovery while chunks keep arriving.
   downloadIdleTimeout: 20000,
   downloadMinBytesPerSecond: 32768,
+  downloadMaxDurationMs: 14400000, // 4 h absolute ceiling for one response
   cors: {
     // Exact origins and left-most subdomain wildcards are supported.
     allowedOrigins: [
@@ -64,6 +65,7 @@
   storage: {
     maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
     maxConcurrentUploads: 32, // Uploads writing into the blockstore at the same time; over this, 429
+    maxConcurrentDownloads: 64, // Downloads holding a socket and UnixFS iterator; over this, 429
     diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
     // true keeps an upload temporary until POST /api/file/:cid/confirm.
     // Enabling it is a protocol change: clients must perform that call.
@@ -101,7 +103,8 @@
     repairEnabled: true,
     repairSchedule: '0 */30 * * * *',
     // Bounded passes continue until a complete repair cycle is recorded.
-    repairBatchDelayMs: 1000
+    repairBatchDelayMs: 1000,
+    repairProbeConcurrency: 4
   },
   health: {
     checkpointIntervalMs: 60000,

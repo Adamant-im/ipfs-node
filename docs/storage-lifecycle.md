@@ -13,13 +13,14 @@ default, so a configuration file written before this feature keeps working. See
 An upload is refused before a single block reaches the blockstore when any of
 these limits is exceeded.
 
-| Limit                  | Option                         | Response |
-| ---------------------- | ------------------------------ | -------- |
-| Concurrent uploads     | `storage.maxConcurrentUploads` | `429`    |
-| Aggregate request size | `storage.maxRequestSizeBytes`  | `413`    |
-| Disk reserve           | `storage.diskReserveBytes`     | `507`    |
-| Files per request      | `maxFileCount`                 | `400`    |
-| Single file size       | `uploadLimitSizeBytes`         | `400`    |
+| Limit                  | Option                           | Response |
+| ---------------------- | -------------------------------- | -------- |
+| Concurrent uploads     | `storage.maxConcurrentUploads`   | `429`    |
+| Concurrent downloads   | `storage.maxConcurrentDownloads` | `429`    |
+| Aggregate request size | `storage.maxRequestSizeBytes`    | `413`    |
+| Disk reserve           | `storage.diskReserveBytes`       | `507`    |
+| Files per request      | `maxFileCount`                   | `400`    |
+| Single file size       | `uploadLimitSizeBytes`           | `400`    |
 
 The first three are checked by the upload guard before the multipart parser
 runs. The last two are enforced by the parser itself through
@@ -458,7 +459,9 @@ The repair job (`replication.repairSchedule`, or `POST /api/storage/repair`)
 lists confirmed files this node holds whose designated peers have not all
 acknowledged, and places the missing copies again.
 
-Each scheduled pass remains bounded to 50 confirmed records. Its sorted cursor and
+Each scheduled pass remains bounded to 50 confirmed records shared by local-holder
+repair and released-record rescue. The inter-pass delay and probe concurrency
+bound sustained peer load. Its sorted cursor and
 aggregate result are persisted under the node datastore, so restart resumes the
 same cycle. A repair checkpoint is recorded only after a pass reaches the end
 of the candidate set; a pass over one batch is not presented as full-fleet
