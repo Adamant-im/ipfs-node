@@ -23,6 +23,8 @@ export interface NodeRouteDependencies {
   }
   getHealthSnapshot: () => HealthSnapshot
   getHttpMetrics: () => unknown
+  /** Admission-limiter occupancy; operator-only, like the byte-accurate figures. */
+  getConcurrencyMetrics: () => unknown
 }
 
 /** Build public and administrative node routers from explicit runtime dependencies. */
@@ -81,7 +83,8 @@ export function createNodeRouters(deps: NodeRouteDependencies): {
           uptimeMs: deps.uptimeMs(),
           ...deps.getHealthSnapshot()
         },
-        http: deps.getHttpMetrics()
+        http: deps.getHttpMetrics(),
+        concurrency: deps.getConcurrencyMetrics()
       })
     } catch (err) {
       next(err)

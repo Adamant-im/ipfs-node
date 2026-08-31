@@ -359,6 +359,20 @@ export function validateConfig(raw: unknown): Config {
   // uploadLimitSizeBytes and maxFileCount. Throws with its own message.
   validateSecurityConfig(root)
 
+  // The ceiling wins over the size-aware deadline, so one set below the time
+  // the largest permitted file needs would cut those transfers off mid-stream
+  // and report the generic retrieval timeout. Refuse it instead of silently
+  // making large files undownloadable.
+  const largestFileTransferMs =
+    Math.ceil((root.uploadLimitSizeBytes as number) / downloadMinBytesPerSecond) * 1_000
+  if (downloadMaxDurationMs < largestFileTransferMs) {
+    fail(
+      'downloadMaxDurationMs',
+      `must be at least ${largestFileTransferMs}, the time an ${String(root.uploadLimitSizeBytes)} ` +
+        `byte file needs at downloadMinBytesPerSecond ${downloadMinBytesPerSecond}`
+    )
+  }
+
   const cors = requireObject(root.cors, 'cors')
 
   // Owns the storage lifecycle and replication policy. Both sections are

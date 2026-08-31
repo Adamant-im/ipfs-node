@@ -52,3 +52,31 @@ export const COPY_INTAKE_FLOOR = 4
 export const incomingCopyLimiter = new ConcurrencyLimiter(
   Math.max(COPY_INTAKE_FLOOR, Math.floor(config.storage.maxConcurrentUploads / COPY_INTAKE_SHARE))
 )
+
+/** Occupancy of each admission limiter. */
+export interface ConcurrencyMetrics {
+  uploads: { active: number; limit: number }
+  incomingCopies: { active: number; limit: number }
+  downloads: { active: number; limit: number; perClientLimit: number }
+}
+
+/**
+ * Report how full the admission limiters are.
+ *
+ * A limiter refusal and a rate-limit refusal are both `429`, so without the
+ * occupancy an operator cannot tell a client that requests too fast from a
+ * node that has run out of slots — opposite responses. Kept off the public
+ * storage report because it describes node capacity, like the byte-accurate
+ * figures on `GET /api/node/details`.
+ */
+export function getConcurrencyMetrics(): ConcurrencyMetrics {
+  return {
+    uploads: { active: uploadLimiter.active, limit: uploadLimiter.limit },
+    incomingCopies: { active: incomingCopyLimiter.active, limit: incomingCopyLimiter.limit },
+    downloads: {
+      active: downloadLimiter.active,
+      limit: downloadLimiter.limit,
+      perClientLimit: config.storage.maxConcurrentDownloadsPerClient
+    }
+  }
+}

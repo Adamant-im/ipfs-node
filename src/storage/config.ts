@@ -45,6 +45,13 @@ export interface StorageConfig {
   maxConcurrentUploads: number
   /** Maximum number of file responses retrieving content at once. */
   maxConcurrentDownloads: number
+  /**
+   * Share of {@link maxConcurrentDownloads} one client address may hold.
+   *
+   * The global bound protects the node; this one protects everybody else from
+   * a single address holding every slot for the length of its transfers.
+   */
+  maxConcurrentDownloadsPerClient: number
   /** Free space on the blockstore filesystem that uploads must never consume. */
   diskReserveBytes: number
   /** When true, an upload stays temporary until an authorized confirmation. */
@@ -95,6 +102,7 @@ export const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   maxRequestSizeBytes: 512 * MiB,
   maxConcurrentUploads: 32,
   maxConcurrentDownloads: 64,
+  maxConcurrentDownloadsPerClient: 8,
   diskReserveBytes: 5 * GiB,
   confirmationRequired: false,
   temporaryTtlMs: 24 * 60 * 60 * 1000,
@@ -223,6 +231,12 @@ export function resolveStorageConfig(raw: unknown, uploadLimitSizeBytes: number)
       defaults.maxConcurrentDownloads,
       1
     ),
+    maxConcurrentDownloadsPerClient: optionalInteger(
+      input.maxConcurrentDownloadsPerClient,
+      'storage.maxConcurrentDownloadsPerClient',
+      defaults.maxConcurrentDownloadsPerClient,
+      1
+    ),
     diskReserveBytes: optionalInteger(
       input.diskReserveBytes,
       'storage.diskReserveBytes',
@@ -247,6 +261,13 @@ export function resolveStorageConfig(raw: unknown, uploadLimitSizeBytes: number)
     fail(
       'storage.maxRequestSizeBytes',
       'must be greater than or equal to uploadLimitSizeBytes, otherwise no single file can be uploaded'
+    )
+  }
+
+  if (storage.maxConcurrentDownloadsPerClient > storage.maxConcurrentDownloads) {
+    fail(
+      'storage.maxConcurrentDownloadsPerClient',
+      'must not exceed storage.maxConcurrentDownloads, otherwise the per-client share is never applied'
     )
   }
 

@@ -69,6 +69,7 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "maxRequestSizeBytes": 536870912,
     "maxConcurrentUploads": 32,
     "maxConcurrentDownloads": 64,
+    "maxConcurrentDownloadsPerClient": 8,
     "diskReserveBytes": 5368709120,
     "confirmationRequired": false,
     "temporaryTtlMs": 86400000,
@@ -111,8 +112,15 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
 (default `32768`) derives a complete-transfer deadline from the file size, while
 `downloadMaxDurationMs` (default four hours) provides an absolute ceiling.
 `storage.maxConcurrentDownloads` (default `64`) bounds sockets and UnixFS
-iterators globally. Discovery, stat, and streaming have separate bounds, so a
-failed request may spend more than one `findFileTimeout` before returning `408`.
+iterators globally, and `storage.maxConcurrentDownloadsPerClient` (default `8`)
+keeps one address from holding every slot. Discovery, stat, and streaming have
+separate bounds, so a failed request may spend more than one `findFileTimeout`
+before returning `408`.
+
+Startup refuses a `downloadMaxDurationMs` below the time `uploadLimitSizeBytes`
+needs at `downloadMinBytesPerSecond`: the ceiling wins over the size-aware
+deadline, so a lower value would cut the largest permitted files off mid-stream
+and report them as retrieval timeouts.
 
 `storage`, `replication`, and `health` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Storage and replication are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
 
@@ -423,9 +431,11 @@ Example response:
 
 The endpoint always returns `200`; consumers must inspect `state`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle with no known backlog, and the configured peer attestations all pass. It freezes on failure. Observation timestamps and ages let clients reject an absolutely stale cluster even when every node reports the same height. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
 
+State changes are deliberately asymmetric. The response is served from the last checkpoint, and reading it recomputes only what elapsed time can decide, so a node may be downgraded to `degraded` or `stale` between checkpoints. Recovery is never decided on a read: returning to `ready` requires a successful checkpoint, so expect up to `health.checkpointIntervalMs` of lag after the underlying fault clears. `checkpointFresh`, `storageFresh`, and `repairFresh` follow the same rule; every other entry in `checks`, along with `membership` and `startup`, describes the moment identified by `checkpoint.observedAt` and not the moment of the request. Peers may attest an adjacent round across a boundary, so two healthy nodes can briefly report heights one `checkpointIntervalMs` apart.
+
 `membership.version` identifies the configured peer-set epoch. Changing the node list resets the persisted checkpoint for that node: `height` remains `0` until the first valid checkpoint under the new membership. Clients must compare heights only when membership versions match and treat a version change as a new epoch.
 
-During a staged deployment, older peers do not implement the health protocol. Set `health.requiredPeerCount` to `0` on the transitioning fleet, then raise it after every required peer is upgraded; otherwise prolonged `degraded` health is the expected fail-safe result.
+During a staged deployment, older peers do not implement the health protocol. Set `health.requiredPeerCount` to `0` on the transitioning fleet, then raise it after every required peer is upgraded; otherwise prolonged `degraded` health is the expected fail-safe result. While it is `0`, `checks.peerAttestations` is always `true` and the checkpoint proves only this node's own prerequisites: network coverage is not validated until the threshold is raised, so treat the transition window as unverified for routing decisions that depend on it.
 
 Repair runs in bounded 50-record passes. The same selected batch feeds both local-holder repair and released-record rescue. A scheduled run starts a full cycle immediately and continues its remaining passes after `replication.repairBatchDelayMs`; this delay and `replication.repairProbeConcurrency` control peer load, while `repairSchedule` controls when a new completed cycle is refreshed. Set `health.repairMaxAgeMs` longer than the largest expected full-cycle duration plus the schedule interval. An incomplete or backlogged cycle intentionally keeps health degraded.
 

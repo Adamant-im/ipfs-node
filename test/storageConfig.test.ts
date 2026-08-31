@@ -47,6 +47,15 @@ describe('resolveStorageConfig', () => {
   it('rejects limits that would disable a guarantee', () => {
     assert.throws(() => resolveStorageConfig({ maxConcurrentUploads: 0 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ maxConcurrentDownloads: 0 }, UPLOAD_LIMIT))
+    assert.throws(() => resolveStorageConfig({ maxConcurrentDownloadsPerClient: 0 }, UPLOAD_LIMIT))
+    assert.throws(
+      () =>
+        resolveStorageConfig(
+          { maxConcurrentDownloads: 4, maxConcurrentDownloadsPerClient: 5 },
+          UPLOAD_LIMIT
+        ),
+      /maxConcurrentDownloadsPerClient/
+    )
     assert.throws(() => resolveStorageConfig({ temporaryTtlMs: 0 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ diskReserveBytes: -1 }, UPLOAD_LIMIT))
     assert.throws(() => resolveStorageConfig({ confirmationRequired: 'yes' }, UPLOAD_LIMIT))

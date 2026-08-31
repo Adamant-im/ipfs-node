@@ -99,7 +99,7 @@ paths:
         '408':
           description: Discovery or complete retrieval timed out
         '429':
-          description: Read rate or global download concurrency limit exceeded
+          description: Read rate, per-client, or global download concurrency limit exceeded
   /api/file/{cid}/status:
     parameters:
       - $ref: '#/components/parameters/Cid'
@@ -195,11 +195,17 @@ components:
         state:
           type: string
           enum: [starting, ready, stale, degraded]
-          description: Stale only after checkpoint age exceeds maxAgeMs; the exact limit is valid
+          description: >-
+            Downgrades happen at read time; recovery to ready needs a successful
+            checkpoint, so expect up to checkpoint.intervalMs of lag. Stale only
+            after checkpoint age exceeds maxAgeMs; the exact limit is valid
         height:
           type: integer
           minimum: 0
-          description: Persisted Unix milliseconds at the start of the last valid fixed round
+          description: >-
+            Persisted Unix milliseconds at the start of the last valid fixed round.
+            Peers may attest an adjacent round across a boundary, so two healthy
+            nodes can report heights one intervalMs apart at a round change
         timestamp: { type: integer }
         checkpoint:
           type: object
@@ -244,10 +250,11 @@ components:
             backlog: { type: integer, minimum: 0 }
         checks:
           type: object
-          description: Storage and repair freshness are updated at read time; other checks describe checkpoint.observedAt
+          description: Checkpoint, storage, and repair freshness are recomputed at read time; every other check describes checkpoint.observedAt
           additionalProperties: { type: boolean }
     HttpMetrics:
       type: object
+      description: Counters accumulated since process start, not a sliding window
       required:
         - requests
         - responses
@@ -286,6 +293,7 @@ components:
         - reservedBytes
         - health
         - http
+        - concurrency
       properties:
         version: { type: string }
         timestamp: { type: integer }
@@ -303,6 +311,31 @@ components:
         reservedBytes: { type: integer, minimum: 0 }
         health: { $ref: '#/components/schemas/Health' }
         http: { $ref: '#/components/schemas/HttpMetrics' }
+        concurrency: { $ref: '#/components/schemas/ConcurrencyMetrics' }
+    ConcurrencyMetrics:
+      type: object
+      description: Admission-limiter occupancy, so a capacity 429 is distinguishable from a rate-limit 429
+      required: [uploads, incomingCopies, downloads]
+      properties:
+        uploads:
+          type: object
+          required: [active, limit]
+          properties:
+            active: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1 }
+        incomingCopies:
+          type: object
+          required: [active, limit]
+          properties:
+            active: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1 }
+        downloads:
+          type: object
+          required: [active, limit, perClientLimit]
+          properties:
+            active: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1 }
+            perClientLimit: { type: integer, minimum: 1 }
     LegacyNodeInfo:
       type: object
       required:

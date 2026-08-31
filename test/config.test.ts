@@ -55,6 +55,7 @@ describe('validateConfig', () => {
     assert.equal(parsed.downloadIdleTimeout, 20_000)
     assert.equal(parsed.downloadMinBytesPerSecond, 32 * 1024)
     assert.equal(parsed.downloadMaxDurationMs, 4 * 60 * 60 * 1_000)
+    assert.equal(parsed.storage.maxConcurrentDownloadsPerClient, 8)
   })
 
   it('ignores unknown keys so deployments can carry extras', () => {
@@ -145,6 +146,14 @@ describe('validateConfig', () => {
       'download maximum duration is below the idle timeout',
       (raw) => {
         raw.downloadMaxDurationMs = 1
+      },
+      /downloadMaxDurationMs/
+    ],
+    [
+      'download ceiling cannot carry the largest permitted file',
+      (raw) => {
+        // 256 MiB at 32 KiB/s needs 8192 s; a one-minute ceiling would cut it off.
+        raw.downloadMaxDurationMs = 60_000
       },
       /downloadMaxDurationMs/
     ]

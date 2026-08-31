@@ -66,6 +66,8 @@
     maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
     maxConcurrentUploads: 32, // Uploads writing into the blockstore at the same time; over this, 429
     maxConcurrentDownloads: 64, // Downloads holding a socket and UnixFS iterator; over this, 429
+    // Share of the above one client address may hold, so nobody can take every slot
+    maxConcurrentDownloadsPerClient: 8,
     diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
     // true keeps an upload temporary until POST /api/file/:cid/confirm.
     // Enabling it is a protocol change: clients must perform that call.

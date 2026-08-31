@@ -1,5 +1,14 @@
 import type { RequestHandler } from 'express'
 
+/**
+ * Counters accumulated since process start.
+ *
+ * They are deliberately not a sliding window: a window needs retained samples,
+ * and the point of this module is a fixed-size report. `averageResponseTimeMs`
+ * is therefore a lifetime figure, useful as a trend and not as a current
+ * latency reading. A collector scraping `GET /api/node/details` derives rates
+ * by differencing consecutive samples.
+ */
 interface HttpMetrics {
   requests: number
   responses: Record<'2xx' | '3xx' | '4xx' | '5xx', number>

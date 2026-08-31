@@ -34,7 +34,13 @@ export async function loadHealthCheckpoint(store: Datastore): Promise<HealthChec
   }
 }
 
-/** Persist a completed checkpoint atomically through the datastore implementation. */
+/**
+ * Persist a completed checkpoint as one datastore write.
+ *
+ * The whole checkpoint is a single key, so a crash leaves either the previous
+ * value or the new one. That is durability for this record, not a transaction:
+ * a future checkpoint spread over several keys would need one of its own.
+ */
 export async function saveHealthCheckpoint(
   store: Datastore,
   checkpoint: HealthCheckpoint

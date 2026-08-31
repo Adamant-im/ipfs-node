@@ -168,16 +168,23 @@ export const replicationRepairCron = new CronJob(config.replication.repairSchedu
   repairCycleDriver.triggerSchedule()
 })
 
+/**
+ * Report one bounded pass.
+ *
+ * Whether a pass starts a cycle is decided by the persisted cursor, not by the
+ * trigger: a manual pass, and a schedule tick that follows an abandoned cycle,
+ * both resume the cursor a previous pass left behind.
+ */
 function logRepairPass(trigger: RepairTrigger): void {
+  const cursor = evidence?.cursor ?? null
+
   logger.info(
     {
       event: 'replication_repair_pass',
       trigger,
-      cursor: evidence?.cursor ?? null
+      cursor
     },
-    trigger === 'continuation'
-      ? 'Continuing replication repair cycle'
-      : 'Starting replication repair cycle'
+    cursor === null ? 'Starting replication repair cycle' : 'Continuing replication repair cycle'
   )
 }
 
@@ -186,7 +193,17 @@ const repairCycleDriver = new RepairCycleDriver({
   runPass: repairUnderReplicatedFiles,
   busyError: () => new ReplicationRepairBusyError(),
   onStart: logRepairPass,
-  onError: (err) => logger.error(`${err.message}\n${err.stack}`)
+  onError: (err) => logger.error(`${err.message}\n${err.stack}`),
+  onAbandon: (err, failures) =>
+    logger.error(
+      {
+        event: 'replication_repair_cycle_abandoned',
+        failures,
+        cursor: evidence?.cursor ?? null,
+        err
+      },
+      'Replication repair cycle abandoned after repeated failures; it resumes on the next schedule'
+    )
 })
 
 /** Run one manual pass without interrupting automatic cycle continuation. */

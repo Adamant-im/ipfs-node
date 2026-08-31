@@ -2,6 +2,7 @@ import { packageJson } from '../config.js'
 import { getDiskUsageStats } from '../disk-usage.cron.js'
 import { helia } from '../helia.js'
 import { getStorageMetrics } from '../storage/metrics.js'
+import { getConcurrencyMetrics } from '../storage/state.js'
 import { getHealthSnapshot } from '../health/service.js'
 import { getHttpMetrics } from '../observability.js'
 import { readLimiter } from '../middleware/rateLimiter.js'
@@ -18,7 +19,8 @@ const routers = createNodeRouters({
   getDiskUsageStats,
   getStorageMetrics,
   getHealthSnapshot,
-  getHttpMetrics
+  getHttpMetrics,
+  getConcurrencyMetrics
 })
 
 export const publicNodeRouter = routers.publicNodeRouter
