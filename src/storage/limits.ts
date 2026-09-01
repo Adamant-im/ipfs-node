@@ -1,11 +1,11 @@
 /**
- * Pure storage admission helpers.
+ * Pure upload admission helpers.
  *
  * They are deliberately free of Express, Helia and configuration imports so
  * that every boundary they guard can be exercised in isolation.
  */
 
-/** Counts operations whose request or transfer has not finished yet. */
+/** Counts uploads whose HTTP request has not finished yet. */
 export class ConcurrencyLimiter {
   private inFlight = 0
 

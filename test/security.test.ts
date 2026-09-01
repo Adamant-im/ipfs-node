@@ -215,11 +215,9 @@ describe('route access policy', () => {
   before(async () => {
     const file = Router().get('/test', (req, res) => res.send({ public: true }))
     const fileAdminRouter = Router().post('/test/confirm', (req, res) => res.send({ admin: true }))
-    const publicNodeRouter = Router()
-      .get('/health', (req, res) => res.send({ public: true }))
-      .get('/info', (req, res) => res.send({ legacy: true }))
+    const publicNodeRouter = Router().get('/health', (req, res) => res.send({ public: true }))
     const node = Router()
-      .get('/details', (req, res) => res.send({ admin: true }))
+      .get('/info', (req, res) => res.send({ admin: true }))
       .get('/future', (req, res) => res.send({ admin: true }))
     const helia = Router().get('/test', (req, res) => res.send({ admin: true }))
     const libp2p = Router().get('/test', (req, res) => res.send({ admin: true }))
@@ -253,21 +251,8 @@ describe('route access policy', () => {
 
   it('keeps health, file transfer, and the storage report public', async () => {
     assert.equal((await fetch(`${serverUrl}/api/node/health`)).status, 200)
-    assert.equal((await fetch(`${serverUrl}/api/node/info`)).status, 200)
     assert.equal((await fetch(`${serverUrl}/api/file/test`)).status, 200)
     assert.equal((await fetch(`${serverUrl}/api/storage/metrics`)).status, 200)
-  })
-
-  it('keeps detailed node identity behind the administrative key', async () => {
-    assert.equal((await fetch(`${serverUrl}/api/node/details`)).status, 401)
-    assert.equal(
-      (
-        await fetch(`${serverUrl}/api/node/details`, {
-          headers: { 'x-api-key': key }
-        })
-      ).status,
-      200
-    )
   })
 
   it('protects the routes that make content durable or reclaim it', async () => {

@@ -4,7 +4,6 @@
   nodes: [],
   storeFolder: '.adm-ipfs-test',
   logLevel: 'silent',
-  prettyLogs: false,
   peerDiscovery: {
     bootstrap: [],
     // Port 0 lets the OS pick a free port so tests never clash with a running node
@@ -51,14 +50,5 @@
     requestTimeoutMs: 5000,
     repairEnabled: false,
     repairSchedule: '0 */30 * * * *'
-  },
-  health: {
-    checkpointIntervalMs: 1000,
-    maxCheckpointAgeMs: 3000,
-    storageMaxAgeMs: 2000,
-    repairMaxAgeMs: 5000,
-    clockSkewToleranceMs: 100,
-    peerAttestationTimeoutMs: 100,
-    requiredPeerCount: 0
   }
 }

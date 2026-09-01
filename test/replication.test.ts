@@ -25,9 +25,7 @@ const baseConfig: ReplicationConfig = {
   requireQuorumOnUpload: false,
   requestTimeoutMs: 1000,
   repairEnabled: true,
-  repairSchedule: '0 * * * * *',
-  repairBatchDelayMs: 1_000,
-  repairProbeConcurrency: 4
+  repairSchedule: '0 * * * * *'
 }
 
 const peer = (name: string): ReplicationPeer => ({

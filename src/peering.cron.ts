@@ -55,7 +55,7 @@ export const peeringCron = new CronJob(config.peeringSchedule, () => {
 
   running = true
   peerWithKnownNodes()
-    .catch((err: Error) => logger.error({ err }, 'Peering cycle failed'))
+    .catch((err: Error) => logger.error(`${err.message}\n${err.stack}`))
     .finally(() => (running = false))
 })
 

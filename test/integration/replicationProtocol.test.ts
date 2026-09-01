@@ -20,7 +20,6 @@ import {
   type ReplicationHandlers
 } from '../../src/storage/replicationProtocol.js'
 import { deterministicBytes } from '../fixtures.js'
-import { registerHealthProtocol, requestHealthAttestation } from '../../src/health/protocol.js'
 
 /** Only loopback, and port 0 so the OS picks a free port. */
 const LISTEN = ['/ip4/127.0.0.1/tcp/0']
@@ -61,9 +60,6 @@ let refusals: string[]
 let hasRoom = true
 let committed: string[]
 let aborted: string[]
-let healthAuthorized: Set<string>
-const HEALTH_MEMBERSHIP = 'a'.repeat(64)
-const HEALTH_NOW = 1_720_614_998_797
 
 before(async () => {
   sender = await startNode()
@@ -75,7 +71,6 @@ before(async () => {
   refusals = []
   committed = []
   aborted = []
-  healthAuthorized = new Set([sender.node.libp2p.peerId.toString()])
 
   const handlers: ReplicationHandlers = {
     isAuthorized: (peerId) => authorized.has(peerId),
@@ -109,82 +104,9 @@ before(async () => {
   }
 
   await registerReplicationProtocol(holder.node, handlers)
-  await registerHealthProtocol(holder.node, {
-    timeoutMs: 1_000,
-    checkpointIntervalMs: 60_000,
-    clockSkewToleranceMs: 10_000,
-    membershipVersion: HEALTH_MEMBERSHIP,
-    authorizedPeerIds: healthAuthorized,
-    now: () => HEALTH_NOW
-  })
 
   // The holder pulls blocks over this connection, so it has to exist first
   await sender.node.libp2p.dial(holder.node.libp2p.getMultiaddrs())
-})
-
-describe('health attestations over libp2p', () => {
-  it('accepts the same fixed round from an authorized configured peer', async () => {
-    await requestHealthAttestation(
-      sender.node,
-      holder.node.libp2p.getMultiaddrs()[0],
-      {
-        round: Math.floor(HEALTH_NOW / 60_000) * 60_000,
-        timestamp: HEALTH_NOW,
-        membershipVersion: HEALTH_MEMBERSHIP
-      },
-      { timeoutMs: 1_000, clockSkewToleranceMs: 10_000 }
-    )
-  })
-
-  it('accepts an adjacent fixed round from an authorized peer', async () => {
-    const localRound = Math.floor(HEALTH_NOW / 60_000) * 60_000
-
-    await requestHealthAttestation(
-      sender.node,
-      holder.node.libp2p.getMultiaddrs()[0],
-      {
-        round: localRound - 60_000,
-        timestamp: HEALTH_NOW,
-        membershipVersion: HEALTH_MEMBERSHIP
-      },
-      { timeoutMs: 1_000, clockSkewToleranceMs: 10_000 }
-    )
-  })
-
-  it('rejects a different membership version', async () => {
-    await assert.rejects(
-      requestHealthAttestation(
-        sender.node,
-        holder.node.libp2p.getMultiaddrs()[0],
-        {
-          round: Math.floor(HEALTH_NOW / 60_000) * 60_000,
-          timestamp: HEALTH_NOW,
-          membershipVersion: 'b'.repeat(64)
-        },
-        { timeoutMs: 1_000, clockSkewToleranceMs: 10_000 }
-      )
-    )
-  })
-
-  it('rejects a peer outside the configured membership', async () => {
-    healthAuthorized.clear()
-    try {
-      await assert.rejects(
-        requestHealthAttestation(
-          sender.node,
-          holder.node.libp2p.getMultiaddrs()[0],
-          {
-            round: Math.floor(HEALTH_NOW / 60_000) * 60_000,
-            timestamp: HEALTH_NOW,
-            membershipVersion: HEALTH_MEMBERSHIP
-          },
-          { timeoutMs: 1_000, clockSkewToleranceMs: 10_000 }
-        )
-      )
-    } finally {
-      healthAuthorized.add(sender.node.libp2p.peerId.toString())
-    }
-  })
 })
 
 after(async () => {

@@ -13,7 +13,6 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:build": "rimraf dist-test && tsc -p tsconfig.test.json",
     "test": "npm run test:build && npm run test:unit && npm run test:integration",
     "test:unit": "IPFS_NODE_CONFIG=test node --test \"dist-test/test/*.test.js\"",

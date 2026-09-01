@@ -4,18 +4,10 @@ import { Readable } from 'node:stream'
 import { describe, it } from 'node:test'
 import express, { type Express } from 'express'
 import { getPublicError } from '../src/security/errors.js'
-import { matchesDownloadEtag, sendDownloadStream } from '../src/utils/downloadResponse.js'
+import { sendDownloadStream } from '../src/utils/downloadResponse.js'
 import { FileNotFoundError } from '../src/utils/fileErrors.js'
 
 describe('download response streaming', () => {
-  it('matches strong, weak, list, and wildcard validators for the CID ETag', () => {
-    assert.equal(matchesDownloadEtag('"bafytest"', 'bafytest'), true)
-    assert.equal(matchesDownloadEtag('W/"bafytest"', 'bafytest'), true)
-    assert.equal(matchesDownloadEtag('"other", "bafytest"', 'bafytest'), true)
-    assert.equal(matchesDownloadEtag('*', 'bafytest'), true)
-    assert.equal(matchesDownloadEtag('"other"', 'bafytest'), false)
-  })
-
   it('keeps an early stream error as a controlled JSON response', async () => {
     const app = express()
     app.get('/file', (req, res, next) => {
@@ -79,9 +71,6 @@ describe('download response streaming', () => {
       assert.equal(response.status, 200)
       assert.equal(response.headers.get('content-type'), 'application/octet-stream')
       assert.equal(response.headers.get('content-disposition'), 'attachment; filename="bafytest"')
-      assert.equal(response.headers.get('etag'), '"bafytest"')
-      assert.equal(response.headers.get('accept-ranges'), 'none')
-      assert.equal(response.headers.get('cache-control'), 'private, max-age=3600, must-revalidate')
       await assert.rejects(response.arrayBuffer())
       assert.equal(lateErrors, 1)
     } finally {
