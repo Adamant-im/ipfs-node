@@ -25,6 +25,14 @@ describe('persisted repair evidence', () => {
     assert.deepEqual(parseEvidence({ ...valid }, NOW), valid)
   })
 
+  it('rejects a payload that is not an object', () => {
+    // `JSON.parse` legally returns these, and reading a field off one would
+    // throw out of the startup path instead of falling back to an empty cycle.
+    for (const value of [null, 42, 'evidence', true, [valid]]) {
+      assert.equal(parseEvidence(value, NOW), null, JSON.stringify(value))
+    }
+  })
+
   it('rejects a completion stamped ahead of the clock', () => {
     // `evaluateHealth` measures repair freshness from this value, so a future
     // timestamp would read as permanently fresh.

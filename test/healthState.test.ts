@@ -165,6 +165,21 @@ describe('health checkpoint state', () => {
     assert.notEqual(result.snapshot.state, 'ready')
   })
 
+  it('fails safe on the first read after the clock moves back', () => {
+    const ready = evaluateHealth(policy, healthy(10_000)).snapshot
+    assert.equal(ready.state, 'ready')
+
+    // `age` clamps a negative duration to zero, so without an explicit lower
+    // bound this would read as a brand new observation instead of an impossible
+    // one, and stay `ready` until the next scheduled evaluation.
+    const rolledBack = refreshHealthSnapshot(ready, 5_000, policy)
+
+    assert.equal(rolledBack.checks.clockConsistent, false)
+    assert.equal(rolledBack.checks.checkpointFresh, false)
+    assert.equal(rolledBack.checks.storageFresh, false)
+    assert.equal(rolledBack.state, 'degraded')
+  })
+
   it('keeps the maximum checkpoint age inclusive', () => {
     const ready = evaluateHealth(policy, healthy(12_345)).snapshot
     const boundary = refreshHealthSnapshot(ready, 15_345, policy)

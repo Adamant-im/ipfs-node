@@ -77,13 +77,14 @@ const LOG_SCRUBBERS: Array<[RegExp, string]> = [
 /**
  * Tokens shaped like an encoded CID, by multibase prefix.
  *
- * A length threshold alone would miss short forms — an identity multihash such
- * as `bafkqad3qojuxmylumuqhaylznrxwcza` is 32 characters — and lowering it would
- * start matching ordinary words. Each match is confirmed by the parser instead,
- * so the shape only has to be cheap enough to skip prose.
+ * The bounds are the shortest a CID can be, not a guess at what looks like one:
+ * an identity multihash over empty bytes encodes to `bafkqaaa`, eight
+ * characters. Ordinary words are inside these bounds too, which is why the
+ * decision belongs to the parser below rather than to the shape — the shape only
+ * has to be cheap enough that most prose never reaches it.
  */
 const CID_CANDIDATE =
-  /\b(?:b[a-z2-7]{15,}|B[A-Z2-7]{15,}|z[1-9A-HJ-NP-Za-km-z]{15,}|f[0-9a-f]{15,}|Qm[1-9A-HJ-NP-Za-km-z]{44})\b/g
+  /\b(?:b[a-z2-7]{6,}|B[A-Z2-7]{6,}|z[1-9A-HJ-NP-Za-km-z]{6,}|f[0-9a-f]{7,}|Qm[1-9A-HJ-NP-Za-km-z]{44})\b/g
 
 /** Replace every token the CID parser accepts, whatever its version or encoding. */
 function scrubCids(value: string): string {

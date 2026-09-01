@@ -199,20 +199,39 @@ export function refreshHealthSnapshot(
   const checkpointAge = age(timestamp, current.checkpoint.observedAt)
   const storageAge = age(timestamp, current.storage.measuredAt)
   const repairAge = age(timestamp, current.replication.lastCompleteAt)
+
+  // `age` clamps a negative duration to zero, so a clock behind the evidence in
+  // this snapshot would read as brand new rather than as impossible. Each
+  // observation is compared against the request time explicitly instead, and the
+  // endpoint fails safe on the first read after a rollback rather than waiting
+  // for the next scheduled evaluation.
+  const notInFuture = (observedAt: number | null): boolean =>
+    observedAt === null || timestamp >= observedAt
+  const clockConsistent =
+    current.checks.clockConsistent &&
+    notInFuture(current.checkpoint.observedAt) &&
+    notInFuture(current.storage.measuredAt) &&
+    notInFuture(current.replication.lastCompleteAt)
+
   const checks = {
     ...current.checks,
-    checkpointFresh: checkpointAge !== null && checkpointAge <= current.checkpoint.maxAgeMs,
+    clockConsistent,
+    checkpointFresh:
+      clockConsistent && checkpointAge !== null && checkpointAge <= current.checkpoint.maxAgeMs,
     storageFresh:
-      current.checks.storageFresh && storageAge !== null && storageAge <= policy.storageMaxAgeMs,
+      current.checks.storageFresh &&
+      clockConsistent &&
+      storageAge !== null &&
+      storageAge <= policy.storageMaxAgeMs,
     repairFresh:
       !current.replication.repairRequired ||
       (current.checks.repairFresh &&
+        clockConsistent &&
         current.replication.backlog === 0 &&
         repairAge !== null &&
-        repairAge <= policy.repairMaxAgeMs &&
-        timestamp >= (current.replication.lastCompleteAt ?? timestamp))
+        repairAge <= policy.repairMaxAgeMs)
   }
-  const freshnessFailed = !checks.storageFresh || !checks.repairFresh
+  const freshnessFailed = !checks.clockConsistent || !checks.storageFresh || !checks.repairFresh
 
   return {
     ...current,

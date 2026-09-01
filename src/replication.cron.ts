@@ -45,12 +45,12 @@ async function loadEvidence(now: number = Date.now()): Promise<RepairCycleEviden
 
   try {
     const stored = await datastore.get(REPAIR_STATE_KEY)
-    let parsed: Partial<RepairCycleEvidence>
+    let parsed: unknown
     try {
-      parsed = JSON.parse(decoder.decode(stored)) as Partial<RepairCycleEvidence>
+      parsed = JSON.parse(decoder.decode(stored)) as unknown
     } catch {
       logger.warn('Ignoring malformed persisted repair-cycle evidence')
-      parsed = {}
+      parsed = null
     }
     evidence = parseEvidence(parsed, now) ?? emptyEvidence(now)
   } catch (err) {

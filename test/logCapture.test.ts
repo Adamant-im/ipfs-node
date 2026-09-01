@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { Writable } from 'node:stream'
 import { describe, it } from 'node:test'
+import { CID } from 'multiformats/cid'
+import * as raw from 'multiformats/codecs/raw'
+import { identity } from 'multiformats/hashes/identity'
 import { createApplicationLogger } from '../src/utils/logger.js'
 
 const CID_V1 = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'
@@ -41,15 +44,19 @@ describe('application log sanitization', () => {
 
   it('covers CID forms a length threshold would miss', () => {
     const { logger, lines } = capture()
-    // Valid CIDv1 with an identity multihash: 32 characters, well under the
-    // length of the common sha2-256 form.
-    const shortCid = 'bafkqad3qojuxmylumuqhaylznrxwcza'
+    // Identity multihash over empty bytes: `bafkqaaa`, the shortest CID there
+    // is, and one an all-CID guarantee has to cover like any other.
+    const shortest = CID.createV1(raw.code, identity.digest(new Uint8Array())).toString()
+    const short = 'bafkqad3qojuxmylumuqhaylznrxwcza'
 
-    logger.error(`Cannot pin ${shortCid}`)
+    logger.error(`Cannot pin ${shortest}`)
+    logger.error(`Cannot pin ${short}`)
 
     const output = lines()
-    assert.equal(output.includes(shortCid), false)
-    assert.equal(output.includes('[cid]'), true)
+    assert.equal(shortest, 'bafkqaaa')
+    assert.equal(output.includes(shortest), false)
+    assert.equal(output.includes(short), false)
+    assert.equal(output.match(/\[cid\]/g)?.length, 2)
   })
 
   it('keeps peer identities and multiaddrs out of a message', () => {

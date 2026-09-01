@@ -35,14 +35,20 @@ function isCount(value: unknown): value is number {
  * so a future timestamp would read as permanently fresh and let a node with an
  * unverified registry advertise itself as ready.
  *
- * @param parsed value decoded from the datastore
+ * @param value raw value decoded from the datastore, of any shape
  * @param now current time, used to reject state from ahead of the clock
  * @returns the evidence, or `null` when it cannot be trusted
  */
-export function parseEvidence(
-  parsed: Partial<RepairCycleEvidence>,
-  now: number
-): RepairCycleEvidence | null {
+export function parseEvidence(value: unknown, now: number): RepairCycleEvidence | null {
+  // `JSON.parse` legally returns `null` and scalars, and a cast does not change
+  // that at runtime. Reading a field off one would throw out of `loadEvidence`,
+  // whose caller is awaited during startup, so an untrusted payload would stop
+  // the node from starting instead of falling back to an empty cycle.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null
+  }
+
+  const parsed = value as Partial<RepairCycleEvidence>
   const valid =
     typeof parsed.membershipVersion === 'string' &&
     typeof parsed.policyVersion === 'string' &&
