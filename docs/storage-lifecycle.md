@@ -479,9 +479,15 @@ bound sustained peer load. Its sorted cursor and
 aggregate result are persisted under the node datastore, so restart resumes the
 same cycle. A repair checkpoint is recorded only after a pass reaches the end
 of the candidate set; a pass over one batch is not presented as full-fleet
-evidence. A completed cycle covers the records that were confirmed when it
-began: content admitted mid-cycle is placed by the upload path and verified by
-the next cycle. A cycle containing an unresolved shortfall is complete but unhealthy,
+evidence.
+
+A cycle commits to a candidate list read once at its start, so the registry is
+scanned per cycle rather than per pass. One more scan at the end names records
+admitted while the cycle was walking; those are appended and covered by the same
+cycle, for a bounded number of catch-up rounds. A cycle that runs out of rounds
+still finishes and hands its cursor back, but it is not published as durability
+evidence: the last cycle that covered its whole set keeps that role, so
+readiness ages out on its own schedule instead of advancing on a coverage gap. A cycle containing an unresolved shortfall is complete but unhealthy,
 and therefore cannot advance the node health checkpoint.
 
 Replication needs the peers to be connected over libp2p, because the copy itself

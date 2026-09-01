@@ -10,7 +10,7 @@ export const diskUsageCron = new CronJob(config.diskUsageScanPeriod, () => {
   if (!started) {
     started = true
     scan()
-      .catch((err) => logger.error(`${err.message}\n${err.stack}`))
+      .catch((err: Error) => logger.error({ err }, 'Disk usage scan failed'))
       .finally(() => (started = false))
   }
 })
@@ -25,7 +25,7 @@ async function scan() {
   logger.info(`Check folder size took ${Date.now() - start} ms.`)
 }
 
-scan().catch((err) => logger.error(`${err.message}\n${err.stack}`))
+scan().catch((err: Error) => logger.error({ err }, 'Disk usage scan failed'))
 
 /**
  * Disk usage in megabytes, kept for the existing `/api/node/info` payload.

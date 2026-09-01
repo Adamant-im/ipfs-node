@@ -264,6 +264,7 @@ components:
       required:
         - requests
         - responses
+        - aborted
         - inFlight
         - totalResponseTimeMs
         - maxResponseTimeMs
@@ -278,6 +279,10 @@ components:
             3xx: { type: integer, minimum: 0 }
             4xx: { type: integer, minimum: 0 }
             5xx: { type: integer, minimum: 0 }
+        aborted:
+          type: integer
+          minimum: 0
+          description: Responses whose connection closed before the body finished, counted apart from the status families
         inFlight: { type: integer, minimum: 0 }
         totalResponseTimeMs: { type: number, minimum: 0 }
         maxResponseTimeMs: { type: number, minimum: 0 }

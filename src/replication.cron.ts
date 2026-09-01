@@ -20,6 +20,8 @@ interface RepairCycleEvidence {
   policyVersion: string
   cursor?: string
   startedAt: number
+  /** Records were admitted behind the cursor, so this cycle cannot cover them. */
+  superseded: boolean
   examined: number
   checked: number
   underReplicated: number
@@ -42,6 +44,7 @@ function emptyEvidence(now = Date.now()): RepairCycleEvidence {
     membershipVersion: membershipVersion(config.nodes),
     policyVersion: currentPolicyVersion(),
     startedAt: now,
+    superseded: false,
     examined: 0,
     checked: 0,
     underReplicated: 0,
@@ -72,6 +75,7 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       (parsed.cursor === undefined || typeof parsed.cursor === 'string') &&
       Number.isSafeInteger(parsed.startedAt) &&
       (parsed.examined === undefined || Number.isSafeInteger(parsed.examined)) &&
+      (parsed.superseded === undefined || typeof parsed.superseded === 'boolean') &&
       Number.isSafeInteger(parsed.checked) &&
       Number.isSafeInteger(parsed.underReplicated) &&
       Number.isSafeInteger(parsed.repaired) &&
@@ -80,7 +84,11 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       (parsed.lastCompletedAt === null || Number.isSafeInteger(parsed.lastCompletedAt)) &&
       typeof parsed.lastCompletedSuccessfully === 'boolean' &&
       Number.isSafeInteger(parsed.lastCompletedBacklog)
-        ? ({ ...parsed, examined: parsed.examined ?? parsed.checked } as RepairCycleEvidence)
+        ? ({
+            ...parsed,
+            examined: parsed.examined ?? parsed.checked,
+            superseded: parsed.superseded ?? false
+          } as RepairCycleEvidence)
         : emptyEvidence()
   } catch (err) {
     if ((err as { code?: string }).code !== 'ERR_NOT_FOUND') throw err
@@ -131,25 +139,46 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
       stillMissing: current.stillMissing + lastReport.stillMissing.length,
       unrecoverable: current.unrecoverable + lastReport.unrecoverable.length
     }
-    const completedAt = lastReport.cycleCompleted ? Date.now() : current.lastCompletedAt
-    const completedSuccessfully = lastReport.cycleCompleted
-      ? aggregate.stillMissing === 0 && aggregate.unrecoverable === 0
-      : current.lastCompletedSuccessfully
+
+    // A cycle whose catch-up rounds ran out ended without covering everything
+    // that arrived while it walked. It still finishes and hands the cursor back,
+    // but it is not published as fresh durability evidence: the last genuinely
+    // complete cycle stays in place instead, so readiness decays on its own
+    // schedule rather than advancing on a coverage gap.
+    const superseded = current.superseded || lastReport.uncovered > 0
+    const publishes = lastReport.cycleCompleted && !superseded
 
     await saveEvidence(
       lastReport.cycleCompleted
         ? {
             ...emptyEvidence(),
-            lastCompletedAt: completedAt,
-            lastCompletedSuccessfully: completedSuccessfully,
-            lastCompletedBacklog: aggregate.stillMissing + aggregate.unrecoverable
+            lastCompletedAt: publishes ? Date.now() : current.lastCompletedAt,
+            lastCompletedSuccessfully: publishes
+              ? aggregate.stillMissing === 0 && aggregate.unrecoverable === 0
+              : current.lastCompletedSuccessfully,
+            lastCompletedBacklog: publishes
+              ? aggregate.stillMissing + aggregate.unrecoverable
+              : current.lastCompletedBacklog
           }
         : {
             ...current,
+            superseded,
             cursor: lastReport.nextCursor,
             ...aggregate
           }
     )
+
+    if (lastReport.cycleCompleted && superseded) {
+      logger.warn(
+        {
+          event: 'replication_repair_cycle_superseded',
+          examined: aggregate.examined,
+          uncovered: lastReport.uncovered
+        },
+        'Repair cycle finished without covering records admitted while it ran; ' +
+          'keeping the previous completed cycle as evidence'
+      )
+    }
 
     if (lastReport.underReplicated > 0) {
       logger.info(
@@ -176,15 +205,17 @@ export const replicationRepairCron = new CronJob(config.replication.repairSchedu
  * both resume the cursor a previous pass left behind.
  */
 function logRepairPass(trigger: RepairTrigger): void {
-  const cursor = evidence?.cursor ?? null
+  const resuming = evidence?.cursor !== undefined
 
   logger.info(
     {
       event: 'replication_repair_pass',
       trigger,
-      cursor
+      resuming,
+      // Bounded progress instead of the cursor, which is a CID.
+      examined: evidence?.examined ?? 0
     },
-    cursor === null ? 'Starting replication repair cycle' : 'Continuing replication repair cycle'
+    resuming ? 'Continuing replication repair cycle' : 'Starting replication repair cycle'
   )
 }
 
@@ -193,13 +224,13 @@ const repairCycleDriver = new RepairCycleDriver({
   runPass: repairUnderReplicatedFiles,
   busyError: () => new ReplicationRepairBusyError(),
   onStart: logRepairPass,
-  onError: (err) => logger.error(`${err.message}\n${err.stack}`),
+  onError: (err) => logger.error({ err }, 'Replication repair pass failed'),
   onAbandon: (err, failures) =>
     logger.error(
       {
         event: 'replication_repair_cycle_abandoned',
         failures,
-        cursor: evidence?.cursor ?? null,
+        examined: evidence?.examined ?? 0,
         err
       },
       'Replication repair cycle abandoned after repeated failures; it resumes on the next schedule'
@@ -238,6 +269,7 @@ export function getReplicationState() {
     cycle: evidence
       ? {
           startedAt: evidence.startedAt,
+          superseded: evidence.superseded,
           examined: evidence.examined,
           checked: evidence.checked,
           underReplicated: evidence.underReplicated,

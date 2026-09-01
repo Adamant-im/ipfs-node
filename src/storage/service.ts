@@ -56,7 +56,8 @@ import {
 } from './meter.js'
 import { claimedBytes, claimSpace, type Claim } from './reservation.js'
 import { fileRegistry, incomingCopyLimiter, storageOperationLock } from './state.js'
-import { nextSweepBatch, sweepBatch } from './sweep.js'
+import { nextSweepBatch } from './sweep.js'
+import { nextRepairCycleBatch } from './repairCycle.js'
 import { claimRepairRecord, releaseRepairRecord } from './repairClaim.js'
 
 const callOptions = (): ReplicationCallOptions => ({
@@ -636,7 +637,10 @@ export function createReplicationHandlers(): ReplicationHandlers {
     cacheCopy: cacheFileLocally,
     onError: (message) => logger.warn(message),
     onRefused: (peerId, op) =>
-      logger.info(`Refused "${op}" from an unknown peer ${peerId}; offering a cached copy instead`)
+      logger.info(
+        { event: 'replication_refused_unknown_peer', op },
+        'Refused an operation from an unknown peer; offering a cached copy instead'
+      )
   }
 }
 
@@ -807,6 +811,8 @@ export interface RepairReport {
   unrecoverable: string[]
   /** This pass reached the end of a complete bounded repair cycle. */
   cycleCompleted: boolean
+  /** Candidates admitted during the cycle that its catch-up rounds could not cover. */
+  uncovered: number
   /** Durable resume cursor for the next pass. */
   nextCursor?: string
 }
@@ -875,7 +881,12 @@ async function rescueOrphanedFiles(
 
       if (!(await helia.blockstore.has(cid))) {
         unrecoverable.push(record.cid)
-        logger.error(`No configured node reports holding ${record.cid}`)
+        // The CID stays out of the log; the repair report returns the full
+        // `unrecoverable` list on the authenticated endpoint that asked for it.
+        logger.error(
+          { event: 'replication_unrecoverable_record' },
+          'No configured node holds a confirmed record'
+        )
         continue
       }
 
@@ -928,7 +939,10 @@ async function rescueOrphanedFiles(
         }
 
         rescued.push(record.cid)
-        logger.warn(`No node was holding ${record.cid}; kept the local copy instead`)
+        logger.warn(
+          { event: 'replication_rescued_record' },
+          'No node was holding a confirmed record; kept the local copy'
+        )
       } catch {
         // The blocks are only partly here, so there is nothing to rescue
         continue
@@ -965,7 +979,8 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
     stillMissing: [],
     rescued: [],
     unrecoverable: [],
-    cycleCompleted: true
+    cycleCompleted: true,
+    uncovered: 0
   }
 
   if (!config.replication.enabled) {
@@ -974,15 +989,17 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
 
   const peers = getReplicationPeers()
   const self = selfPeerId()
-  const records = await fileRegistry.all()
-  const selected = sweepBatch(
-    'repair',
-    records.filter((record) => record.state === 'confirmed' && !isLifecycleBusy(record)),
-    options.cursor
-  )
-  const candidates = selected.records
+  const selected = await nextRepairCycleBatch(fileRegistry, options.cursor)
   report.cycleCompleted = selected.cycleCompleted
   report.nextCursor = selected.nextCursor
+  report.uncovered = selected.uncovered
+
+  // The cycle committed to these CIDs one scan ago, so each record is read
+  // again here rather than trusted from that list. A record that has since been
+  // released or deleted simply drops out of the pass.
+  const candidates = (
+    await Promise.all(selected.cids.map(async (cid) => fileRegistry.get(cid)))
+  ).filter((record): record is FileRecord => record !== undefined)
 
   report.examined = candidates.length
 
@@ -1155,7 +1172,10 @@ export async function demoteReleasableCopies(
 
     if (demoted) {
       report.demoted.push(record.cid)
-      logger.info(`Released the local copy of ${record.cid}; ${holders.length} peers hold it`)
+      logger.info(
+        { event: 'storage_demoted_record', holders: holders.length },
+        'Released a local copy held by peers'
+      )
     }
   }
 

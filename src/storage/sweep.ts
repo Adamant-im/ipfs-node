@@ -29,11 +29,14 @@ export interface SweepBatch<T> {
  * immutable, so a record that existed then either sorts before the cursor and
  * was already visited, or sorts after it and still will be.
  *
- * It proves nothing about records admitted mid-cycle. One that sorts before the
- * current cursor is not visited until the next cycle, which is the right cost:
- * binding completion to a generation of the candidate set would stop a node
- * with steady uploads from ever completing a cycle, and repair freshness gates
- * node health.
+ * It proves nothing about records admitted mid-cycle. Replication repair needs
+ * that guarantee and tracks it in `repairCycle.ts`, which commits to a candidate
+ * list once and reports what arrived behind it; this sweep stays the simple
+ * position-keeping used by demotion.
+ *
+ * @param sweep which sweep is asking; selects the batch size
+ * @param records every current candidate
+ * @param cursor CID the previous pass of this cycle stopped at
  */
 export function sweepBatch<T extends { cid: string }>(
   sweep: SweepName,

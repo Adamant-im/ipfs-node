@@ -1,4 +1,5 @@
 import { pino } from 'pino'
+import type { DestinationStream, LogFn, Logger } from 'pino'
 import { pinoHttp } from 'pino-http'
 import { config } from '../config.js'
 
@@ -59,36 +60,134 @@ export function routeShape(url: string | undefined): string {
 }
 
 /**
+ * Values that must never appear in output a collector retains.
+ *
+ * Multiaddrs are matched first because one embeds a peer id, and the stack
+ * pattern last because it is the only multi-line rule. Each entry is anchored
+ * on a shape that cannot occur in prose, so an operational message keeps its
+ * meaning while the identifier inside it does not survive.
+ */
+const LOG_SCRUBBERS: Array<[RegExp, string]> = [
+  [/\/(?:ip4|ip6|dns|dns4|dns6|dnsaddr)\/[^\s"',)]+/g, '[multiaddr]'],
+  [/\b12D3Koo[1-9A-HJ-NP-Za-km-z]{40,}\b/g, '[peer]'],
+  [/\bQm[1-9A-HJ-NP-Za-km-z]{44}\b/g, '[cid]'],
+  [/\bb[a-z2-7]{58,}\b/g, '[cid]'],
+  [/\n\s+at\s+[\s\S]*$/, ' [stack omitted]']
+]
+
+/**
+ * Remove content identifiers, peer identities, and stack traces from a message.
+ *
+ * The HTTP serializers cannot reach these: they sanitize request and response
+ * objects, while most application logging is a template string built at the
+ * call site. Scrubbing centrally means a call site added later cannot reopen
+ * the hole, which a per-site convention would not guarantee.
+ *
+ * @param value message or string field about to be logged
+ * @returns the same text with every identifier replaced by a fixed placeholder
+ */
+export function scrubLogValue(value: string): string {
+  return LOG_SCRUBBERS.reduce((text, [pattern, placeholder]) => {
+    // A global regex carries `lastIndex` between calls; reset before reuse.
+    pattern.lastIndex = 0
+    return text.replace(pattern, placeholder)
+  }, value)
+}
+
+/** Apply {@link scrubLogValue} through the strings of one log argument. */
+function scrubLogArgument(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') {
+    return scrubLogValue(value)
+  }
+
+  // `logger.error(err)` takes the message straight from the error for `msg`,
+  // before any serializer runs, so the error is replaced by a scrubbed copy
+  // rather than passed through. The `err` serializer then drops the stack.
+  if (value instanceof Error) {
+    const scrubbed: Error & { code?: unknown } = new Error(scrubLogValue(value.message))
+    scrubbed.name = value.name
+    const { code } = value as Error & { code?: unknown }
+    if (code !== undefined) {
+      scrubbed.code = code
+    }
+    return scrubbed
+  }
+
+  if (value === null || typeof value !== 'object' || depth > 4) {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubLogArgument(item, depth + 1))
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, scrubLogArgument(item, depth + 1)])
+  )
+}
+
+/**
  * Application logger.
  *
  * Production output is newline-delimited JSON. Pretty output is opt-in because
  * formatting destroys fields that log collectors use for querying and alerts.
  *
- * `redact` is a second line of defense for call sites that log a request or
- * response object directly; the HTTP serializers below already drop headers.
+ * Three controls keep content and topology out of the output: `hooks.logMethod`
+ * scrubs every message and structured field, the `err` serializer reports an
+ * error without its stack, and `redact` covers call sites that log a request or
+ * response object directly.
  */
-export const logger = pino({
-  level: config.logLevel,
-  redact: {
-    paths: [
-      'req.headers["x-api-key"]',
-      'req.headers.authorization',
-      'req.headers.cookie',
-      'res.headers["set-cookie"]'
-    ],
-    censor: '[redacted]'
-  },
-  transport: config.prettyLogs
-    ? {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          translateTime: 'dd.mm.yy HH:MM:ss Z',
-          ignore: 'pid,hostname'
-        }
+export function createApplicationLogger(
+  options: { level?: string; destination?: DestinationStream } = {}
+): Logger {
+  const level = options.level ?? config.logLevel
+  const shared = {
+    level,
+    hooks: {
+      logMethod(this: Logger, args: unknown[], method: LogFn): void {
+        method.apply(this, args.map((argument) => scrubLogArgument(argument)) as Parameters<LogFn>)
       }
-    : undefined
-})
+    },
+    serializers: {
+      err: (err: Error & { code?: unknown }) => ({
+        type: err.name,
+        message: scrubLogValue(err.message),
+        ...(typeof err.code === 'string' ? { code: err.code } : {})
+      })
+    },
+    redact: {
+      paths: [
+        'req.headers["x-api-key"]',
+        'req.headers.authorization',
+        'req.headers.cookie',
+        'res.headers["set-cookie"]'
+      ],
+      censor: '[redacted]'
+    }
+  }
+
+  // A caller-supplied destination is how the sanitizing wiring is exercised; a
+  // transport would send the records to another thread instead.
+  if (options.destination !== undefined) {
+    return pino(shared, options.destination)
+  }
+
+  return pino({
+    ...shared,
+    transport: config.prettyLogs
+      ? {
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            translateTime: 'dd.mm.yy HH:MM:ss Z',
+            ignore: 'pid,hostname'
+          }
+        }
+      : undefined
+  })
+}
+
+export const logger = createApplicationLogger()
 
 /**
  * Express middleware that logs requests through {@link logger}.
