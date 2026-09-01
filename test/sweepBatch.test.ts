@@ -1,25 +1,41 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { nextSweepBatch, SWEEP_BATCHES } from '../src/storage/sweep.js'
+import { nextSweepBatch, sweepBatch, SWEEP_BATCHES } from '../src/storage/sweep.js'
 
 const records = (count: number) =>
   Array.from({ length: count }, (unused, i) => ({ cid: `cid-${i}` }))
 
 describe('nextSweepBatch', () => {
+  it('exposes a durable cursor and an unambiguous full-cycle boundary', () => {
+    const all = records(SWEEP_BATCHES.repair + 3)
+    const first = sweepBatch('repair', all)
+    const second = sweepBatch('repair', all, first.nextCursor)
+
+    assert.equal(first.cycleCompleted, false)
+    assert.equal(first.records.length, SWEEP_BATCHES.repair)
+    assert.equal(second.cycleCompleted, true)
+    assert.equal(second.records.length, 3)
+    assert.equal(second.nextCursor, undefined)
+    assert.equal(
+      new Set([...first.records, ...second.records].map((item) => item.cid)).size,
+      all.length
+    )
+  })
+
   it('returns everything when the set fits in one pass', () => {
     const all = records(3)
 
-    assert.deepEqual(nextSweepBatch('rescue', all), all)
+    assert.deepEqual(nextSweepBatch('repair', all), all)
   })
 
   it('covers every record across passes instead of repeating the first ones', () => {
-    const size = SWEEP_BATCHES.rescue
+    const size = SWEEP_BATCHES.repair
     const all = records(size * 2 + 7)
     const seen = new Set<string>()
 
     // Three passes is more than enough to walk a set of this size
     for (let pass = 0; pass < 3; pass += 1) {
-      for (const record of nextSweepBatch('rescue', all)) {
+      for (const record of nextSweepBatch('repair', all)) {
         seen.add(record.cid)
       }
     }
@@ -37,7 +53,7 @@ describe('nextSweepBatch', () => {
     const all = records(SWEEP_BATCHES.repair + 5)
 
     const firstRepair = nextSweepBatch('repair', all)
-    nextSweepBatch('rescue', all)
+    nextSweepBatch('demote', all)
     const secondRepair = nextSweepBatch('repair', all)
 
     assert.notDeepEqual(firstRepair[0], secondRepair[0])
@@ -54,14 +70,14 @@ describe('nextSweepBatch', () => {
   })
 
   it('starts over when the record it stopped at is gone', () => {
-    const all = records(SWEEP_BATCHES.rescue + 3)
-    nextSweepBatch('rescue', all)
+    const all = records(SWEEP_BATCHES.demote + 3)
+    nextSweepBatch('demote', all)
 
-    const replaced = records(SWEEP_BATCHES.rescue + 3).map((record) => ({
+    const replaced = records(SWEEP_BATCHES.demote + 3).map((record) => ({
       cid: `${record.cid}-new`
     }))
 
-    assert.equal(nextSweepBatch('rescue', replaced).length, SWEEP_BATCHES.rescue)
+    assert.equal(nextSweepBatch('demote', replaced).length, SWEEP_BATCHES.demote)
   })
 
   it('does not rewind when the last batch CID left the candidate set', () => {
@@ -89,5 +105,15 @@ describe('nextSweepBatch', () => {
     const second = nextSweepBatch('demote', remaining)
 
     assert.ok(second[0].cid > cursor)
+  })
+
+  it('uses the same code-unit ordering for sorting and cursor resume', () => {
+    const all = [{ cid: 'a' }, { cid: 'B' }, { cid: 'b' }, { cid: 'A' }]
+    const first = sweepBatch('repair', all, 'A')
+
+    assert.deepEqual(
+      first.records.map((record) => record.cid),
+      ['B', 'a', 'b']
+    )
   })
 })

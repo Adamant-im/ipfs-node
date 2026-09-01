@@ -4,6 +4,8 @@ This service embeds a Helia/libp2p node and exposes the file-transfer API used b
 
 The application is not a Kubo wrapper. It is a Node.js service with an Express REST API around an in-process Helia node.
 
+The stable client and lifecycle contract is also available as [OpenAPI 3.1](docs/openapi.yaml).
+
 ## Requirements
 
 - Node.js 24 LTS. The repository ships an `.nvmrc`, so `nvm use` selects it
@@ -46,6 +48,10 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   "serverPort": 4000,
   "uploadLimitSizeBytes": 268435456,
   "maxFileCount": 10,
+  "findFileTimeout": 20000,
+  "downloadIdleTimeout": 20000,
+  "downloadMinBytesPerSecond": 32768,
+  "downloadMaxDurationMs": 14400000,
   "cors": {
     "allowedOrigins": ["https://adm.im", "https://*.adamant.im", "http://localhost:8080"]
   },
@@ -57,10 +63,13 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
   },
   "adminApiKey": "",
   "enableDebugApi": false,
+  "prettyLogs": false,
   "peeringSchedule": "*/30 * * * * *",
   "storage": {
     "maxRequestSizeBytes": 536870912,
     "maxConcurrentUploads": 32,
+    "maxConcurrentDownloads": 64,
+    "maxConcurrentDownloadsPerClient": 8,
     "diskReserveBytes": 5368709120,
     "confirmationRequired": false,
     "temporaryTtlMs": 86400000,
@@ -82,12 +91,40 @@ The whole configuration is validated at startup: a missing file, invalid JSON5, 
     "requireQuorumOnUpload": false,
     "requestTimeoutMs": 30000,
     "repairEnabled": true,
-    "repairSchedule": "0 */30 * * * *"
+    "repairSchedule": "0 */30 * * * *",
+    "repairBatchDelayMs": 1000,
+    "repairProbeConcurrency": 4
+  },
+  "health": {
+    "checkpointIntervalMs": 60000,
+    "maxCheckpointAgeMs": 180000,
+    "storageMaxAgeMs": 120000,
+    "repairMaxAgeMs": 3600000,
+    "clockSkewToleranceMs": 10000,
+    "peerAttestationTimeoutMs": 5000,
+    "requiredPeerCount": 1
   }
 }
 ```
 
-`storage` and `replication` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Both sections are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
+`findFileTimeout` bounds discovery, while `downloadIdleTimeout` (defaulting to
+`findFileTimeout`) bounds a stalled transfer. `downloadMinBytesPerSecond`
+(default `32768`) derives a complete-transfer deadline from the file size, while
+`downloadMaxDurationMs` (default four hours) provides an absolute ceiling.
+`storage.maxConcurrentDownloads` (default `64`) bounds sockets and UnixFS
+iterators globally, and `storage.maxConcurrentDownloadsPerClient` (default `8`)
+keeps one address from holding every slot. Discovery, stat, and streaming have
+separate bounds, so a failed request may spend more than one `findFileTimeout`
+before returning `408`.
+
+Startup refuses a `downloadMaxDurationMs` below the time `uploadLimitSizeBytes`
+needs at `downloadMinBytesPerSecond`: the ceiling wins over the size-aware
+deadline, so a lower value would cut the largest permitted files off mid-stream
+and report them as retrieval timeouts.
+
+`storage`, `replication`, and `health` are optional; every option falls back to a documented default, so an existing configuration file keeps working. Storage and replication are described in [docs/storage-lifecycle.md](docs/storage-lifecycle.md), together with the file states, the collection policy, and the recovery procedures.
+
+Logs are newline-delimited JSON by default. Set `prettyLogs: true` only for an interactive development terminal; production collectors should keep the structured fields emitted by Pino and the health checkpoint.
 
 Generate the administrative secret before enabling operator endpoints:
 
@@ -104,27 +141,29 @@ Set the generated value as `adminApiKey`. A missing or empty key fails closed: a
 - Use exact origins such as `https://adm.im` or any-depth subdomain suffix wildcards such as `https://*.adamant.im`
 - Set `adminApiKey` before using any administrative API
 - Leave `trustProxy` as `false` for direct connections; configure exact proxy addresses, CIDR ranges, or a verified hop count behind a proxy
+- Migrate operator scripts and dashboards from the former detailed `GET /api/node/info` response to authenticated `GET /api/node/details`; `/info` is now the public legacy PWA/iOS contract
 - Set `enableDebugApi: true` only when the authenticated debug route is operationally required
 - Tune the endpoint-specific `rateLimits` for the deployment perimeter
 - Review `storage.diskReserveBytes` and `storage.maxRequestSizeBytes` for the deployment volume; the defaults suit a dedicated disk
 - `storage.gc.enabled` is on by default and frees blocks only when the blockstore passes `highWatermarkBytes` or free space falls into `diskReserveBytes`; released files stay readable until then
 - `replication.enabled` is on by default and needs no key and no extra address: copies travel on a libp2p protocol between the peers already listed in `nodes`. Turning it off leaves every file in a single copy
 - Tune `replication.placement` if the deployment wants a different number of copies per file age
+- Keep `health.requiredPeerCount` within the number of configured remote peers. A single-node or test deployment may set it to `0`
 - `peeringSchedule` is optional and defaults to every thirty seconds; it redials the peers in `nodes` that are not connected, which `autoPeeringPeriod` never did
 
 Invalid CORS, proxy, API-key, or rate-limit configuration stops the process instead of silently weakening the boundary.
 
 ## HTTP access policy
 
-| Class                | Routes                                                                                                                                                 | Policy                                                                                                                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Public               | `GET /`, `GET /api/node/health`                                                                                                                        | No authentication                                                                                                                                                                                                                     |
-| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                          | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                                                              |
-| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                     | No authentication; no filename or peer topology is exposed                                                                                                                                                                            |
-| Administrative       | `GET /api/node/info`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                                                             |
-| Peer replication     | libp2p `/adamant/replication/1.0.0`, not an HTTP route                                                                                                 | Authenticated by the libp2p handshake. Pin, store, stage, commit, and abort are accepted only from the peers listed in `nodes`. `cache` is open to any peer (same effect as a public read), bounded by disk reserve and intake budget |
-| Disabled by default  | all `/api/debug/*`                                                                                                                                     | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                                                             |
-| Authenticated user   | None                                                                                                                                                   | The service has no end-user identity or session layer                                                                                                                                                                                 |
+| Class                | Routes                                                                                                                                                    | Policy                                                                                                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public               | `GET /`, `GET /api/node/health`, `GET /api/node/info`                                                                                                     | No authentication. `/info` is the sanitized legacy PWA/iOS contract                                                                                                                         |
+| Public file transfer | `POST /api/file/upload`, `GET /api/file/:cid`                                                                                                             | No authentication; endpoint-specific rate limits and upload limits apply                                                                                                                    |
+| Public storage state | `GET /api/file/:cid/status`, `GET /api/storage/metrics`, `GET /api/storage/policy`                                                                        | No authentication; no filename or peer topology is exposed                                                                                                                                  |
+| Administrative       | `GET /api/node/details`, `POST /api/file/:cid/confirm`, `POST /api/file/:cid/unpin`, all `/api/storage/*` writes, all `/api/helia/*`, all `/api/libp2p/*` | A matching `x-api-key` header is required                                                                                                                                                   |
+| Peer protocols       | libp2p `/adamant/replication/1.0.0` and `/adamant/health/1.0.0`, not HTTP routes                                                                          | Authenticated by the libp2p handshake. Health attestations and durable replication operations are accepted only from peers listed in `nodes`; open cache remains bounded like a public read |
+| Disabled by default  | all `/api/debug/*`                                                                                                                                        | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                   |
+| Authenticated user   | None                                                                                                                                                      | The service has no end-user identity or session layer                                                                                                                                       |
 
 Administrative coverage includes pin operations, dial operations, peer-store data, connection data, status, peers, and topology-sensitive node information. CORS is a browser control and is never treated as authentication.
 
@@ -228,7 +267,7 @@ Three configurations share one set of compiler options:
 Type-check everything without emitting:
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 ```
 
 Pass no file arguments to `tsc`. Naming a file on the command line makes TypeScript ignore `tsconfig.json` entirely, so `outDir` is not applied — the `.js` file is written next to its source — and the project's `lib`, `module`, and `moduleResolution` settings are replaced by defaults, which reports module-resolution and missing-`@types/node` errors that the project itself does not have.
@@ -338,7 +377,7 @@ Download responses use the following stable status contract:
 | `429 Too Many Requests`     | The read rate limit was exceeded                                       |
 | `500 Internal Server Error` | An unexpected internal failure occurred before streaming started       |
 
-The timeout status remains `408 Request Timeout` for compatibility with existing clients. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
+Discovery, idle transfer time, and the size-aware complete transfer all have bounded timeouts and remain `408 Request Timeout` for compatibility with existing clients. Client disconnect cancels the underlying retrieval. Range headers are ignored and the server returns the complete `200` representation with `Accept-Ranges: none`, preserving current PWA/iOS behavior. Successful responses include an `ETag` and private one-hour caching with revalidation; a matching `If-None-Match` returns `304` after availability has been checked. If an error occurs after response bytes have started, the server terminates the incomplete response because an HTTP status and JSON error body can no longer be sent safely.
 
 ### Check public health
 
@@ -350,18 +389,75 @@ Example response:
 
 ```json
 {
+  "version": "0.1.0",
+  "uptimeMs": 123456,
+  "state": "ready",
+  "height": 1720614960000,
   "timestamp": 1720614998797,
-  "heliaStatus": "started"
+  "evaluatedAt": 1720614998700,
+  "checkpoint": {
+    "intervalMs": 60000,
+    "observedAt": 1720614998700,
+    "ageMs": 97,
+    "maxAgeMs": 180000
+  },
+  "membership": {
+    "version": "d0f1...",
+    "requiredPeers": 1,
+    "attestedPeers": 2
+  },
+  "startup": { "complete": true, "healthy": true },
+  "storage": {
+    "measuredAt": 1720614980000,
+    "measurementAgeMs": 18797,
+    "reserveHealthy": true
+  },
+  "replication": {
+    "repairRequired": true,
+    "lastCompleteAt": 1720614900000,
+    "ageMs": 98797,
+    "backlog": 0
+  },
+  "checks": {
+    "checkpointFresh": true,
+    "clockConsistent": true,
+    "helia": true,
+    "startupReconciliation": true,
+    "storageFresh": true,
+    "storageReserve": true,
+    "repairFresh": true,
+    "peerAttestations": true
+  }
 }
 ```
+
+The endpoint always returns `200`; consumers must inspect `state`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle with no known backlog, and the configured peer attestations all pass. It freezes on failure. Observation timestamps and ages let clients reject an absolutely stale cluster even when every node reports the same height. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
+
+State changes are deliberately asymmetric. The response is served from the last checkpoint, and reading it recomputes only what elapsed time can decide, so a node may be downgraded to `degraded` or `stale` between checkpoints. Recovery is never decided on a read: returning to `ready` requires a successful checkpoint, so expect up to `health.checkpointIntervalMs` of lag after the underlying fault clears. A clock that moves behind the checkpoint this node already recorded clears `clockConsistent` and stops advancement until it catches up, rather than persisting a round that starts after it finished. `checkpointFresh`, `storageFresh`, and `repairFresh` follow the same rule; every other entry in `checks`, along with `membership` and `startup`, describes `evaluatedAt` — the last checkpoint attempt, which may be a failed one — and not the moment of the request. `checkpoint.observedAt` dates the last attempt that _succeeded_, so the two differ whenever the most recent attempt failed. Peers may attest an adjacent round across a boundary, so two healthy nodes can briefly report heights one `checkpointIntervalMs` apart.
+
+`membership.version` identifies the configured peer-set epoch. Changing the node list resets the persisted checkpoint for that node: `height` remains `0` until the first valid checkpoint under the new membership. Clients must compare heights only when membership versions match and treat a version change as a new epoch.
+
+During a staged deployment, older peers do not implement the health protocol. Set `health.requiredPeerCount` to `0` on the transitioning fleet, then raise it after every required peer is upgraded; otherwise prolonged `degraded` health is the expected fail-safe result. While it is `0`, `checks.peerAttestations` is always `true` and the checkpoint proves only this node's own prerequisites: network coverage is not validated until the threshold is raised, so treat the transition window as unverified for routing decisions that depend on it.
+
+Repair runs in bounded 50-record passes. The same selected batch feeds both local-holder repair and released-record rescue. A scheduled run starts a full cycle immediately and continues its remaining passes after `replication.repairBatchDelayMs`; this delay and `replication.repairProbeConcurrency` control peer load, while `repairSchedule` controls when a new completed cycle is refreshed. Set `health.repairMaxAgeMs` longer than the largest expected full-cycle duration plus the schedule interval. An incomplete or backlogged cycle intentionally keeps health degraded.
+
+### Get legacy client node information
+
+```bash
+curl --fail-with-body https://ipfs.example.org/api/node/info
+```
+
+This public compatibility route retains `version`, `timestamp`, `heliaStatus`, `blockstoreSizeMb`, `datastoreSizeMb`, and `availableSizeInMb` for the current PWA and iOS application. It does not expose peer identity or topology.
 
 ### Get administrative node information
 
 ```bash
 curl --fail-with-body \
   --header 'x-api-key: your-generated-key' \
-  https://ipfs.example.org/api/node/info
+  https://ipfs.example.org/api/node/details
 ```
+
+The authenticated response adds peer addresses, byte-accurate storage figures, checkpoint detail, and bounded HTTP counters without paths, CIDs, IP addresses, or user-controlled metric labels.
 
 ### Run garbage collection
 

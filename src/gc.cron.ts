@@ -71,7 +71,7 @@ export const garbageCollectionCron = new CronJob(config.storage.gc.schedule, () 
   }
 
   logger.info('[Cron] Running "garbageCollection" cronjob.')
-  collectGarbage().catch((err) => logger.error(`${err.message}\n${err.stack}`))
+  collectGarbage().catch((err: Error) => logger.error({ err }, 'Garbage collection failed'))
 })
 
 /**
@@ -82,7 +82,7 @@ export const garbageCollectionCron = new CronJob(config.storage.gc.schedule, () 
  */
 export const admissionRecoveryCron = new CronJob(config.storage.gc.schedule, () => {
   logger.info('[Cron] Running "admissionRecovery" cronjob.')
-  recoverStaleAdmissions().catch((err) => logger.error(`${err.message}\n${err.stack}`))
+  recoverStaleAdmissions().catch((err: Error) => logger.error({ err }, 'Admission recovery failed'))
 })
 
 async function recoverStaleAdmissions(): Promise<void> {

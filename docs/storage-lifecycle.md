@@ -26,6 +26,21 @@ runs. The last two are enforced by the parser itself through
 `createMultipartLimits`, which aborts the request before handing an over-limit
 part to the storage engine.
 
+## Download admission
+
+Retrieval has its own guard on `GET /api/file/:cid`, checked before the handler
+runs rather than by the upload guard above.
+
+| Limit                          | Option                                    | Response |
+| ------------------------------ | ----------------------------------------- | -------- |
+| Concurrent downloads, node     | `storage.maxConcurrentDownloads`          | `429`    |
+| Concurrent downloads, a client | `storage.maxConcurrentDownloadsPerClient` | `429`    |
+
+The per-client share is checked first, so an address already at its limit is
+refused without consuming a node slot. A slot is held for the whole response,
+which is why the global bound alone would let one address occupy every one of
+them for the length of its transfers.
+
 The aggregate size is checked twice: against `Content-Length` before parsing,
 and against the bytes actually streamed, because a chunked request declares no
 size.
@@ -458,6 +473,28 @@ The repair job (`replication.repairSchedule`, or `POST /api/storage/repair`)
 lists confirmed files this node holds whose designated peers have not all
 acknowledged, and places the missing copies again.
 
+Each scheduled pass remains bounded to 50 confirmed records shared by local-holder
+repair and released-record rescue. The inter-pass delay and probe concurrency
+bound sustained peer load. Its sorted cursor and
+aggregate result are persisted under the node datastore, so restart resumes the
+same cycle. A repair checkpoint is recorded only after a pass reaches the end
+of the candidate set; a pass over one batch is not presented as full-fleet
+evidence.
+
+A cycle commits to a candidate list read once at its start, so the registry is
+scanned per cycle rather than per pass. One more scan at the end names records
+admitted while the cycle was walking; those are appended and covered by the same
+cycle, for a bounded number of catch-up rounds. A cycle that runs out of rounds
+still finishes and hands its cursor back, but it is not published as durability
+evidence: the last cycle that covered its whole set keeps that role, so
+readiness ages out on its own schedule instead of advancing on a coverage gap.
+
+A restart resumes the cycle from its persisted cursor, but the rebuilt list
+cannot tell a record admitted during the downtime from one the lost passes
+already visited. Such a cycle finishes without claiming coverage, and the cycle
+after it publishes again. A cycle containing an unresolved shortfall is complete but unhealthy,
+and therefore cannot advance the node health checkpoint.
+
 Replication needs the peers to be connected over libp2p, because the copy itself
 travels by bitswap. Startup peering opens those connections before the API
 starts serving, so the first upload after a restart already has somewhere to
@@ -536,8 +573,9 @@ A collection report also lists `demoted`: files whose local copy was handed over
 to their designated holders during that pass.
 
 Values are refreshed on the `diskUsageScanPeriod` schedule, because a directory
-scan and a full registry sweep are too expensive for a request path. A subset is
-also included in `GET /api/node/info`.
+scan and a full registry sweep are too expensive for a request path. A legacy
+megabyte subset is included in public `GET /api/node/info`; detailed byte values
+are included in authenticated `GET /api/node/details`.
 
 ## Recovery and rollback
 

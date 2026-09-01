@@ -261,7 +261,8 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
       }
 
       const files = flatFiles(req.files as UnixFsMulterFile[])
-      log.info(`req.files: ${JSON.stringify(files.map((item) => item.originalname))}`)
+      // Original names belong to the uploader, so only how many arrived is logged.
+      log.info(`Upload request carries ${files.length} file(s)`)
 
       // Hold every CID this request touches while its pin and its record are
       // written, and no longer than that. Sorting happens inside the registry,

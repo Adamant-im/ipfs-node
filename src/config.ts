@@ -42,6 +42,9 @@ const currDir = dirname(fileURLToPath(import.meta.url))
 /** Redial unconnected ADAMANT nodes every half minute unless configured otherwise. */
 const DEFAULT_PEERING_SCHEDULE = '*/30 * * * * *'
 
+/** Floor for the absolute download ceiling; the upload limit can raise it. */
+const DEFAULT_DOWNLOAD_MAX_DURATION_MS = 4 * 60 * 60 * 1_000
+
 /** Log levels accepted by `pino`, ordered from least to most verbose. */
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
 
@@ -53,12 +56,32 @@ export interface ConfigNode {
   multiAddr: string
 }
 
+/** Policy used to produce a bounded, network-aware health checkpoint. */
+export interface HealthConfig {
+  /** Length of one checkpoint round, in milliseconds. */
+  checkpointIntervalMs: number
+  /** Maximum age of the last completed checkpoint before it becomes stale. */
+  maxCheckpointAgeMs: number
+  /** Maximum age of the cached storage scan accepted by a checkpoint. */
+  storageMaxAgeMs: number
+  /** Maximum age of a completed full repair sweep. */
+  repairMaxAgeMs: number
+  /** Allowed clock difference between two attesting peers. */
+  clockSkewToleranceMs: number
+  /** Bound for one peer attestation call. */
+  peerAttestationTimeoutMs: number
+  /** Minimum number of configured remote peers that must attest a round. */
+  requiredPeerCount: number
+}
+
 export interface Config {
   /** Known ADAMANT IPFS nodes. Their multiaddrs are also the connection manager allow list. */
   nodes: ConfigNode[]
   /** File storage directory, resolved from the user's home directory. */
   storeFolder: string
   logLevel: LogLevel
+  /** Enable human-oriented log formatting explicitly for local development. */
+  prettyLogs: boolean
   peerDiscovery: {
     /** Multiaddrs dialled on startup to join the ADAMANT peer set. */
     bootstrap: string[]
@@ -81,6 +104,12 @@ export interface Config {
   maxFileCount: number
   /** Time limit, in milliseconds, for locating a file on the IPFS network. */
   findFileTimeout: number
+  /** Maximum pause between download chunks before retrieval is cancelled. */
+  downloadIdleTimeout: number
+  /** Minimum sustained rate used to derive a size-aware complete-transfer deadline. */
+  downloadMinBytesPerSecond: number
+  /** Absolute ceiling for one complete download response. */
+  downloadMaxDurationMs: number
   cors: {
     /** Exact origins and left-most subdomain wildcards; see `src/security/cors.ts`. */
     allowedOrigins: string[]
@@ -94,6 +123,8 @@ export interface Config {
   storage: StorageConfig
   /** Cross-node durability policy; see `src/storage/config.ts`. */
   replication: ReplicationConfig
+  /** Network-aware readiness and checkpoint policy. */
+  health: HealthConfig
 }
 
 /**
@@ -176,6 +207,71 @@ function requireInteger(value: unknown, path: string, min: number): number {
   return value
 }
 
+function optionalInteger(value: unknown, path: string, fallback: number, min: number): number {
+  return value === undefined ? fallback : requireInteger(value, path, min)
+}
+
+/** Resolve health defaults without breaking configuration files from earlier releases. */
+function resolveHealthConfig(value: unknown, nodeCount: number): HealthConfig {
+  const raw = value === undefined ? {} : requireObject(value, 'health')
+  const checkpointIntervalMs = optionalInteger(
+    raw.checkpointIntervalMs,
+    'health.checkpointIntervalMs',
+    60_000,
+    1_000
+  )
+  const maxCheckpointAgeMs = optionalInteger(
+    raw.maxCheckpointAgeMs,
+    'health.maxCheckpointAgeMs',
+    checkpointIntervalMs * 3,
+    checkpointIntervalMs
+  )
+  const storageMaxAgeMs = optionalInteger(
+    raw.storageMaxAgeMs,
+    'health.storageMaxAgeMs',
+    checkpointIntervalMs * 2,
+    checkpointIntervalMs
+  )
+  const repairMaxAgeMs = optionalInteger(
+    raw.repairMaxAgeMs,
+    'health.repairMaxAgeMs',
+    3_600_000,
+    checkpointIntervalMs
+  )
+  const clockSkewToleranceMs = optionalInteger(
+    raw.clockSkewToleranceMs,
+    'health.clockSkewToleranceMs',
+    10_000,
+    0
+  )
+  const peerAttestationTimeoutMs = optionalInteger(
+    raw.peerAttestationTimeoutMs,
+    'health.peerAttestationTimeoutMs',
+    5_000,
+    1
+  )
+  const requiredPeerCount = optionalInteger(
+    raw.requiredPeerCount,
+    'health.requiredPeerCount',
+    nodeCount > 1 ? 1 : 0,
+    0
+  )
+
+  if (requiredPeerCount > Math.max(0, nodeCount - 1)) {
+    fail('health.requiredPeerCount', 'cannot exceed the number of configured remote peers')
+  }
+
+  return {
+    checkpointIntervalMs,
+    maxCheckpointAgeMs,
+    storageMaxAgeMs,
+    repairMaxAgeMs,
+    clockSkewToleranceMs,
+    peerAttestationTimeoutMs,
+    requiredPeerCount
+  }
+}
+
 /**
  * Validate an untrusted parsed config object and return it as a typed `Config`.
  *
@@ -239,11 +335,50 @@ export function validateConfig(raw: unknown): Config {
       ? DEFAULT_PEERING_SCHEDULE
       : requireString(root.peeringSchedule, 'peeringSchedule')
   const findFileTimeout = requireInteger(root.findFileTimeout, 'findFileTimeout', 1)
+  const downloadIdleTimeout = optionalInteger(
+    root.downloadIdleTimeout,
+    'downloadIdleTimeout',
+    findFileTimeout,
+    1
+  )
+  const downloadMinBytesPerSecond = optionalInteger(
+    root.downloadMinBytesPerSecond,
+    'downloadMinBytesPerSecond',
+    32 * 1024,
+    1
+  )
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
   // Owns cors, trustProxy, adminApiKey, enableDebugApi, rateLimits,
   // uploadLimitSizeBytes and maxFileCount. Throws with its own message.
   validateSecurityConfig(root)
+
+  // `downloadFile` clamps its size-aware deadline to this ceiling, so the
+  // ceiling has to carry the largest file this node accepts, with the same idle
+  // headroom that deadline adds. The default is derived from the existing
+  // upload limit so a configuration written before this option stays valid; a
+  // ceiling the operator set explicitly is still refused when it would cut
+  // those transfers off mid-stream and report them as retrieval timeouts.
+  const largestDownloadMs =
+    Math.ceil((root.uploadLimitSizeBytes as number) / downloadMinBytesPerSecond) * 1_000 +
+    downloadIdleTimeout
+  const downloadMaxDurationMs = optionalInteger(
+    root.downloadMaxDurationMs,
+    'downloadMaxDurationMs',
+    Math.max(DEFAULT_DOWNLOAD_MAX_DURATION_MS, largestDownloadMs),
+    1
+  )
+  if (downloadMaxDurationMs < downloadIdleTimeout) {
+    fail('downloadMaxDurationMs', 'must be greater than or equal to downloadIdleTimeout')
+  }
+  if (root.downloadMaxDurationMs !== undefined && downloadMaxDurationMs < largestDownloadMs) {
+    fail(
+      'downloadMaxDurationMs',
+      `must be at least ${largestDownloadMs}, the time an ${String(root.uploadLimitSizeBytes)} ` +
+        `byte file needs at downloadMinBytesPerSecond ${downloadMinBytesPerSecond} ` +
+        `plus the ${downloadIdleTimeout} ms idle allowance`
+    )
+  }
 
   const cors = requireObject(root.cors, 'cors')
 
@@ -252,9 +387,11 @@ export function validateConfig(raw: unknown): Config {
   // files written before this feature keep working.
   let storage: StorageConfig
   let replication: ReplicationConfig
+  let health: HealthConfig
   try {
     storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
     replication = resolveReplicationConfig(root.replication)
+    health = resolveHealthConfig(root.health, nodes.length)
   } catch (err) {
     if (err instanceof ConfigError) {
       throw err
@@ -273,6 +410,7 @@ export function validateConfig(raw: unknown): Config {
     nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
     storeFolder,
     logLevel: logLevel as LogLevel,
+    prettyLogs: root.prettyLogs === true,
     peerDiscovery: { bootstrap, listen },
     serverPort,
     diskUsageScanPeriod,
@@ -280,13 +418,17 @@ export function validateConfig(raw: unknown): Config {
     uploadLimitSizeBytes: root.uploadLimitSizeBytes as number,
     maxFileCount: root.maxFileCount as number,
     findFileTimeout,
+    downloadIdleTimeout,
+    downloadMinBytesPerSecond,
+    downloadMaxDurationMs,
     cors: { allowedOrigins: cors.allowedOrigins as string[] },
     trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
     rateLimits: root.rateLimits as Config['rateLimits'],
     adminApiKey: (root.adminApiKey ?? '') as string,
     enableDebugApi: root.enableDebugApi === true,
     storage,
-    replication
+    replication,
+    health
   }
 }
 

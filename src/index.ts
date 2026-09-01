@@ -10,7 +10,11 @@ import { registerReplicationProtocol } from './storage/replicationProtocol.js'
 import { createReplicationHandlers } from './storage/service.js'
 import { fileRegistry } from './storage/state.js'
 import { garbageCollectionCron, admissionRecoveryCron } from './gc.cron.js'
-import { replicationRepairCron } from './replication.cron.js'
+import {
+  initializeReplicationRepairState,
+  startReplicationRepair,
+  stopReplicationRepair
+} from './replication.cron.js'
 import cors from 'cors'
 import * as routers from './api/index.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
@@ -18,6 +22,12 @@ import { mountApiRoutes } from './security/accessPolicy.js'
 import { createApiKeyAuth } from './security/apiKey.js'
 import { createCorsOriginDelegate } from './security/cors.js'
 import { parseTrustProxy } from './security/trustProxy.js'
+import {
+  setStartupReconciliationResult,
+  startHealthService,
+  stopHealthService
+} from './health/service.js'
+import { collectHttpMetrics } from './observability.js'
 
 logger.info(`Using config file: ${CONFIG_FILE_NAME}`)
 
@@ -41,6 +51,8 @@ const legacyPins = await snapshotPins(helia)
 await registerReplicationProtocol(helia, createReplicationHandlers(), {
   requestTimeoutMs: config.replication.requestTimeoutMs
 })
+await initializeReplicationRepairState()
+await startHealthService()
 
 /** The scheduled work that reads the file registry and acts on what it finds. */
 function startLifecycleJobs(): void {
@@ -62,7 +74,7 @@ function startLifecycleJobs(): void {
 
   if (config.replication.enabled) {
     if (config.replication.repairEnabled) {
-      replicationRepairCron.start()
+      startReplicationRepair()
     }
   } else {
     logger.info('Replication is disabled. Uploaded content is stored best effort on this node.')
@@ -100,8 +112,12 @@ void Promise.all([
     if (admissions.recovered > 0) {
       logger.info(`Admission recovery: cleared ${admissions.recovered} interrupted uploads`)
     }
+    setStartupReconciliationResult(backfill.errors.length === 0 && admissions.errors.length === 0)
   })
-  .catch((err: Error) => logger.error(`Startup storage reconciliation failed: ${err.message}`))
+  .catch((err: Error) => {
+    logger.error(`Startup storage reconciliation failed: ${err.message}`)
+    setStartupReconciliationResult(false)
+  })
   // Even a failed reconciliation must not leave the node without a collector:
   // it reclaims nothing that is unregistered, so an incomplete registry makes
   // it do less, never more.
@@ -121,6 +137,7 @@ if (trustProxy === false) {
 }
 
 app.use(httpLogger)
+app.use(collectHttpMetrics)
 
 app.use(
   cors({
@@ -157,7 +174,7 @@ function shutdown(signal: string): void {
   peeringCron.stop()
   garbageCollectionCron.stop()
   admissionRecoveryCron.stop()
-  replicationRepairCron.stop()
+  const backgroundStopped = Promise.allSettled([stopReplicationRepair(), stopHealthService()])
 
   const forceTimer = setTimeout(() => {
     logger.warn('Shutdown timed out')
@@ -175,8 +192,15 @@ function shutdown(signal: string): void {
 
   server.close(() => {
     clearTimeout(closeIdle)
-    void helia
-      .stop()
+    void backgroundStopped
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            logger.error(`Background shutdown failed: ${String(result.reason)}`)
+          }
+        }
+        return helia.stop()
+      })
       .catch((err: Error) => logger.error(`helia.stop failed: ${err.message}`))
       .finally(() => {
         clearTimeout(forceTimer)

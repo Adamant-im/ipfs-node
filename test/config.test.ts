@@ -49,6 +49,24 @@ describe('validateConfig', () => {
     assert.deepEqual(parsed.peerDiscovery.listen, ['/ip4/0.0.0.0/tcp/4001'])
     assert.deepEqual(parsed.cors.allowedOrigins, ['https://adm.im'])
     assert.equal(parsed.enableDebugApi, false)
+    assert.equal(parsed.prettyLogs, false)
+    assert.equal(parsed.health.checkpointIntervalMs, 60_000)
+    assert.equal(parsed.health.requiredPeerCount, 0)
+    assert.equal(parsed.downloadIdleTimeout, 20_000)
+    assert.equal(parsed.downloadMinBytesPerSecond, 32 * 1024)
+    assert.equal(parsed.downloadMaxDurationMs, 4 * 60 * 60 * 1_000)
+    assert.equal(parsed.storage.maxConcurrentDownloadsPerClient, 8)
+  })
+
+  it('keeps a configuration written before the download options valid', () => {
+    // 512 MiB at the fallback 32 KiB/s needs more than the four-hour floor, so
+    // the ceiling has to follow the existing upload limit rather than reject it.
+    const raw = validRaw()
+    raw.uploadLimitSizeBytes = 536_870_912
+    raw.storage = { maxRequestSizeBytes: 536_870_912 }
+    const parsed = validateConfig(raw)
+
+    assert.equal(parsed.downloadMaxDurationMs, Math.ceil(536_870_912 / 32_768) * 1_000 + 20_000)
   })
 
   it('ignores unknown keys so deployments can carry extras', () => {
@@ -120,6 +138,35 @@ describe('validateConfig', () => {
         raw.findFileTimeout = -1
       },
       /findFileTimeout/
+    ],
+    [
+      'download idle timeout is invalid',
+      (raw) => {
+        raw.downloadIdleTimeout = 0
+      },
+      /downloadIdleTimeout/
+    ],
+    [
+      'download minimum throughput is invalid',
+      (raw) => {
+        raw.downloadMinBytesPerSecond = 0
+      },
+      /downloadMinBytesPerSecond/
+    ],
+    [
+      'download maximum duration is below the idle timeout',
+      (raw) => {
+        raw.downloadMaxDurationMs = 1
+      },
+      /downloadMaxDurationMs/
+    ],
+    [
+      'download ceiling cannot carry the largest permitted file',
+      (raw) => {
+        // 256 MiB at 32 KiB/s needs 8192 s; a one-minute ceiling would cut it off.
+        raw.downloadMaxDurationMs = 60_000
+      },
+      /downloadMaxDurationMs/
     ]
   ]
 
@@ -164,6 +211,17 @@ describe('validateConfig', () => {
           replication: { ackQuorum: 2, requireQuorumOnUpload: true }
         }),
       /requireQuorumOnUpload/
+    )
+  })
+
+  it('validates health timing and peer coverage', () => {
+    assert.throws(
+      () => validateConfig({ ...validRaw(), health: { checkpointIntervalMs: 999 } }),
+      /health\.checkpointIntervalMs/
+    )
+    assert.throws(
+      () => validateConfig({ ...validRaw(), health: { requiredPeerCount: 1 } }),
+      /health\.requiredPeerCount/
     )
   })
 })
