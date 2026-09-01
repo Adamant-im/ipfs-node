@@ -813,6 +813,8 @@ export interface RepairReport {
   cycleCompleted: boolean
   /** Candidates admitted during the cycle that its catch-up rounds could not cover. */
   uncovered: number
+  /** Whether a completed cycle may be claimed to have covered its candidate set. */
+  coverageProven: boolean
   /** Durable resume cursor for the next pass. */
   nextCursor?: string
 }
@@ -980,7 +982,8 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
     rescued: [],
     unrecoverable: [],
     cycleCompleted: true,
-    uncovered: 0
+    uncovered: 0,
+    coverageProven: true
   }
 
   if (!config.replication.enabled) {
@@ -993,6 +996,7 @@ export async function repairReplication(options: { cursor?: string } = {}): Prom
   report.cycleCompleted = selected.cycleCompleted
   report.nextCursor = selected.nextCursor
   report.uncovered = selected.uncovered
+  report.coverageProven = selected.coverageProven
 
   // The cycle committed to these CIDs one scan ago, so each record is read
   // again here rather than trusted from that list. A record that has since been

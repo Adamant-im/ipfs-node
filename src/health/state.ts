@@ -70,6 +70,8 @@ export interface HealthSnapshot {
   }
   checks: {
     checkpointFresh: boolean
+    /** The clock has not moved behind the checkpoint this node already recorded. */
+    clockConsistent: boolean
     helia: boolean
     startupReconciliation: boolean
     storageFresh: boolean
@@ -100,6 +102,11 @@ export function evaluateHealth(
   input: HealthInputs
 ): { snapshot: HealthSnapshot; completed?: HealthCheckpoint } {
   const prerequisiteChecks = {
+    // A clock behind the last checkpoint would keep the old height through
+    // `Math.max` while stamping a lower `completedAt`, persisting a round that
+    // starts after it finished — the shape `parseCheckpoint` refuses to load.
+    // Advancement waits for the clock instead of recording that.
+    clockConsistent: input.previous === null || input.previous.completedAt <= input.now,
     helia: input.heliaReady,
     startupReconciliation: input.startupComplete && input.startupHealthy,
     storageFresh:
@@ -111,6 +118,9 @@ export function evaluateHealth(
       (input.repairHealthy &&
         input.repairBacklog === 0 &&
         input.repairCompletedAt !== null &&
+        // A completion stamped ahead of the clock is not evidence of freshness;
+        // without the lower bound its negative age would always pass.
+        input.now >= input.repairCompletedAt &&
         input.now - input.repairCompletedAt <= policy.repairMaxAgeMs),
     peerAttestations: input.attestedPeers >= policy.requiredPeerCount
   }
@@ -199,7 +209,8 @@ export function refreshHealthSnapshot(
       (current.checks.repairFresh &&
         current.replication.backlog === 0 &&
         repairAge !== null &&
-        repairAge <= policy.repairMaxAgeMs)
+        repairAge <= policy.repairMaxAgeMs &&
+        timestamp >= (current.replication.lastCompleteAt ?? timestamp))
   }
   const freshnessFailed = !checks.storageFresh || !checks.repairFresh
 

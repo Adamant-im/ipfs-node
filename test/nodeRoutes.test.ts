@@ -20,6 +20,7 @@ const health: HealthSnapshot = {
   replication: { repairRequired: true, lastCompleteAt: 12_345, ageMs: 0, backlog: 0 },
   checks: {
     checkpointFresh: true,
+    clockConsistent: true,
     helia: true,
     startupReconciliation: true,
     storageFresh: true,

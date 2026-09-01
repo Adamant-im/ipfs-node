@@ -142,6 +142,7 @@ describe('repair cycle candidate list', () => {
     await seed(SWEEP_BATCHES.repair + 5)
 
     const first = await nextRepairCycleBatch(registry, undefined)
+    assert.equal(first.coverageProven, true)
     resetRepairCycle()
 
     const resumed = await nextRepairCycleBatch(registry, first.nextCursor)
@@ -152,5 +153,24 @@ describe('repair cycle candidate list', () => {
       false
     )
     assert.equal(resumed.cycleCompleted, true)
+  })
+
+  it('does not claim coverage for a cycle rebuilt after a restart', async () => {
+    await seed(SWEEP_BATCHES.repair + 3, 100)
+
+    const first = await nextRepairCycleBatch(registry, undefined)
+    resetRepairCycle()
+
+    // Admitted while the process was down, sorting before the cursor. The
+    // rebuilt list contains it, so the end-of-cycle scan cannot name it as a
+    // late arrival — the cycle has to say so itself.
+    await seed(1, 0)
+
+    const resumed = await nextRepairCycleBatch(registry, first.nextCursor)
+
+    assert.equal(resumed.cycleCompleted, true)
+    assert.equal(resumed.uncovered, 0)
+    assert.equal(resumed.coverageProven, false)
+    assert.equal(resumed.cids.includes(cid(0)), false)
   })
 })

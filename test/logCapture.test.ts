@@ -39,6 +39,19 @@ describe('application log sanitization', () => {
     assert.equal(output.includes('kept the local copy instead'), true)
   })
 
+  it('covers CID forms a length threshold would miss', () => {
+    const { logger, lines } = capture()
+    // Valid CIDv1 with an identity multihash: 32 characters, well under the
+    // length of the common sha2-256 form.
+    const shortCid = 'bafkqad3qojuxmylumuqhaylznrxwcza'
+
+    logger.error(`Cannot pin ${shortCid}`)
+
+    const output = lines()
+    assert.equal(output.includes(shortCid), false)
+    assert.equal(output.includes('[cid]'), true)
+  })
+
   it('keeps peer identities and multiaddrs out of a message', () => {
     const { logger, lines } = capture()
 

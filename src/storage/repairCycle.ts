@@ -24,6 +24,15 @@ export interface RepairCycleBatch {
    * signal that the finished cycle is not evidence about the whole set.
    */
   uncovered: number
+  /**
+   * Whether a completed cycle may be claimed to have covered its candidate set.
+   *
+   * False once a restart resumed the cycle from its persisted cursor: the
+   * rebuilt list cannot tell a record admitted during the downtime from one the
+   * lost passes already visited, so both sit below the cursor and neither shows
+   * up as a late arrival.
+   */
+  coverageProven: boolean
 }
 
 interface RepairCycle {
@@ -32,6 +41,8 @@ interface RepairCycle {
   /** How many of them have been handed out. */
   index: number
   refreshes: number
+  /** The list was rebuilt from a cursor, so its prefix is not proven covered. */
+  resumed: boolean
 }
 
 /**
@@ -100,14 +111,22 @@ export async function nextRepairCycleBatch(
 ): Promise<RepairCycleBatch> {
   if (cycle === undefined || cursor === undefined) {
     const cids = await candidateCids(registry)
-    cycle = { cids, index: resumeIndex(cids, cursor), refreshes: 0 }
+    // Rebuilding from a cursor cannot reconstruct what the lost passes visited.
+    cycle = { cids, index: resumeIndex(cids, cursor), refreshes: 0, resumed: cursor !== undefined }
   }
 
+  const coverageProven = !cycle.resumed
   const batch = cycle.cids.slice(cycle.index, cycle.index + SWEEP_BATCHES.repair)
   cycle.index += batch.length
 
   if (cycle.index < cycle.cids.length) {
-    return { cids: batch, cycleCompleted: false, nextCursor: batch.at(-1) ?? cursor, uncovered: 0 }
+    return {
+      cids: batch,
+      cycleCompleted: false,
+      nextCursor: batch.at(-1) ?? cursor,
+      uncovered: 0,
+      coverageProven
+    }
   }
 
   // End of the committed list. One scan decides whether the cycle covered the
@@ -117,16 +136,22 @@ export async function nextRepairCycleBatch(
 
   if (fresh.length === 0) {
     cycle = undefined
-    return { cids: batch, cycleCompleted: true, uncovered: 0 }
+    return { cids: batch, cycleCompleted: true, uncovered: 0, coverageProven }
   }
 
   if (cycle.refreshes < MAX_CATCH_UP_ROUNDS) {
     cycle.cids.push(...fresh)
     cycle.refreshes += 1
 
-    return { cids: batch, cycleCompleted: false, nextCursor: batch.at(-1) ?? cursor, uncovered: 0 }
+    return {
+      cids: batch,
+      cycleCompleted: false,
+      nextCursor: batch.at(-1) ?? cursor,
+      uncovered: 0,
+      coverageProven
+    }
   }
 
   cycle = undefined
-  return { cids: batch, cycleCompleted: true, uncovered: fresh.length }
+  return { cids: batch, cycleCompleted: true, uncovered: fresh.length, coverageProven }
 }

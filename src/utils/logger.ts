@@ -1,3 +1,4 @@
+import { CID } from 'multiformats/cid'
 import { pino } from 'pino'
 import type { DestinationStream, LogFn, Logger } from 'pino'
 import { pinoHttp } from 'pino-http'
@@ -70,10 +71,31 @@ export function routeShape(url: string | undefined): string {
 const LOG_SCRUBBERS: Array<[RegExp, string]> = [
   [/\/(?:ip4|ip6|dns|dns4|dns6|dnsaddr)\/[^\s"',)]+/g, '[multiaddr]'],
   [/\b12D3Koo[1-9A-HJ-NP-Za-km-z]{40,}\b/g, '[peer]'],
-  [/\bQm[1-9A-HJ-NP-Za-km-z]{44}\b/g, '[cid]'],
-  [/\bb[a-z2-7]{58,}\b/g, '[cid]'],
   [/\n\s+at\s+[\s\S]*$/, ' [stack omitted]']
 ]
+
+/**
+ * Tokens shaped like an encoded CID, by multibase prefix.
+ *
+ * A length threshold alone would miss short forms — an identity multihash such
+ * as `bafkqad3qojuxmylumuqhaylznrxwcza` is 32 characters — and lowering it would
+ * start matching ordinary words. Each match is confirmed by the parser instead,
+ * so the shape only has to be cheap enough to skip prose.
+ */
+const CID_CANDIDATE =
+  /\b(?:b[a-z2-7]{15,}|B[A-Z2-7]{15,}|z[1-9A-HJ-NP-Za-km-z]{15,}|f[0-9a-f]{15,}|Qm[1-9A-HJ-NP-Za-km-z]{44})\b/g
+
+/** Replace every token the CID parser accepts, whatever its version or encoding. */
+function scrubCids(value: string): string {
+  return value.replace(CID_CANDIDATE, (token) => {
+    try {
+      CID.parse(token)
+      return '[cid]'
+    } catch {
+      return token
+    }
+  })
+}
 
 /**
  * Remove content identifiers, peer identities, and stack traces from a message.
@@ -87,11 +109,14 @@ const LOG_SCRUBBERS: Array<[RegExp, string]> = [
  * @returns the same text with every identifier replaced by a fixed placeholder
  */
 export function scrubLogValue(value: string): string {
-  return LOG_SCRUBBERS.reduce((text, [pattern, placeholder]) => {
+  const scrubbed = LOG_SCRUBBERS.reduce((text, [pattern, placeholder]) => {
     // A global regex carries `lastIndex` between calls; reset before reuse.
     pattern.lastIndex = 0
     return text.replace(pattern, placeholder)
   }, value)
+
+  CID_CANDIDATE.lastIndex = 0
+  return scrubCids(scrubbed)
 }
 
 /** Apply {@link scrubLogValue} through the strings of one log argument. */

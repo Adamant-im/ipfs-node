@@ -143,6 +143,28 @@ describe('health checkpoint state', () => {
     assert.equal(read.evaluatedAt, 13_000)
   })
 
+  it('refuses to advance while the clock is behind the last checkpoint', () => {
+    const prior = evaluateHealth(policy, healthy(12_345)).completed!
+    // The clock moved back past the checkpoint this node already recorded.
+    const rolledBack = evaluateHealth(policy, { ...healthy(9_000), previous: prior })
+
+    assert.equal(rolledBack.snapshot.checks.clockConsistent, false)
+    assert.notEqual(rolledBack.snapshot.state, 'ready')
+    // Nothing is persisted, so no round can claim to have started after it ended.
+    assert.equal(rolledBack.completed, undefined)
+    assert.equal(rolledBack.snapshot.height, prior.height)
+  })
+
+  it('does not treat a repair completion from the future as fresh', () => {
+    const result = evaluateHealth(policy, {
+      ...healthy(12_345),
+      repairCompletedAt: 20_000
+    })
+
+    assert.equal(result.snapshot.checks.repairFresh, false)
+    assert.notEqual(result.snapshot.state, 'ready')
+  })
+
   it('keeps the maximum checkpoint age inclusive', () => {
     const ready = evaluateHealth(policy, healthy(12_345)).snapshot
     const boundary = refreshHealthSnapshot(ready, 15_345, policy)

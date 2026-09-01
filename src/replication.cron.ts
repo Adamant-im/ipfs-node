@@ -8,30 +8,13 @@ import { Key } from 'interface-datastore'
 import { createHash } from 'node:crypto'
 import { membershipVersion } from './health/membership.js'
 import { RepairCycleDriver, type RepairTrigger } from './storage/repairCycleDriver.js'
+import { parseEvidence, type RepairCycleEvidence } from './storage/repairEvidence.js'
 
 let running = false
 let lastReport: RepairReport | null = null
 const REPAIR_STATE_KEY = new Key('/adm/health/repair-cycle')
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-
-interface RepairCycleEvidence {
-  membershipVersion: string
-  policyVersion: string
-  cursor?: string
-  startedAt: number
-  /** Records were admitted behind the cursor, so this cycle cannot cover them. */
-  superseded: boolean
-  examined: number
-  checked: number
-  underReplicated: number
-  repaired: number
-  stillMissing: number
-  unrecoverable: number
-  lastCompletedAt: number | null
-  lastCompletedSuccessfully: boolean
-  lastCompletedBacklog: number
-}
 
 let evidence: RepairCycleEvidence | null = null
 
@@ -57,7 +40,7 @@ function emptyEvidence(now = Date.now()): RepairCycleEvidence {
   }
 }
 
-async function loadEvidence(): Promise<RepairCycleEvidence> {
+async function loadEvidence(now: number = Date.now()): Promise<RepairCycleEvidence> {
   if (evidence !== null) return evidence
 
   try {
@@ -69,37 +52,17 @@ async function loadEvidence(): Promise<RepairCycleEvidence> {
       logger.warn('Ignoring malformed persisted repair-cycle evidence')
       parsed = {}
     }
-    evidence =
-      typeof parsed.membershipVersion === 'string' &&
-      typeof parsed.policyVersion === 'string' &&
-      (parsed.cursor === undefined || typeof parsed.cursor === 'string') &&
-      Number.isSafeInteger(parsed.startedAt) &&
-      (parsed.examined === undefined || Number.isSafeInteger(parsed.examined)) &&
-      (parsed.superseded === undefined || typeof parsed.superseded === 'boolean') &&
-      Number.isSafeInteger(parsed.checked) &&
-      Number.isSafeInteger(parsed.underReplicated) &&
-      Number.isSafeInteger(parsed.repaired) &&
-      Number.isSafeInteger(parsed.stillMissing) &&
-      Number.isSafeInteger(parsed.unrecoverable) &&
-      (parsed.lastCompletedAt === null || Number.isSafeInteger(parsed.lastCompletedAt)) &&
-      typeof parsed.lastCompletedSuccessfully === 'boolean' &&
-      Number.isSafeInteger(parsed.lastCompletedBacklog)
-        ? ({
-            ...parsed,
-            examined: parsed.examined ?? parsed.checked,
-            superseded: parsed.superseded ?? false
-          } as RepairCycleEvidence)
-        : emptyEvidence()
+    evidence = parseEvidence(parsed, now) ?? emptyEvidence(now)
   } catch (err) {
     if ((err as { code?: string }).code !== 'ERR_NOT_FOUND') throw err
-    evidence = emptyEvidence()
+    evidence = emptyEvidence(now)
   }
 
   if (
     evidence.membershipVersion !== membershipVersion(config.nodes) ||
     evidence.policyVersion !== currentPolicyVersion()
   ) {
-    evidence = emptyEvidence()
+    evidence = emptyEvidence(now)
   }
 
   return evidence
@@ -145,7 +108,7 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
     // but it is not published as fresh durability evidence: the last genuinely
     // complete cycle stays in place instead, so readiness decays on its own
     // schedule rather than advancing on a coverage gap.
-    const superseded = current.superseded || lastReport.uncovered > 0
+    const superseded = current.superseded || lastReport.uncovered > 0 || !lastReport.coverageProven
     const publishes = lastReport.cycleCompleted && !superseded
 
     await saveEvidence(
