@@ -165,6 +165,21 @@ describe('health checkpoint state', () => {
     assert.notEqual(result.snapshot.state, 'ready')
   })
 
+  it('refuses a storage measurement from ahead of the attempt', () => {
+    // No previous checkpoint to notice the rollback — the state after one that
+    // was discarded, or after a membership change reset it.
+    const result = evaluateHealth(policy, {
+      ...healthy(5_000),
+      storageUpdatedAt: 10_000,
+      previous: null
+    })
+
+    assert.equal(result.snapshot.checks.clockConsistent, false)
+    assert.equal(result.snapshot.checks.storageFresh, false)
+    assert.notEqual(result.snapshot.state, 'ready')
+    assert.equal(result.completed, undefined)
+  })
+
   it('fails safe on the first read after the clock moves back', () => {
     const ready = evaluateHealth(policy, healthy(10_000)).snapshot
     assert.equal(ready.state, 'ready')

@@ -83,6 +83,16 @@ describe('application log sanitization', () => {
     assert.equal(output.includes('replication_repair_pass'), true)
   })
 
+  it('omits a subtree past the depth limit rather than passing it through', () => {
+    const { logger, lines } = capture()
+
+    logger.info({ a: { b: { c: { d: { e: { cid: CID_V1 } } } } } }, 'nested')
+
+    const output = lines()
+    assert.equal(output.includes(CID_V1), false)
+    assert.equal(output.includes('[omitted]'), true)
+  })
+
   it('reports an error without its stack', () => {
     const { logger, lines } = capture()
     const failure = Object.assign(new Error(`Cannot pin ${CID_V1}`), { code: 'ERR_NOT_FOUND' })

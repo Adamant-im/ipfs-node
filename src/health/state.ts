@@ -85,6 +85,17 @@ function age(now: number, observedAt: number | null): number | null {
   return observedAt === null ? null : Math.max(0, now - observedAt)
 }
 
+/**
+ * Whether an observation could have been made by the time it is being read.
+ *
+ * `age` clamps a negative duration to zero, so a timestamp from ahead of the
+ * clock reads as a brand new observation rather than an impossible one. Every
+ * path that trusts a recorded time checks this first.
+ */
+function notInFuture(now: number, observedAt: number | null): boolean {
+  return observedAt === null || now >= observedAt
+}
+
 /** Return the fixed checkpoint round containing `time`. */
 export function checkpointRound(time: number, intervalMs: number): number {
   return Math.floor(time / intervalMs) * intervalMs
@@ -101,26 +112,33 @@ export function evaluateHealth(
   policy: HealthConfig,
   input: HealthInputs
 ): { snapshot: HealthSnapshot; completed?: HealthCheckpoint } {
+  // Every recorded time this attempt trusts, checked against the same rule the
+  // read-time refresh applies. A clock behind the last checkpoint would keep the
+  // old height through `Math.max` while stamping a lower `completedAt`,
+  // persisting a round that starts after it finished — the shape
+  // `parseCheckpoint` refuses to load. A storage or repair observation from the
+  // future is the same problem without a previous checkpoint to notice it, which
+  // is exactly the state after a rollback that discarded one.
+  const clockConsistent =
+    notInFuture(input.now, input.previous?.completedAt ?? null) &&
+    notInFuture(input.now, input.storageUpdatedAt) &&
+    notInFuture(input.now, input.repairCompletedAt)
+
   const prerequisiteChecks = {
-    // A clock behind the last checkpoint would keep the old height through
-    // `Math.max` while stamping a lower `completedAt`, persisting a round that
-    // starts after it finished — the shape `parseCheckpoint` refuses to load.
-    // Advancement waits for the clock instead of recording that.
-    clockConsistent: input.previous === null || input.previous.completedAt <= input.now,
+    clockConsistent,
     helia: input.heliaReady,
     startupReconciliation: input.startupComplete && input.startupHealthy,
     storageFresh:
+      clockConsistent &&
       input.storageUpdatedAt !== null &&
       input.now - input.storageUpdatedAt <= policy.storageMaxAgeMs,
     storageReserve: input.storageAvailableBytes >= input.storageReservedBytes,
     repairFresh:
       !input.repairRequired ||
-      (input.repairHealthy &&
+      (clockConsistent &&
+        input.repairHealthy &&
         input.repairBacklog === 0 &&
         input.repairCompletedAt !== null &&
-        // A completion stamped ahead of the clock is not evidence of freshness;
-        // without the lower bound its negative age would always pass.
-        input.now >= input.repairCompletedAt &&
         input.now - input.repairCompletedAt <= policy.repairMaxAgeMs),
     peerAttestations: input.attestedPeers >= policy.requiredPeerCount
   }
@@ -200,18 +218,14 @@ export function refreshHealthSnapshot(
   const storageAge = age(timestamp, current.storage.measuredAt)
   const repairAge = age(timestamp, current.replication.lastCompleteAt)
 
-  // `age` clamps a negative duration to zero, so a clock behind the evidence in
-  // this snapshot would read as brand new rather than as impossible. Each
-  // observation is compared against the request time explicitly instead, and the
-  // endpoint fails safe on the first read after a rollback rather than waiting
-  // for the next scheduled evaluation.
-  const notInFuture = (observedAt: number | null): boolean =>
-    observedAt === null || timestamp >= observedAt
+  // The endpoint fails safe on the first read after a rollback rather than
+  // waiting for the next scheduled evaluation. The conjunction keeps it one-way:
+  // a read can clear the flag, never restore it.
   const clockConsistent =
     current.checks.clockConsistent &&
-    notInFuture(current.checkpoint.observedAt) &&
-    notInFuture(current.storage.measuredAt) &&
-    notInFuture(current.replication.lastCompleteAt)
+    notInFuture(timestamp, current.checkpoint.observedAt) &&
+    notInFuture(timestamp, current.storage.measuredAt) &&
+    notInFuture(timestamp, current.replication.lastCompleteAt)
 
   const checks = {
     ...current.checks,
