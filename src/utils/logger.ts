@@ -120,6 +120,18 @@ export function scrubLogValue(value: string): string {
   return scrubCids(scrubbed)
 }
 
+/**
+ * How deep the scrubber walks a structured argument.
+ *
+ * Beyond this the subtree is replaced rather than returned: handing it back
+ * unchanged would let an identifier below the cutoff reach the log, which is
+ * the leak the walk exists to close.
+ */
+const MAX_SCRUB_DEPTH = 4
+
+/** Stands in for a subtree past {@link MAX_SCRUB_DEPTH}. */
+const OMITTED = '[omitted]'
+
 /** Apply {@link scrubLogValue} through the strings of one log argument. */
 function scrubLogArgument(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') {
@@ -139,8 +151,12 @@ function scrubLogArgument(value: unknown, depth = 0): unknown {
     return scrubbed
   }
 
-  if (value === null || typeof value !== 'object' || depth > 4) {
+  if (value === null || typeof value !== 'object') {
     return value
+  }
+
+  if (depth > MAX_SCRUB_DEPTH) {
+    return OMITTED
   }
 
   if (Array.isArray(value)) {
