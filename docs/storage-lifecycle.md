@@ -13,19 +13,33 @@ default, so a configuration file written before this feature keeps working. See
 An upload is refused before a single block reaches the blockstore when any of
 these limits is exceeded.
 
-| Limit                  | Option                           | Response |
-| ---------------------- | -------------------------------- | -------- |
-| Concurrent uploads     | `storage.maxConcurrentUploads`   | `429`    |
-| Concurrent downloads   | `storage.maxConcurrentDownloads` | `429`    |
-| Aggregate request size | `storage.maxRequestSizeBytes`    | `413`    |
-| Disk reserve           | `storage.diskReserveBytes`       | `507`    |
-| Files per request      | `maxFileCount`                   | `400`    |
-| Single file size       | `uploadLimitSizeBytes`           | `400`    |
+| Limit                  | Option                         | Response |
+| ---------------------- | ------------------------------ | -------- |
+| Concurrent uploads     | `storage.maxConcurrentUploads` | `429`    |
+| Aggregate request size | `storage.maxRequestSizeBytes`  | `413`    |
+| Disk reserve           | `storage.diskReserveBytes`     | `507`    |
+| Files per request      | `maxFileCount`                 | `400`    |
+| Single file size       | `uploadLimitSizeBytes`         | `400`    |
 
 The first three are checked by the upload guard before the multipart parser
 runs. The last two are enforced by the parser itself through
 `createMultipartLimits`, which aborts the request before handing an over-limit
 part to the storage engine.
+
+## Download admission
+
+Retrieval has its own guard on `GET /api/file/:cid`, checked before the handler
+runs rather than by the upload guard above.
+
+| Limit                          | Option                                    | Response |
+| ------------------------------ | ----------------------------------------- | -------- |
+| Concurrent downloads, node     | `storage.maxConcurrentDownloads`          | `429`    |
+| Concurrent downloads, a client | `storage.maxConcurrentDownloadsPerClient` | `429`    |
+
+The per-client share is checked first, so an address already at its limit is
+refused without consuming a node slot. A slot is held for the whole response,
+which is why the global bound alone would let one address occupy every one of
+them for the length of its transfers.
 
 The aggregate size is checked twice: against `Content-Length` before parsing,
 and against the bytes actually streamed, because a chunked request declares no
@@ -465,7 +479,9 @@ bound sustained peer load. Its sorted cursor and
 aggregate result are persisted under the node datastore, so restart resumes the
 same cycle. A repair checkpoint is recorded only after a pass reaches the end
 of the candidate set; a pass over one batch is not presented as full-fleet
-evidence. A cycle containing an unresolved shortfall is complete but unhealthy,
+evidence. A completed cycle covers the records that were confirmed when it
+began: content admitted mid-cycle is placed by the upload path and verified by
+the next cycle. A cycle containing an unresolved shortfall is complete but unhealthy,
 and therefore cannot advance the node health checkpoint.
 
 Replication needs the peers to be connected over libp2p, because the copy itself

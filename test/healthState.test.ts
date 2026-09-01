@@ -123,6 +123,26 @@ describe('health checkpoint state', () => {
     assert.equal(repairExpired.checks.repairFresh, false)
   })
 
+  it('dates non-checkpoint evidence by the attempt, not by the last success', () => {
+    const prior = evaluateHealth(policy, healthy(12_345)).completed!
+    const failed = evaluateHealth(policy, {
+      ...healthy(13_000),
+      attestedPeers: 0,
+      previous: prior
+    }).snapshot
+
+    // The attempt at 13_000 produced membership and checks; observedAt still
+    // points at the successful round, so the two must not share a timestamp.
+    assert.equal(failed.evaluatedAt, 13_000)
+    assert.equal(failed.checkpoint.observedAt, 12_345)
+    assert.equal(failed.membership.attestedPeers, 0)
+
+    // A read moves `timestamp` but must not move the evaluation time with it.
+    const read = refreshHealthSnapshot(failed, 13_500, policy)
+    assert.equal(read.timestamp, 13_500)
+    assert.equal(read.evaluatedAt, 13_000)
+  })
+
   it('keeps the maximum checkpoint age inclusive', () => {
     const ready = evaluateHealth(policy, healthy(12_345)).snapshot
     const boundary = refreshHealthSnapshot(ready, 15_345, policy)

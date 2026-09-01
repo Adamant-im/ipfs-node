@@ -42,6 +42,9 @@ const currDir = dirname(fileURLToPath(import.meta.url))
 /** Redial unconnected ADAMANT nodes every half minute unless configured otherwise. */
 const DEFAULT_PEERING_SCHEDULE = '*/30 * * * * *'
 
+/** Floor for the absolute download ceiling; the upload limit can raise it. */
+const DEFAULT_DOWNLOAD_MAX_DURATION_MS = 4 * 60 * 60 * 1_000
+
 /** Log levels accepted by `pino`, ordered from least to most verbose. */
 const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
 
@@ -344,32 +347,36 @@ export function validateConfig(raw: unknown): Config {
     32 * 1024,
     1
   )
-  const downloadMaxDurationMs = optionalInteger(
-    root.downloadMaxDurationMs,
-    'downloadMaxDurationMs',
-    4 * 60 * 60 * 1_000,
-    1
-  )
-  if (downloadMaxDurationMs < downloadIdleTimeout) {
-    fail('downloadMaxDurationMs', 'must be greater than or equal to downloadIdleTimeout')
-  }
   const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
 
   // Owns cors, trustProxy, adminApiKey, enableDebugApi, rateLimits,
   // uploadLimitSizeBytes and maxFileCount. Throws with its own message.
   validateSecurityConfig(root)
 
-  // The ceiling wins over the size-aware deadline, so one set below the time
-  // the largest permitted file needs would cut those transfers off mid-stream
-  // and report the generic retrieval timeout. Refuse it instead of silently
-  // making large files undownloadable.
-  const largestFileTransferMs =
-    Math.ceil((root.uploadLimitSizeBytes as number) / downloadMinBytesPerSecond) * 1_000
-  if (downloadMaxDurationMs < largestFileTransferMs) {
+  // `downloadFile` clamps its size-aware deadline to this ceiling, so the
+  // ceiling has to carry the largest file this node accepts, with the same idle
+  // headroom that deadline adds. The default is derived from the existing
+  // upload limit so a configuration written before this option stays valid; a
+  // ceiling the operator set explicitly is still refused when it would cut
+  // those transfers off mid-stream and report them as retrieval timeouts.
+  const largestDownloadMs =
+    Math.ceil((root.uploadLimitSizeBytes as number) / downloadMinBytesPerSecond) * 1_000 +
+    downloadIdleTimeout
+  const downloadMaxDurationMs = optionalInteger(
+    root.downloadMaxDurationMs,
+    'downloadMaxDurationMs',
+    Math.max(DEFAULT_DOWNLOAD_MAX_DURATION_MS, largestDownloadMs),
+    1
+  )
+  if (downloadMaxDurationMs < downloadIdleTimeout) {
+    fail('downloadMaxDurationMs', 'must be greater than or equal to downloadIdleTimeout')
+  }
+  if (root.downloadMaxDurationMs !== undefined && downloadMaxDurationMs < largestDownloadMs) {
     fail(
       'downloadMaxDurationMs',
-      `must be at least ${largestFileTransferMs}, the time an ${String(root.uploadLimitSizeBytes)} ` +
-        `byte file needs at downloadMinBytesPerSecond ${downloadMinBytesPerSecond}`
+      `must be at least ${largestDownloadMs}, the time an ${String(root.uploadLimitSizeBytes)} ` +
+        `byte file needs at downloadMinBytesPerSecond ${downloadMinBytesPerSecond} ` +
+        `plus the ${downloadIdleTimeout} ms idle allowance`
     )
   }
 

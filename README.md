@@ -394,6 +394,7 @@ Example response:
   "state": "ready",
   "height": 1720614960000,
   "timestamp": 1720614998797,
+  "evaluatedAt": 1720614998700,
   "checkpoint": {
     "intervalMs": 60000,
     "observedAt": 1720614998700,
@@ -431,7 +432,7 @@ Example response:
 
 The endpoint always returns `200`; consumers must inspect `state`. `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It advances only when startup reconciliation, storage freshness and reserve, a complete successful repair cycle with no known backlog, and the configured peer attestations all pass. It freezes on failure. Observation timestamps and ages let clients reject an absolutely stale cluster even when every node reports the same height. `starting`, `degraded`, and `stale` distinguish warm-up, a current failed prerequisite, and an expired last checkpoint.
 
-State changes are deliberately asymmetric. The response is served from the last checkpoint, and reading it recomputes only what elapsed time can decide, so a node may be downgraded to `degraded` or `stale` between checkpoints. Recovery is never decided on a read: returning to `ready` requires a successful checkpoint, so expect up to `health.checkpointIntervalMs` of lag after the underlying fault clears. `checkpointFresh`, `storageFresh`, and `repairFresh` follow the same rule; every other entry in `checks`, along with `membership` and `startup`, describes the moment identified by `checkpoint.observedAt` and not the moment of the request. Peers may attest an adjacent round across a boundary, so two healthy nodes can briefly report heights one `checkpointIntervalMs` apart.
+State changes are deliberately asymmetric. The response is served from the last checkpoint, and reading it recomputes only what elapsed time can decide, so a node may be downgraded to `degraded` or `stale` between checkpoints. Recovery is never decided on a read: returning to `ready` requires a successful checkpoint, so expect up to `health.checkpointIntervalMs` of lag after the underlying fault clears. `checkpointFresh`, `storageFresh`, and `repairFresh` follow the same rule; every other entry in `checks`, along with `membership` and `startup`, describes `evaluatedAt` — the last checkpoint attempt, which may be a failed one — and not the moment of the request. `checkpoint.observedAt` dates the last attempt that _succeeded_, so the two differ whenever the most recent attempt failed. Peers may attest an adjacent round across a boundary, so two healthy nodes can briefly report heights one `checkpointIntervalMs` apart.
 
 `membership.version` identifies the configured peer-set epoch. Changing the node list resets the persisted checkpoint for that node: `height` remains `0` until the first valid checkpoint under the new membership. Clients must compare heights only when membership versions match and treat a version change as a new epoch.
 

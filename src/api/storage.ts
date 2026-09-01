@@ -46,6 +46,7 @@ router.get('/policy', readLimiter, (req, res) => {
     maxRequestSizeBytes: config.storage.maxRequestSizeBytes,
     maxConcurrentUploads: config.storage.maxConcurrentUploads,
     maxConcurrentDownloads: config.storage.maxConcurrentDownloads,
+    maxConcurrentDownloadsPerClient: config.storage.maxConcurrentDownloadsPerClient,
     confirmationRequired: config.storage.confirmationRequired,
     temporaryTtlMs: config.storage.temporaryTtlMs,
     durability: config.replication.enabled

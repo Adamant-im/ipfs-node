@@ -31,7 +31,17 @@ export interface HealthSnapshot {
   state: HealthState
   /** Monotonic checkpoint height, never a request timestamp. */
   height: number
+  /** Time this response was produced. */
   timestamp: number
+  /**
+   * Time the checkpoint attempt behind this snapshot ran.
+   *
+   * A failed attempt leaves `checkpoint.observedAt` on the last successful
+   * round while `membership`, `startup`, and the non-age checks come from the
+   * attempt that just failed, so those fields are dated by this value and not
+   * by `checkpoint.observedAt`.
+   */
+  evaluatedAt: number
   checkpoint: {
     intervalMs: number
     observedAt: number | null
@@ -137,6 +147,7 @@ export function evaluateHealth(
       state,
       height: completed?.height ?? input.previous?.height ?? 0,
       timestamp: input.now,
+      evaluatedAt: input.now,
       checkpoint: {
         intervalMs: policy.checkpointIntervalMs,
         observedAt: checkpointObservedAt,

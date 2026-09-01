@@ -25,7 +25,15 @@ export interface SweepBatch<T> {
  *
  * A persisted cursor may be supplied after restart. A batch never mixes the
  * tail of one cycle with the head of the next, so completing a batch proves
- * that every candidate present in that ordered cycle was visited.
+ * that every candidate present **when the cycle began** was visited: CIDs are
+ * immutable, so a record that existed then either sorts before the cursor and
+ * was already visited, or sorts after it and still will be.
+ *
+ * It proves nothing about records admitted mid-cycle. One that sorts before the
+ * current cursor is not visited until the next cycle, which is the right cost:
+ * binding completion to a generation of the candidate set would stop a node
+ * with steady uploads from ever completing a cycle, and repair freshness gates
+ * node health.
  */
 export function sweepBatch<T extends { cid: string }>(
   sweep: SweepName,

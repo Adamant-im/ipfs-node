@@ -58,6 +58,17 @@ describe('validateConfig', () => {
     assert.equal(parsed.storage.maxConcurrentDownloadsPerClient, 8)
   })
 
+  it('keeps a configuration written before the download options valid', () => {
+    // 512 MiB at the fallback 32 KiB/s needs more than the four-hour floor, so
+    // the ceiling has to follow the existing upload limit rather than reject it.
+    const raw = validRaw()
+    raw.uploadLimitSizeBytes = 536_870_912
+    raw.storage = { maxRequestSizeBytes: 536_870_912 }
+    const parsed = validateConfig(raw)
+
+    assert.equal(parsed.downloadMaxDurationMs, Math.ceil(536_870_912 / 32_768) * 1_000 + 20_000)
+  })
+
   it('ignores unknown keys so deployments can carry extras', () => {
     assert.doesNotThrow(() => validateConfig({ ...validRaw(), someFutureOption: 42 }))
   })

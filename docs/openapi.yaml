@@ -13,7 +13,7 @@ paths:
       summary: Read the network-aware node checkpoint
       responses:
         '200':
-          description: The current state; inspect status because this route is always 200
+          description: The current state; inspect the state field because this route is always 200
           content:
             application/json:
               schema:
@@ -183,6 +183,7 @@ components:
         - state
         - height
         - timestamp
+        - evaluatedAt
         - checkpoint
         - membership
         - startup
@@ -206,7 +207,12 @@ components:
             Persisted Unix milliseconds at the start of the last valid fixed round.
             Peers may attest an adjacent round across a boundary, so two healthy
             nodes can report heights one intervalMs apart at a round change
-        timestamp: { type: integer }
+        timestamp: { type: integer, description: When this response was produced }
+        evaluatedAt:
+          type: integer
+          description: >-
+            When the checkpoint attempt behind this snapshot ran; membership,
+            startup, and the non-age checks are dated by this, not by checkpoint.observedAt
         checkpoint:
           type: object
           required: [intervalMs, observedAt, ageMs, maxAgeMs]
@@ -217,7 +223,7 @@ components:
             maxAgeMs: { type: integer, minimum: 1000 }
         membership:
           type: object
-          description: Peer evidence captured when checkpoint.observedAt was evaluated
+          description: Peer evidence from the attempt at evaluatedAt, which may be a failed one
           required: [version, requiredPeers, attestedPeers]
           properties:
             version:
@@ -228,7 +234,7 @@ components:
             attestedPeers: { type: integer, minimum: 0 }
         startup:
           type: object
-          description: Startup evidence captured when checkpoint.observedAt was evaluated
+          description: Startup evidence from the attempt at evaluatedAt, which may be a failed one
           required: [complete, healthy]
           properties:
             complete: { type: boolean }
@@ -250,7 +256,7 @@ components:
             backlog: { type: integer, minimum: 0 }
         checks:
           type: object
-          description: Checkpoint, storage, and repair freshness are recomputed at read time; every other check describes checkpoint.observedAt
+          description: Checkpoint, storage, and repair freshness are recomputed at read time; every other check describes evaluatedAt
           additionalProperties: { type: boolean }
     HttpMetrics:
       type: object

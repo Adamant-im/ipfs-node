@@ -12,6 +12,7 @@ const health: HealthSnapshot = {
   state: 'ready',
   height: 12_000,
   timestamp: 12_345,
+  evaluatedAt: 12_345,
   checkpoint: { intervalMs: 1_000, observedAt: 12_345, ageMs: 0, maxAgeMs: 3_000 },
   membership: { version: 'a'.repeat(64), requiredPeers: 1, attestedPeers: 1 },
   startup: { complete: true, healthy: true },
