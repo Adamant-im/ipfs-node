@@ -13,6 +13,42 @@ Optimize agent work for:
 
 Prefer the smallest safe change that fully addresses the task. Avoid unrelated rewrites and speculative abstractions.
 
+## Product Positioning
+
+ADAMANT IPFS Node is a universal, self-hostable open-source product: an IPFS storage node for
+application file delivery, with bounded disk usage, deterministic replication, repair, health
+checkpoints, and a REST API. ADAMANT Messenger is a real adopter and the reference deployment,
+not the product's purpose.
+
+- Write user-facing copy and examples so a non-ADAMANT application can use them unchanged
+- Present ADAMANT Messenger as one adopter and one worked example, never as the intended consumer
+- Keep ADAMANT-specific values out of defaults that a new deployment would copy blindly; the peer
+  list in `config.default.json5` points at the ADAMANT production mesh, so any example a stranger
+  is expected to run must use an empty or placeholder peer set
+- Describe the service as a standalone Node.js and Helia application, never as a Kubo wrapper or a
+  Kubo-compatible API
+
+### Claims
+
+Derive every capability, decentralization, privacy, resource, and scale claim from current code,
+current tests, or a reproducible measurement recorded in the repository.
+
+- Do not publish CPU, memory, disk, throughput, latency, concurrency, or uptime figures that no
+  recorded measurement supports; "simple" and "low-resource" are claims, not adjectives
+- Do not describe planned or in-progress work as an available feature; name the open issue instead
+- State the boundary next to the benefit: a controlled peer topology avoids the public DHT and
+  public gateways and reduces public exposure of content-routing metadata, but does not by itself
+  make a deployment private, anonymous, trustless, or censorship-proof
+- Availability still depends on independent nodes, independent operators, replication settings, and
+  deployer choices; do not turn a durability policy into an availability guarantee
+
+### Public surface synchronization
+
+`README.md`, the documentation site under `docs/`, `docs/openapi.yaml`, the container files and
+examples, `package.json` metadata, and the GitHub repository presentation describe one product.
+When public behavior changes, update all of them in the same change, or state explicitly which one
+was deliberately left alone and why.
+
 ## Language Policy
 
 - Developers may communicate with AI in any language
@@ -76,6 +112,18 @@ Preserve backward compatibility unless the task explicitly approves a breaking c
 - For documentation-only changes, run Markdown lint and repository diff checks
 - Never claim a check passed unless it was actually executed
 - Report exact commands, results, and any checks that were not run
+
+Documentation site and container work carries further expectations:
+
+- Build the documentation site from the lockfile before claiming it works, and treat a broken
+  internal link, a missing generated API reference, or a missing custom-domain file as a failure
+  rather than a warning
+- Exercise a container image at runtime before claiming it works: it must start from mounted
+  configuration, run unprivileged, reach the documented health state, serve an upload and a
+  download, keep its persistent state and peer identity across replacement, and shut down cleanly
+  on `SIGTERM`
+- Keep validation instructions in terms of repository scripts, not of a specific base image, tag,
+  runner, or registry path, so they do not go stale
 
 ## Issue, Label, and PR Conventions
 

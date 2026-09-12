@@ -1,0 +1,143 @@
+name: Publish container
+
+# Publishes ghcr.io/adamant-im/ipfs-node when a GitHub Release is published.
+# Nothing is published from a branch push: a release is the only intentional
+# distribution event.
+#
+# Tagging policy:
+#
+# - every release publishes the immutable version tag, e.g. `0.2.0`
+# - a stable release also moves `latest`
+# - a prerelease publishes its version tag only, so `latest` never points at one
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/adamant-im/ipfs-node
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push the image, its SBOM, and its provenance attestation to
+      # GHCR. No other scope is needed.
+      packages: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      # `dev` is this repository's default and stable release branch. A tag made
+      # on a feature branch must not become a published image.
+      - name: Verify the release tag is on dev
+        run: |
+          git fetch --no-tags origin dev
+          git merge-base --is-ancestor HEAD origin/dev \
+            || { echo "the release tag is not an ancestor of origin/dev"; exit 1; }
+
+      - name: Resolve the release version
+        id: release
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "release tag ${TAG_NAME} does not match package.json version ${PACKAGE_VERSION}"
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.release.outputs.version }}
+            IMAGE_REVISION=${{ github.sha }}
+            IMAGE_CREATED=${{ github.event.release.published_at }}
+          # Pushed to GHCR as OCI attestations alongside the image; no extra
+          # workflow permission beyond `packages: write` is required.
+          sbom: true
+          provenance: mode=max
+
+  verify:
+    name: Verify published image (${{ matrix.platform }})
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up QEMU
+        if: matrix.platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The immutable version tag, not `latest`: the smoke test must describe
+      # the artifact this release produced.
+      - name: Pull the published architecture
+        run: |
+          docker pull --platform ${{ matrix.platform }} \
+            "${IMAGE}:${{ needs.publish.outputs.version }}"
+
+      - name: Run the documented runtime checks
+        run: |
+          ./scripts/docker-smoke-test.sh \
+            "${IMAGE}:${{ needs.publish.outputs.version }}" ${{ matrix.platform }}

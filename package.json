@@ -1,7 +1,34 @@
 {
   "name": "ipfs-node",
   "version": "0.1.0",
-  "description": "IPFS decentralized file storage and transfers",
+  "description": "Self-hosted IPFS storage node for application file delivery, with bounded disk usage, deterministic replication, repair, health checkpoints, and a REST API",
+  "keywords": [
+    "ipfs",
+    "helia",
+    "libp2p",
+    "bitswap",
+    "unixfs",
+    "content-addressed-storage",
+    "decentralized-storage",
+    "distributed-storage",
+    "file-storage",
+    "file-sharing",
+    "replication",
+    "self-hosted",
+    "storage-node",
+    "rest-api",
+    "nodejs",
+    "typescript",
+    "adamant"
+  ],
+  "homepage": "https://ipfs-node.docs.adamant.im",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Adamant-im/ipfs-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Adamant-im/ipfs-node/issues"
+  },
   "main": "dist/index.js",
   "private": true,
   "type": "module",
@@ -14,6 +41,10 @@
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "docs:api": "node scripts/generate-api-reference.mjs",
+    "docs:dev": "npm run docs:api && vitepress dev docs",
+    "docs:build": "npm run docs:api && vitepress build docs && node scripts/check-docs-artifact.mjs",
+    "docs:preview": "vitepress preview docs",
     "test:build": "rimraf dist-test && tsc -p tsconfig.test.json",
     "test": "npm run test:build && npm run test:unit && npm run test:integration",
     "test:unit": "IPFS_NODE_CONFIG=test node --test \"dist-test/test/*.test.js\"",
@@ -28,7 +59,7 @@
     "security:semgrep": "semgrep --config p/owasp-top-ten --config p/nodejs --config p/expressjs --config p/typescript --config .semgrep/rules.yml --no-strict src/"
   },
   "author": "ADAMANT Foundation <devs@adamant.im>",
-  "license": "GPLv3",
+  "license": "GPL-3.0",
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",
     "@commitlint/config-conventional": "^21.0.0",
@@ -47,7 +78,9 @@
     "prettier": "^3.9.6",
     "rimraf": "^6.1.3",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.67.0"
+    "typescript-eslint": "^8.67.0",
+    "vitepress": "1.6.4",
+    "yaml": "2.9.0"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",

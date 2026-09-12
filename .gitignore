@@ -16,3 +16,12 @@ npm-audit-report.json
 .ai-ignored/
 .ai-tasks/
 .claude/
+
+# documentation site build output and generated pages
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/reference/endpoints.md
+docs/public/openapi.yaml
+
+# docker evaluation stack
+docker/data/

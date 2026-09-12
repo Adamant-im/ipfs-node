@@ -5,9 +5,18 @@ package-lock.json
 npm-audit-report.json
 
 # Semgrep rule definitions are formatted for readability of the pattern blocks
+
 .semgrep
 
 # Scratch worktrees and agent working directories
+
 .claude
 .ai-ignored
 .ai-tasks
+
+# Documentation site build output and generated pages
+
+docs/.vitepress/cache
+docs/.vitepress/dist
+docs/reference/endpoints.md
+docs/public/openapi.yaml
