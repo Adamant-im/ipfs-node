@@ -81,7 +81,16 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+          # metadata-action derives a label set of its own and passes it to the
+          # build, where it wins over the Dockerfile's LABEL instruction. Its
+          # generated title is the bare repository name, so the descriptive
+          # labels are restated here to keep the published image consistent with
+          # the Dockerfile.
           labels: |
+            org.opencontainers.image.title=ADAMANT IPFS Node
+            org.opencontainers.image.vendor=ADAMANT Developer Community
+            org.opencontainers.image.authors=ADAMANT Developer Community <devs@adamant.im>
+            org.opencontainers.image.documentation=https://ipfs-node.docs.adamant.im
             org.opencontainers.image.version=${{ steps.release.outputs.version }}
 
       - name: Build and push
