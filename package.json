@@ -105,7 +105,7 @@
     "interface-blockstore": "^7.0.1",
     "interface-datastore": "^10.0.1",
     "json5": "^2.2.3",
-    "multer": "^2.2.0",
+    "multer": "^2.3.0",
     "multiformats": "^14.0.5",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",

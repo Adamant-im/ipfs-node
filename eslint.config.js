@@ -6,8 +6,19 @@ import prettier from 'eslint-config-prettier'
 export default tseslint.config(
   {
     // `.claude/` holds scratch worktrees with their own checked-out copies of
-    // this repository; linting them would report the same file many times
-    ignores: ['dist/', 'dist-test/', 'node_modules/', '.claude/', '.ai-ignored/', '.ai-tasks/']
+    // this repository; linting them would report the same file many times.
+    // `docs/.vitepress/dist` and `cache` hold the bundled documentation site,
+    // which is generated output rather than source.
+    ignores: [
+      'dist/',
+      'dist-test/',
+      'node_modules/',
+      '.claude/',
+      '.ai-ignored/',
+      '.ai-tasks/',
+      'docs/.vitepress/dist/',
+      'docs/.vitepress/cache/'
+    ]
   },
   js.configs.recommended,
   tseslint.configs.recommended,
