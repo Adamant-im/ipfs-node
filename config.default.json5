@@ -1,0 +1,120 @@
+{
+  nodes: [
+    {
+      name: 'ipfs1',
+      multiAddr: '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
+    },
+    {
+      name: 'ipfs2',
+      multiAddr: '/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd'
+    },
+    {
+      name: 'ipfs3',
+      multiAddr: '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU'
+    }
+  ],
+  storeFolder: '.adm-ipfs',
+  logLevel: 'debug',
+  // Production logs are structured JSON. Enable this only for local terminals.
+  prettyLogs: false,
+  peerDiscovery: {
+    bootstrap: [
+      '/ip4/194.163.154.252/tcp/4001/p2p/12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq', // ipfs1
+      '/ip4/154.26.159.245/tcp/4001/p2p/12D3KooWJw99nqrQ2L2joFuGCF9EN9EyF8ZrvGr1odQ61HoPrbXd', // ipfs2
+      '/ip4/109.123.240.102/tcp/4001/p2p/12D3KooWHTvrWSTCXZFR2vS8Cbw17b5peK2aSBr8CmkyA96CDqiU' // ipfs3
+    ],
+    listen: ['/ip4/0.0.0.0/tcp/4001']
+  },
+  serverPort: 4000,
+  diskUsageScanPeriod: '*/30 * * * * *',
+  // Redials the nodes above that are not connected. Bootstrap dials once and
+  // never again, so without this a mesh never recovers from a restart.
+  peeringSchedule: '*/30 * * * * *',
+  uploadLimitSizeBytes: 268435456, // 256 Mb.
+  maxFileCount: 10,
+  findFileTimeout: 20000,
+  // A transfer may run longer than discovery while chunks keep arriving.
+  downloadIdleTimeout: 20000,
+  downloadMinBytesPerSecond: 32768,
+  downloadMaxDurationMs: 14400000, // 4 h absolute ceiling for one response
+  cors: {
+    // Exact origins and left-most subdomain wildcards are supported.
+    allowedOrigins: [
+      'https://*.adamant.im',
+      'https://adm.im',
+      'https://*.vercel.app',
+      'https://*.surge.sh',
+      'http://localhost:8080'
+    ]
+  },
+  // Keep false when clients connect directly. Prefer exact proxy IP/CIDR values
+  // when a reverse proxy forwards requests to this process.
+  trustProxy: false,
+  rateLimits: {
+    upload: { windowMs: 900000, limit: 10 },
+    pin: { windowMs: 900000, limit: 10 },
+    read: { windowMs: 60000, limit: 100 }
+  },
+  // Generate with: openssl rand -hex 32
+  // Admin routes return 503 while this value is empty.
+  adminApiKey: '',
+  // The debug API is absent unless explicitly enabled; it still requires the admin key.
+  enableDebugApi: false,
+  // Bounded storage lifecycle. Every option has a documented default, so an
+  // existing configuration file keeps working without this section.
+  storage: {
+    maxRequestSizeBytes: 536870912, // 512 MiB. Combined size of all files in one request
+    maxConcurrentUploads: 32, // Uploads writing into the blockstore at the same time; over this, 429
+    maxConcurrentDownloads: 64, // Downloads holding a socket and UnixFS iterator; over this, 429
+    // Share of the above one client address may hold, so nobody can take every slot
+    maxConcurrentDownloadsPerClient: 8,
+    diskReserveBytes: 5368709120, // 5 GiB of free space uploads must never consume
+    // true keeps an upload temporary until POST /api/file/:cid/confirm.
+    // Enabling it is a protocol change: clients must perform that call.
+    confirmationRequired: false,
+    temporaryTtlMs: 86400000, // 24 h. Lifetime of an unconfirmed upload
+    gc: {
+      // Controls the scheduled collector only; POST /api/storage/gc always runs
+      // on demand. Blocks are freed only when space is short, so leaving this on
+      // costs nothing until one of the thresholds below is reached.
+      enabled: true,
+      schedule: '0 */15 * * * *',
+      highWatermarkBytes: 53687091200, // 50 GiB. Collection starts above this blockstore size
+      lowWatermarkBytes: 42949672960 // 40 GiB. Collection reclaims down to this size
+    }
+  },
+  // Replication across the nodes listed in `nodes`. Copies travel over libp2p,
+  // so a peer needs no HTTP address and no shared secret: the handshake already
+  // proves which node is calling, and no extra configuration is needed.
+  replication: {
+    // Whether this node places copies of its own content. Answering a peer that
+    // wants to place a copy here does not depend on it. Turning this off leaves
+    // every file in a single copy, on this node only.
+    enabled: true,
+    // How many nodes should hold a file, including this one, by file age.
+    // Copies shrink as content ages instead of being tracked by access time,
+    // which would record when users fetch their files.
+    placement: [
+      { minAgeMs: 0, copies: 4 }, // fresh
+      { minAgeMs: 15552000000, copies: 3 }, // older than 180 days
+      { minAgeMs: 31536000000, copies: 2 } // older than 365 days
+    ],
+    ackQuorum: 1, // Including this node. Strict uploads need >= 2 so a remote copy is required.
+    requireQuorumOnUpload: false, // Incompatible with confirmationRequired; needs ackQuorum >= 2
+    requestTimeoutMs: 30000,
+    repairEnabled: true,
+    repairSchedule: '0 */30 * * * *',
+    // Bounded passes continue until a complete repair cycle is recorded.
+    repairBatchDelayMs: 1000,
+    repairProbeConcurrency: 4
+  },
+  health: {
+    checkpointIntervalMs: 60000,
+    maxCheckpointAgeMs: 180000,
+    storageMaxAgeMs: 120000,
+    repairMaxAgeMs: 3600000,
+    clockSkewToleranceMs: 10000,
+    peerAttestationTimeoutMs: 5000,
+    requiredPeerCount: 1
+  }
+}
