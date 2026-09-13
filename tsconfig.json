@@ -4,6 +4,14 @@
   // misses is type-checked by the editor under default compiler options, which
   // report spurious errors about module resolution and missing Node typings.
   // It never emits: `tsconfig.build.json` and `tsconfig.test.json` do that.
+  //
+  // `target` is `ESNext` rather than `ES2024` on purpose. esbuild resolves this
+  // file whenever Vite bundles the VitePress configuration, and the esbuild
+  // that Vite 5 ships only knows targets up to `es2023`, so `ES2024` made every
+  // documentation build and dev start print `Unrecognized target environment`.
+  // Nothing is loosened by the change: `lib` stays at `ES2024`, so no newer
+  // library API type-checks, `engines` and `.nvmrc` pin the runtime to Node 24,
+  // and the emitted `dist` is byte-identical under either value.
   "compilerOptions": {
     "allowJs": false,
     "checkJs": false,
@@ -11,7 +19,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "sourceMap": true,
-    "target": "ES2024",
+    "target": "ESNext",
     "strict": true,
     "noImplicitAny": true,
     "useUnknownInCatchVariables": false,
