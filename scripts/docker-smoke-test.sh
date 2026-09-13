@@ -246,8 +246,18 @@ step "6/9 SIGTERM shuts the node down gracefully"
 docker stop --timeout 25 "$CONTAINER" >/dev/null
 EXIT_CODE="$(docker container inspect --format '{{.State.ExitCode}}' "$CONTAINER")"
 [ "$EXIT_CODE" = "0" ] || fail "the container exited with code ${EXIT_CODE} instead of 0"
-docker logs "$CONTAINER" 2>&1 | grep -q 'Received SIGTERM, shutting down' ||
-  fail "no graceful shutdown was logged"
+# `docker stop` returns as soon as the container has exited, which can be before
+# the daemon has flushed its last lines to the log driver. Reading once made the
+# check fail intermittently on a loaded runner while the line was already there a
+# moment later, so poll for up to five seconds instead.
+shutdown_logged() {
+  docker logs "$CONTAINER" 2>&1 | grep -q 'Received SIGTERM, shutting down'
+}
+for _ in $(seq 1 50); do
+  shutdown_logged && break
+  sleep 0.1
+done
+shutdown_logged || fail "no graceful shutdown was logged"
 
 step "7/9 content, peer identity, and state survive container replacement"
 docker rm -f "$CONTAINER" >/dev/null
