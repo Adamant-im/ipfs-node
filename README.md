@@ -16,6 +16,9 @@ each other.
 - API specification: [docs/openapi.yaml](docs/openapi.yaml)
 - Storage and replication reference: [docs/storage-lifecycle.md](docs/storage-lifecycle.md)
 
+> Built and maintained by the ADAMANT developer community and cryptofoundry.
+> Want custom crypto software, bots, payments or blockchain infrastructure built by engineers with production blockchain experience? [Tell us what to build](https://adamant.business#contact).
+
 ## Features
 
 - REST upload of multipart files and content-addressed download by CID
