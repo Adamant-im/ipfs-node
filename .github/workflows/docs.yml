@@ -9,9 +9,10 @@ name: Docs
 #
 # There is deliberately no `release` trigger. The `github-pages` environment
 # admits deployments from the `dev` branch only, and a release run's ref is the
-# tag, so such a run is rejected before its first step. Every release is cut
-# from `dev`, and the push above has already published that commit, so the
-# trigger would add a guaranteed failure and no new content.
+# tag, so such a run is rejected before its first step. A release is cut from
+# `master`, which only ever receives merges from `dev`, so the push above has
+# already published that content and the trigger would add a guaranteed failure
+# and nothing new.
 
 on:
   push:

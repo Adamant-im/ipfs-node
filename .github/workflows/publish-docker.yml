@@ -39,13 +39,15 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
 
-      # `dev` is this repository's default and stable release branch. A tag made
-      # on a feature branch must not become a published image.
-      - name: Verify the release tag is on dev
+      # `master` is this repository's release branch: `dev` integrates work and
+      # is merged into `master` for a release. A tag made on `dev`, on a feature
+      # branch, or on a commit that never reached `master` must not become a
+      # published image.
+      - name: Verify the release tag is on master
         run: |
-          git fetch --no-tags origin dev
-          git merge-base --is-ancestor HEAD origin/dev \
-            || { echo "the release tag is not an ancestor of origin/dev"; exit 1; }
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor HEAD origin/master \
+            || { echo "the release tag is not an ancestor of origin/master"; exit 1; }
 
       - name: Resolve the release version
         id: release

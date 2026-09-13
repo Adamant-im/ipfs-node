@@ -3,10 +3,14 @@ name: Container
 # Builds the production image and runs the documented runtime checks on it.
 # Nothing is pushed here: publication happens only from a GitHub Release, in
 # .github/workflows/publish-docker.yml.
+#
+# Both branches are covered: `dev` catches a regression when it is introduced,
+# and `master` is the branch a release is tagged from, so the image that
+# publication will build is exercised before the tag exists.
 
 on:
   push:
-    branches: [dev]
+    branches: [master, dev]
     paths:
       - 'Dockerfile'
       - '.dockerignore'
@@ -18,7 +22,7 @@ on:
       - 'tsconfig*.json'
       - '.github/workflows/docker.yml'
   pull_request:
-    branches: [dev]
+    branches: [master, dev]
     paths:
       - 'Dockerfile'
       - '.dockerignore'

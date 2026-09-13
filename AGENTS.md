@@ -147,6 +147,13 @@ Follow organization-wide governance, templates, title conventions, and label cas
 - Include validation evidence and note relevant risks or intentionally unchanged behavior
 - Add a link to the PR in the related issue
 
+### Branches and releases
+
+- Target `dev` with every pull request; it is the default and integration branch
+- Cut a release from `master`: merge `dev` into `master`, tag that commit `vX.Y.Z`, and publish a GitHub Release from the tag
+- Keep the tag and the `package.json` version in agreement; container publication verifies both the version and that the tagged commit is an ancestor of `master`
+- Do not tag a release on `dev` or on a feature branch; publication refuses it
+
 ### Command-line content
 
 For multi-line CLI input, use a dated temporary Markdown file under `.ai-ignored/` and a file-based flag such as `--body-file`. Do not put multi-line issue, PR, or commit text directly in a shell argument.

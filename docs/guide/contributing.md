@@ -6,7 +6,8 @@ description: Development setup, repository layout, the checks that must pass, an
 # Contributing
 
 The project is GPL-3.0 and developed in the open at
-[Adamant-im/ipfs-node](https://github.com/Adamant-im/ipfs-node). The default branch is `dev`.
+[Adamant-im/ipfs-node](https://github.com/Adamant-im/ipfs-node). The default branch is `dev`, and
+releases are cut from `master`.
 
 ## Development setup
 
@@ -128,6 +129,25 @@ Follow the [ADAMANT organization governance](https://github.com/Adamant-im/.gith
 Keep the public surface synchronized. When behaviour changes, `README.md`, this site,
 `docs/openapi.yaml`, the container files, and `package.json` metadata are updated in the same
 change, or the omission is stated deliberately.
+
+## Branches and releases
+
+`dev` is the default branch and the integration branch. Pull requests target it, and the build, the
+security audit, the container smoke test, and the documentation deployment all run there. The build,
+the security audit, and the container smoke test also run on `master`, so the commit a release is
+tagged from is verified before the tag exists.
+
+`master` is the release branch. A release is prepared by merging `dev` into `master`, tagging that
+commit `vX.Y.Z`, and publishing a GitHub Release from the tag. Publication refuses anything else:
+before it builds, `publish-docker.yml` checks that the tagged commit is an ancestor of `master` and
+that the version in the tag matches `package.json`, so a tag left on `dev` or on a feature branch
+never becomes a published image.
+
+Every release publishes the immutable `ghcr.io/adamant-im/ipfs-node:X.Y.Z`. A stable release also
+moves `latest`; a prerelease publishes its version tag only.
+
+The documentation site deploys from `dev` rather than from a release. `master` only ever receives
+merges from `dev`, so the site already carries the released content by the time the tag exists.
 
 ## Security
 
