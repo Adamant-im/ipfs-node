@@ -125,7 +125,12 @@ async function placeReplicas(
     config: config.replication,
     store,
     cacheOnly: async (peer) => {
-      await requestCache(helia, peer.multiAddr, cid, callOptions())
+      try {
+        await requestCache(helia, peer.multiAddr, cid, callOptions())
+      } catch (err) {
+        recoverOutboundReplicationSession(peer, err)
+        throw err
+      }
     }
   })
 }
@@ -339,6 +344,8 @@ async function placeCopy(
           throw err
         }
 
+        recoverOutboundReplicationSession(peer, err)
+
         // A lost ack after a pin must still be aborted. A structured refusal
         // (busy, not staged, already aborted) never took ownership.
         return {
@@ -417,7 +424,8 @@ async function repairCopy(
         if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
           return { outcome: 'stored', staged: false }
         }
-      } catch {
+      } catch (err) {
+        recoverOutboundReplicationSession(peer, err)
         // No matching stage, or the peer is still temporary; `store` is next.
       }
     }

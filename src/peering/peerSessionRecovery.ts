@@ -15,7 +15,8 @@ export type PeerSessionRecoveryActions = {
  * Drop connections to a configured peer after a failed ping and redial that peer.
  *
  * @param peerId Configured peer identifier string
- * @param reason Logged context for operators
+ * @param reason Operator-facing explanation. Unused here; kept on the core
+ *   signature so the runtime wrapper can log the same argument
  * @param actions Recovery hooks (required in unit tests to avoid starting Helia)
  */
 export function recoverPeerSession(

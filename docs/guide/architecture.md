@@ -34,7 +34,7 @@ Scheduled work runs in the same process:
 | Job                | Schedule                      | Purpose                                                                                                        |
 | ------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | Disk usage         | `diskUsageScanPeriod`         | Refreshes the storage report behind `GET /api/storage/metrics`; one scan also runs at startup                  |
-| Peering            | `peeringSchedule`             | Redials the entries in `nodes` that are not connected                                                          |
+| Peering            | `peeringSchedule`             | Pings connected entries in `nodes`, then redials any that are missing                                          |
 | Garbage collection | `storage.gc.schedule`         | Frees blocks when space is short; started only when `storage.gc.enabled` is true                               |
 | Admission recovery | `storage.gc.schedule`         | Replaces the collector when it is disabled, clearing upload tokens whose handler died                          |
 | Replication repair | `replication.repairSchedule`  | Restores missing copies; started only when `replication.enabled` and `replication.repairEnabled` are both true |
@@ -114,9 +114,12 @@ address.
 never again. Nothing in libp2p reconnects a peer that restarted or dropped, and a mesh that quietly
 comes apart still accepts uploads, so the failure surfaces later as slow retrieval and as
 replication that cannot place copies. The peering job closes that gap: on every `peeringSchedule`
-tick it dials the entries in `nodes` that are not currently connected, gives each dial ten seconds,
-and logs the failures at debug level. The work is bounded by the size of the operator's own peer
-list.
+tick it pings configured peers that already appear connected, hangs up any that miss the ping, then
+dials the entries in `nodes` that are not currently connected. Each ping has five seconds, each
+dial ten seconds, and failures log at debug or warn. Ping proves that the ping protocol answered,
+not that bitswap or replication on that session still work; a session that answers ping and still
+fails transfers is not reset by this sweep. The work is bounded by the size of the operator's own
+peer list.
 
 The `allow` list holds the same addresses. It keeps configured peers connectable once
 `maxConnections` is reached. It is not an access control list: no deny list is configured, so any

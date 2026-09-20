@@ -108,10 +108,8 @@ router.get('/:cid', readLimiter, admitDownload, async (req, res, next) => {
     }
   })
 
-  let cid: ReturnType<typeof parseCid> | undefined
-
   try {
-    cid = parseCid(req.params.cid)
+    const cid = parseCid(req.params.cid)
 
     // Reach the file's holders first. Without this the read only succeeds if a
     // peer that has the file is already connected, which stops being true as

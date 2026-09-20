@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { dropUnhealthyConnectedPeers } from '../src/peering/dropUnhealthyPeers.js'
 import { createInFlightPass } from '../src/peering/inFlightPass.js'
-import { PEER_PING_TIMEOUT_MS } from '../src/peering/liveness.js'
+import { PEER_PING_TIMEOUT_MS, pingPeer } from '../src/peering/liveness.js'
 import {
   RECOVERY_COOLDOWN_MS,
   recoverPeerSession,
@@ -25,11 +25,21 @@ describe('isStalePeerSessionError', () => {
       true
     )
     assert.equal(isStalePeerSessionError('Replication request timed out'), true)
+    assert.equal(isStalePeerSessionError('Replication message timed out'), true)
+    assert.equal(
+      isStalePeerSessionError('Replication request failed: Replication message timed out'),
+      true
+    )
+    assert.equal(isStalePeerSessionError('The connection is closed'), true)
   })
 
   it('ignores unrelated errors', () => {
     assert.equal(isStalePeerSessionError('Not authorized'), false)
     assert.equal(isStalePeerSessionError('No room for another copy'), false)
+    assert.equal(
+      isStalePeerSessionError('Health stream ended before a complete message arrived'),
+      false
+    )
   })
 })
 
@@ -66,6 +76,29 @@ describe('dropUnhealthyConnectedPeers', () => {
     assert.deepEqual(pinged.sort(), ['peer-a', 'peer-b'])
     assert.deepEqual(reset, ['peer-b'])
     assert.deepEqual(resetPeerIds, ['peer-b'])
+  })
+
+  it('does not ping configured peers that are not connected', async () => {
+    const peerA = { toString: () => 'peer-a' } as never
+    const pinged: string[] = []
+    const node = {
+      libp2p: {
+        services: {
+          ping: {
+            ping: async (peerId: { toString: () => string }) => {
+              pinged.push(peerId.toString())
+              return 1
+            }
+          }
+        },
+        hangUp: async () => {}
+      }
+    }
+
+    const resetPeerIds = await dropUnhealthyConnectedPeers(node as never, [peerA], new Set())
+
+    assert.deepEqual(pinged, [])
+    assert.deepEqual(resetPeerIds, [])
   })
 })
 
@@ -161,10 +194,45 @@ describe('createInFlightPass', () => {
     assert.equal(second, 1)
     assert.equal(runs, 1)
   })
+
+  it('runs a new pass after the previous one finishes', async () => {
+    const runPass = createInFlightPass<number>()
+    let runs = 0
+    const task = async () => {
+      runs += 1
+      return runs
+    }
+
+    assert.equal(await runPass(task), 1)
+    assert.equal(await runPass(task), 2)
+  })
 })
 
-describe('pingPeer timeout constant', () => {
+describe('pingPeer', () => {
   it('uses a bounded ping timeout', () => {
     assert.equal(PEER_PING_TIMEOUT_MS, 5000)
+  })
+
+  it('returns false when ping does not settle before the timeout', async () => {
+    const node = {
+      libp2p: {
+        services: {
+          ping: {
+            ping: async (_peerId: unknown, options?: { signal?: AbortSignal }) =>
+              new Promise((_resolve, reject) => {
+                options?.signal?.addEventListener('abort', () => {
+                  reject(new Error('aborted'))
+                })
+              })
+          }
+        }
+      }
+    }
+
+    const startedAt = Date.now()
+    const alive = await pingPeer(node as never, { toString: () => 'peer-a' } as never, 20)
+
+    assert.equal(alive, false)
+    assert.equal(Date.now() - startedAt < 500, true)
   })
 })

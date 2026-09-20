@@ -91,6 +91,9 @@ Likely causes:
 
 - No connected peer holds the content. Check `GET /api/libp2p/peers` and the peering log. Bootstrap
   dials once, so `peeringSchedule` is what keeps the mesh together after a restart
+- A libp2p TCP session is up while bitswap or replication is not. Look for `peering_liveness_failed`
+  or `peer_session_recovery` in the log. The peering job pings connected configured peers and
+  resets those that miss the ping; a session that still answers ping is left in place.
 - The CID exists only on the public IPFS network. This node registers no content routing and will
   never find it
 - The content was released and its blocks were reclaimed on every holder

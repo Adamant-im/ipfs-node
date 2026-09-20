@@ -463,9 +463,13 @@ damage shows up later as slow retrieval and as replication that cannot place
 copies.
 
 The node therefore redials the peers in `nodes` that are not connected, once at
-startup before the API starts serving and then on `peeringSchedule`. The work is
-bounded by the size of `nodes`, which is the operator's own peer list, so it
-never becomes network-wide dialling.
+startup before the API starts serving and then on `peeringSchedule`. The same
+pass pings configured peers that already appear connected and hangs up any that
+miss the ping, so a TCP session that stayed up after the application protocols
+died can be replaced. Ping is a cheap liveness signal, not proof that bitswap
+or replication on that session still work. The work is bounded by the size of
+`nodes`, which is the operator's own peer list, so it never becomes
+network-wide dialling.
 
 ### Repair
 
