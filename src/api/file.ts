@@ -12,8 +12,7 @@ import {
   effectiveQuorum,
   prepareFileRetrieval,
   releaseFile,
-  replicateUploadedFile,
-  reportRetrievalFailure
+  replicateUploadedFile
 } from '../storage/service.js'
 import { fileRegistry } from '../storage/state.js'
 import { createUploadHandler } from './uploadRoute.js'
@@ -24,7 +23,6 @@ import {
   setDownloadHeaders
 } from '../utils/downloadResponse.js'
 import { downloadFile, getFileStats } from '../utils/file.js'
-import { FileNotFoundError } from '../utils/fileErrors.js'
 import { logger } from '../utils/logger.js'
 
 const router = Router()
@@ -144,9 +142,6 @@ router.get('/:cid', readLimiter, admitDownload, async (req, res, next) => {
     )
   } catch (error) {
     if (requestController.signal.aborted || res.destroyed) return
-    if (error instanceof FileNotFoundError && cid !== undefined) {
-      reportRetrievalFailure(cid)
-    }
     next(error)
   }
 })

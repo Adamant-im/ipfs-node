@@ -1,7 +1,8 @@
 import { CronJob } from 'cron'
 import { config } from './config.js'
 import { helia } from './helia.js'
-import { pingPeer, resetPeerConnection } from './peering/liveness.js'
+import { dropUnhealthyConnectedPeers } from './peering/dropUnhealthyPeers.js'
+import { createInFlightPass } from './peering/inFlightPass.js'
 import { logger } from './utils/logger.js'
 import { getNodesList } from './utils/utils.js'
 
@@ -24,24 +25,20 @@ let lastConnected = 0
 async function dropUnhealthyKnownPeers(): Promise<void> {
   const known = getNodesList([helia.libp2p.peerId.toString()])
   const connected = new Set(helia.libp2p.getPeers().map((peer) => peer.toString()))
-
-  await Promise.all(
-    known
-      .filter((node) => connected.has(node.peerId.toString()))
-      .map(async (node) => {
-        const alive = await pingPeer(helia, node.peerId)
-
-        if (alive) {
-          return
-        }
-
-        logger.warn(
-          { event: 'peering_liveness_failed', peer: node.name },
-          `Peering liveness check failed for ${node.name}; resetting connection`
-        )
-        await resetPeerConnection(helia, node.peerId)
-      })
+  const resetPeerIds = await dropUnhealthyConnectedPeers(
+    helia,
+    known.map((node) => node.peerId),
+    connected
   )
+
+  for (const peerId of resetPeerIds) {
+    const node = known.find((entry) => entry.peerId.toString() === peerId)
+
+    logger.warn(
+      { event: 'peering_liveness_failed', peer: node?.name ?? peerId },
+      `Peering liveness check failed for ${node?.name ?? peerId}; resetting connection`
+    )
+  }
 }
 
 /**
@@ -57,7 +54,9 @@ async function dropUnhealthyKnownPeers(): Promise<void> {
  *
  * @returns How many nodes are connected after this pass
  */
-export async function peerWithKnownNodes(): Promise<number> {
+const runPeeringPass = createInFlightPass<number>()
+
+async function executePeeringPass(): Promise<number> {
   await dropUnhealthyKnownPeers()
 
   const known = getNodesList([helia.libp2p.peerId.toString()])
@@ -82,6 +81,15 @@ export async function peerWithKnownNodes(): Promise<number> {
     .filter((peer) => known.some((node) => node.peerId.equals(peer))).length
 
   return lastConnected
+}
+
+/**
+ * Dial configured peers that are not connected, after a liveness sweep.
+ *
+ * Concurrent callers share one in-flight pass instead of running duplicate sweeps.
+ */
+export async function peerWithKnownNodes(): Promise<number> {
+  return runPeeringPass(executePeeringPass)
 }
 
 export const peeringCron = new CronJob(config.peeringSchedule, () => {

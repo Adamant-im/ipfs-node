@@ -46,7 +46,6 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { abortReplica, commitReplica, stageReplica } from './replicaStage.js'
-import { peerWithKnownNodes } from '../peering.cron.js'
 import { isStalePeerSessionError, recoverPeerSession } from '../peering/recovery.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
@@ -295,18 +294,11 @@ export async function prepareFileRetrieval(cid: CID, signal?: AbortSignal): Prom
   )
 }
 
-/**
- * Reset libp2p sessions to the peers that should have held `cid` after a read
- * timed out, so the next request does not reuse a broken connection.
- */
-export function reportRetrievalFailure(cid: CID): void {
-  for (const peer of retrievalTargets(
-    cid.toString(),
-    config.replication,
-    selfPeerId(),
-    getReplicationPeers()
-  )) {
-    recoverPeerSession(peer.peerId, `retrieval timed out for ${cid}`, peerWithKnownNodes)
+function recoverOutboundReplicationSession(peer: ReplicationPeer, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (isStalePeerSessionError(message)) {
+    recoverPeerSession(peer.peerId, message)
   }
 }
 
@@ -361,6 +353,7 @@ async function placeCopy(
     return { outcome: 'stored', staged: false }
   } catch (err) {
     if (!isNotAuthorizedError(err)) {
+      recoverOutboundReplicationSession(peer, err)
       throw err
     }
 
@@ -437,6 +430,7 @@ async function repairCopy(
     return { outcome: 'stored', staged: false }
   } catch (err) {
     if (!isNotAuthorizedError(err)) {
+      recoverOutboundReplicationSession(peer, err)
       throw err
     }
 
@@ -655,7 +649,7 @@ export function createReplicationHandlers(): ReplicationHandlers {
     onError: (message, peerId) => {
       logger.warn(message)
       if (peerId !== undefined && isStalePeerSessionError(message)) {
-        recoverPeerSession(peerId, message, peerWithKnownNodes)
+        recoverPeerSession(peerId, message)
       }
     },
     onRefused: (peerId, op) =>
