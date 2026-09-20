@@ -113,6 +113,14 @@ Preserve backward compatibility unless the task explicitly approves a breaking c
 - Never claim a check passed unless it was actually executed
 - Report exact commands, results, and any checks that were not run
 
+When you change JavaScript, TypeScript, JSON, Markdown, YAML, or other files covered by
+Prettier, run `npm run format` before you report the work done. CI fails on `prettier --check`
+the same way it fails on ESLint. Use `npm run format:fix` to apply formatting, then run
+`npm run format` again to confirm a clean check.
+
+For code changes, run checks in the same order as the CI workflow when practical:
+`npm run lint`, `npm run format`, `npm run typecheck`, then targeted or full tests.
+
 Documentation site and container work carries further expectations:
 
 - Build the documentation site from the lockfile before claiming it works, and treat a broken

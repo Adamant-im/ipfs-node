@@ -77,9 +77,9 @@ export async function peerWithKnownNodes(): Promise<number> {
     }
   }
 
-  lastConnected = helia.libp2p.getPeers().filter((peer) =>
-    known.some((node) => node.peerId.equals(peer))
-  ).length
+  lastConnected = helia.libp2p
+    .getPeers()
+    .filter((peer) => known.some((node) => node.peerId.equals(peer))).length
 
   return lastConnected
 }
