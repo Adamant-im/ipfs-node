@@ -12,7 +12,8 @@ import {
   effectiveQuorum,
   prepareFileRetrieval,
   releaseFile,
-  replicateUploadedFile
+  replicateUploadedFile,
+  reportRetrievalFailure
 } from '../storage/service.js'
 import { fileRegistry } from '../storage/state.js'
 import { createUploadHandler } from './uploadRoute.js'
@@ -23,6 +24,7 @@ import {
   setDownloadHeaders
 } from '../utils/downloadResponse.js'
 import { downloadFile, getFileStats } from '../utils/file.js'
+import { FileNotFoundError } from '../utils/fileErrors.js'
 import { logger } from '../utils/logger.js'
 
 const router = Router()
@@ -108,8 +110,10 @@ router.get('/:cid', readLimiter, admitDownload, async (req, res, next) => {
     }
   })
 
+  let cid: ReturnType<typeof parseCid> | undefined
+
   try {
-    const cid = parseCid(req.params.cid)
+    cid = parseCid(req.params.cid)
 
     // Reach the file's holders first. Without this the read only succeeds if a
     // peer that has the file is already connected, which stops being true as
@@ -140,6 +144,9 @@ router.get('/:cid', readLimiter, admitDownload, async (req, res, next) => {
     )
   } catch (error) {
     if (requestController.signal.aborted || res.destroyed) return
+    if (error instanceof FileNotFoundError && cid !== undefined) {
+      reportRetrievalFailure(cid)
+    }
     next(error)
   }
 })

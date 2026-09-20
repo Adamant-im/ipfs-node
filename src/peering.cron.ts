@@ -1,6 +1,7 @@
 import { CronJob } from 'cron'
 import { config } from './config.js'
 import { helia } from './helia.js'
+import { pingPeer, resetPeerConnection } from './peering/liveness.js'
 import { logger } from './utils/logger.js'
 import { getNodesList } from './utils/utils.js'
 
@@ -12,6 +13,36 @@ const DIAL_TIMEOUT_MS = 10000
 
 let running = false
 let lastConnected = 0
+
+/**
+ * Ping configured peers that appear connected and reset any that do not answer.
+ *
+ * `@libp2p/bootstrap` only runs once; peering already redials missing peers.
+ * That is not enough when TCP stays up but bitswap or replication streams are
+ * broken — those peers never count as "missing".
+ */
+async function dropUnhealthyKnownPeers(): Promise<void> {
+  const known = getNodesList([helia.libp2p.peerId.toString()])
+  const connected = new Set(helia.libp2p.getPeers().map((peer) => peer.toString()))
+
+  await Promise.all(
+    known
+      .filter((node) => connected.has(node.peerId.toString()))
+      .map(async (node) => {
+        const alive = await pingPeer(helia, node.peerId)
+
+        if (alive) {
+          return
+        }
+
+        logger.warn(
+          { event: 'peering_liveness_failed', peer: node.name },
+          `Peering liveness check failed for ${node.name}; resetting connection`
+        )
+        await resetPeerConnection(helia, node.peerId)
+      })
+  )
+}
 
 /**
  * Dial the configured ADAMANT nodes that are not currently connected.
@@ -27,6 +58,8 @@ let lastConnected = 0
  * @returns How many nodes are connected after this pass
  */
 export async function peerWithKnownNodes(): Promise<number> {
+  await dropUnhealthyKnownPeers()
+
   const known = getNodesList([helia.libp2p.peerId.toString()])
   const connected = new Set(helia.libp2p.getPeers().map((peer) => peer.toString()))
   const missing = known.filter((node) => !connected.has(node.peerId.toString()))
@@ -44,7 +77,10 @@ export async function peerWithKnownNodes(): Promise<number> {
     }
   }
 
-  lastConnected = connected.size + results.filter((r) => r.status === 'fulfilled').length
+  lastConnected = helia.libp2p.getPeers().filter((peer) =>
+    known.some((node) => node.peerId.equals(peer))
+  ).length
+
   return lastConnected
 }
 

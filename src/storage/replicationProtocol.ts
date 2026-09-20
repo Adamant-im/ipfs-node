@@ -134,7 +134,8 @@ export interface ReplicationHandlers {
    * reserve. The copy sits in the same tier as read cache.
    */
   cacheCopy(cid: string, peerId: string): Promise<number>
-  onError?(message: string): void
+  /** Optional peer id when the failure happened on an inbound replication stream. */
+  onError?(message: string, peerId?: string): void
   /** Called when a peer asks for something it is not allowed to ask for. */
   onRefused?(peerId: string, op: string): void
 }
@@ -379,7 +380,10 @@ export async function registerReplicationProtocol(
     respond(stream, connection, handlers, requestTimeoutMs)
       .then(async () => stream.close())
       .catch((err: Error) => {
-        handlers.onError?.(`Replication request failed: ${err.message}`)
+        handlers.onError?.(
+          `Replication request failed: ${err.message}`,
+          connection.remotePeer.toString()
+        )
         stream.abort(err)
       })
   })

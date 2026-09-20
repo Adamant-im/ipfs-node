@@ -46,6 +46,8 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { abortReplica, commitReplica, stageReplica } from './replicaStage.js'
+import { peerWithKnownNodes } from '../peering.cron.js'
+import { isStalePeerSessionError, recoverPeerSession } from '../peering/recovery.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
 import {
@@ -291,6 +293,21 @@ export async function prepareFileRetrieval(cid: CID, signal?: AbortSignal): Prom
     undefined,
     signal
   )
+}
+
+/**
+ * Reset libp2p sessions to the peers that should have held `cid` after a read
+ * timed out, so the next request does not reuse a broken connection.
+ */
+export function reportRetrievalFailure(cid: CID): void {
+  for (const peer of retrievalTargets(
+    cid.toString(),
+    config.replication,
+    selfPeerId(),
+    getReplicationPeers()
+  )) {
+    recoverPeerSession(peer.peerId, `retrieval timed out for ${cid}`, peerWithKnownNodes)
+  }
 }
 
 /**
@@ -635,7 +652,12 @@ export function createReplicationHandlers(): ReplicationHandlers {
     have: hasDurableReplica,
     willAccept: hasRoomForAnotherCopy,
     cacheCopy: cacheFileLocally,
-    onError: (message) => logger.warn(message),
+    onError: (message, peerId) => {
+      logger.warn(message)
+      if (peerId !== undefined && isStalePeerSessionError(message)) {
+        recoverPeerSession(peerId, message, peerWithKnownNodes)
+      }
+    },
     onRefused: (peerId, op) =>
       logger.info(
         { event: 'replication_refused_unknown_peer', op },
