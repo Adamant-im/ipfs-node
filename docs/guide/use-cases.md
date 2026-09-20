@@ -87,7 +87,7 @@ its own contract, documented in [API reference](/reference/api).
 
 Use [Kubo with IPFS Cluster](https://ipfscluster.io). Peers come from a static `nodes` list that
 must be applied consistently on every member, bootstrap dials that list once and `peeringSchedule`
-redials it, and changing the list changes the peer-set epoch, which resets persisted health
+keeps it connected, and changing the list changes the peer-set epoch, which resets persisted health
 checkpoint heights. Durable placement is accepted only from configured peers, so every member is a
 party the others have chosen to trust. Peer discovery instead of static lists is open work
 ([issue #28](https://github.com/Adamant-im/ipfs-node/issues/28)) and is not available.

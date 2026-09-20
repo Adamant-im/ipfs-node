@@ -81,7 +81,7 @@ expression throws when the job is constructed, which is still before the API ser
 | `peerDiscovery.listen`      | array of strings | required                      | libp2p listen multiaddrs, at least one                                                                      |
 | `serverPort`                | integer >= 1     | required                      | HTTP API port                                                                                               |
 | `diskUsageScanPeriod`       | cron string      | required                      | How often the storage scan that feeds the metrics runs                                                      |
-| `peeringSchedule`           | cron string      | `*/30 * * * * *`              | How often unconnected entries of `nodes` are redialled                                                      |
+| `peeringSchedule`           | cron string      | `*/30 * * * * *`              | How often connected entries of `nodes` are pinged and missing entries are redialled                         |
 | `uploadLimitSizeBytes`      | integer >= 1     | required                      | Maximum size of one uploaded file                                                                           |
 | `maxFileCount`              | integer 1-100    | required                      | Maximum number of files in one upload request                                                               |
 | `findFileTimeout`           | integer >= 1     | required                      | Milliseconds allowed for locating a file before a download fails                                            |
@@ -103,7 +103,9 @@ Notes on the less obvious entries:
   trustless, or censorship-proof; content served over `GET /api/file/:cid` is public to anyone who
   has the CID.
 - `peerDiscovery.bootstrap` dials once at startup and never again, which is why `peeringSchedule`
-  exists. Without a peering schedule a mesh never recovers from a restart.
+  exists. Without a peering schedule a mesh never recovers from a restart. The same job pings
+  connected configured peers and hangs up any that miss the ping so the tick can redial them. Ping
+  is a cheap liveness signal, not a bitswap or replication health check.
 - The cron examples use the six-field form with a leading seconds field
 - `downloadMaxDurationMs` caps the deadline of a single response. The effective deadline is the
   smaller of this ceiling and the size-aware deadline

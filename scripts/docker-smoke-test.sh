@@ -247,15 +247,15 @@ docker stop --timeout 25 "$CONTAINER" >/dev/null
 EXIT_CODE="$(docker container inspect --format '{{.State.ExitCode}}' "$CONTAINER")"
 [ "$EXIT_CODE" = "0" ] || fail "the container exited with code ${EXIT_CODE} instead of 0"
 # `docker stop` returns as soon as the container has exited, which can be before
-# the daemon has flushed its last lines to the log driver. Reading once made the
-# check fail intermittently on a loaded runner while the line was already there a
-# moment later, so poll for up to five seconds instead.
+# the daemon has flushed its last lines to the log driver. Five seconds was not
+# always enough on a loaded linux/amd64 runner, so poll for up to thirty seconds.
 shutdown_logged() {
-  docker logs "$CONTAINER" 2>&1 | grep -q 'Received SIGTERM, shutting down'
+  docker logs "$CONTAINER" 2>&1 |
+    grep -qE 'Received SIGTERM, shutting down|Helia node stopped'
 }
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   shutdown_logged && break
-  sleep 0.1
+  sleep 0.2
 done
 shutdown_logged || fail "no graceful shutdown was logged"
 

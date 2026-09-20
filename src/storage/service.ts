@@ -46,6 +46,7 @@ import {
   type ReplicationCallOptions
 } from './replicationProtocol.js'
 import { abortReplica, commitReplica, stageReplica } from './replicaStage.js'
+import { isStalePeerSessionError, recoverPeerSession } from '../peering/recovery.js'
 import { prepareRetrieval, retrievalTargets } from './retrieval.js'
 import { PER_PEER_INTAKE_BYTES, reserveIntake } from './intakeBudget.js'
 import {
@@ -124,7 +125,12 @@ async function placeReplicas(
     config: config.replication,
     store,
     cacheOnly: async (peer) => {
-      await requestCache(helia, peer.multiAddr, cid, callOptions())
+      try {
+        await requestCache(helia, peer.multiAddr, cid, callOptions())
+      } catch (err) {
+        recoverOutboundReplicationSession(peer, err)
+        throw err
+      }
     }
   })
 }
@@ -293,6 +299,14 @@ export async function prepareFileRetrieval(cid: CID, signal?: AbortSignal): Prom
   )
 }
 
+function recoverOutboundReplicationSession(peer: ReplicationPeer, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (isStalePeerSessionError(message)) {
+    recoverPeerSession(peer.peerId, message)
+  }
+}
+
 /**
  * Ask one peer to take a copy, and report what it agreed to.
  *
@@ -330,6 +344,8 @@ async function placeCopy(
           throw err
         }
 
+        recoverOutboundReplicationSession(peer, err)
+
         // A lost ack after a pin must still be aborted. A structured refusal
         // (busy, not staged, already aborted) never took ownership.
         return {
@@ -344,6 +360,7 @@ async function placeCopy(
     return { outcome: 'stored', staged: false }
   } catch (err) {
     if (!isNotAuthorizedError(err)) {
+      recoverOutboundReplicationSession(peer, err)
       throw err
     }
 
@@ -407,7 +424,8 @@ async function repairCopy(
         if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
           return { outcome: 'stored', staged: false }
         }
-      } catch {
+      } catch (err) {
+        recoverOutboundReplicationSession(peer, err)
         // No matching stage, or the peer is still temporary; `store` is next.
       }
     }
@@ -420,6 +438,7 @@ async function repairCopy(
     return { outcome: 'stored', staged: false }
   } catch (err) {
     if (!isNotAuthorizedError(err)) {
+      recoverOutboundReplicationSession(peer, err)
       throw err
     }
 
@@ -635,7 +654,12 @@ export function createReplicationHandlers(): ReplicationHandlers {
     have: hasDurableReplica,
     willAccept: hasRoomForAnotherCopy,
     cacheCopy: cacheFileLocally,
-    onError: (message) => logger.warn(message),
+    onError: (message, peerId) => {
+      logger.warn(message)
+      if (peerId !== undefined && isStalePeerSessionError(message)) {
+        recoverPeerSession(peerId, message)
+      }
+    },
     onRefused: (peerId, op) =>
       logger.info(
         { event: 'replication_refused_unknown_peer', op },
