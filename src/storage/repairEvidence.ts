@@ -21,6 +21,11 @@ export interface RepairCycleEvidence {
   lastCompletedAt: number | null
   lastCompletedSuccessfully: boolean
   lastCompletedBacklog: number
+  /** Consecutive complete unsuccessful repair cycles. */
+  consecutiveUnsuccessfulCycles: number
+  lastCompletedExamined: number
+  lastCompletedStillMissing: number
+  lastCompletedUnrecoverable: number
 }
 
 function isCount(value: unknown): value is number {
@@ -66,6 +71,12 @@ export function parseEvidence(value: unknown, now: number): RepairCycleEvidence 
       (isCount(parsed.lastCompletedAt) && parsed.lastCompletedAt <= now)) &&
     typeof parsed.lastCompletedSuccessfully === 'boolean' &&
     isCount(parsed.lastCompletedBacklog) &&
+    (parsed.consecutiveUnsuccessfulCycles === undefined ||
+      isCount(parsed.consecutiveUnsuccessfulCycles)) &&
+    (parsed.lastCompletedExamined === undefined || isCount(parsed.lastCompletedExamined)) &&
+    (parsed.lastCompletedStillMissing === undefined || isCount(parsed.lastCompletedStillMissing)) &&
+    (parsed.lastCompletedUnrecoverable === undefined ||
+      isCount(parsed.lastCompletedUnrecoverable)) &&
     // A cycle cannot have checked more records than it visited, and cannot
     // report a clean completion while carrying a backlog.
     parsed.checked <= (parsed.examined ?? parsed.checked) &&
@@ -75,8 +86,21 @@ export function parseEvidence(value: unknown, now: number): RepairCycleEvidence 
     return null
   }
 
+  const consecutiveUnsuccessfulCycles =
+    parsed.consecutiveUnsuccessfulCycles !== undefined
+      ? parsed.consecutiveUnsuccessfulCycles
+      : parsed.lastCompletedSuccessfully
+        ? 0
+        : (parsed.lastCompletedBacklog ?? 0) > 0
+          ? 1
+          : 0
+
   return {
     ...parsed,
+    consecutiveUnsuccessfulCycles,
+    lastCompletedExamined: parsed.lastCompletedExamined ?? 0,
+    lastCompletedStillMissing: parsed.lastCompletedStillMissing ?? parsed.lastCompletedBacklog ?? 0,
+    lastCompletedUnrecoverable: parsed.lastCompletedUnrecoverable ?? 0,
     examined: parsed.examined ?? parsed.checked,
     superseded: parsed.superseded ?? false
   } as RepairCycleEvidence

@@ -17,7 +17,15 @@ const health: HealthSnapshot = {
   membership: { version: 'a'.repeat(64), requiredPeers: 1, attestedPeers: 1 },
   startup: { complete: true, healthy: true },
   storage: { measuredAt: 12_345, measurementAgeMs: 0, reserveHealthy: true },
-  replication: { repairRequired: true, lastCompleteAt: 12_345, ageMs: 0, backlog: 0 },
+  replication: {
+    repairRequired: true,
+    schedule: '0 */30 * * * *',
+    lastCompleteAt: 12_345,
+    ageMs: 0,
+    backlog: 0,
+    consecutiveUnsuccessfulCycles: 0,
+    lastCycle: null
+  },
   checks: {
     checkpointFresh: true,
     clockConsistent: true,

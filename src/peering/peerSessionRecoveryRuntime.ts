@@ -8,6 +8,7 @@ import {
   recoverPeerSession as recoverPeerSessionCore,
   type PeerSessionRecoveryActions
 } from './peerSessionRecovery.js'
+import { REPLICATION_PROTOCOL } from '../storage/replicationProtocol.js'
 
 function defaultRecoveryActions(): PeerSessionRecoveryActions {
   const selfPeerId = helia.libp2p.peerId.toString()
@@ -24,30 +25,47 @@ function defaultRecoveryActions(): PeerSessionRecoveryActions {
 
 /**
  * Reset a configured peer session when reactive recovery is warranted.
+ *
+ * Ping is diagnostic only and never vetoes resetting an application session
+ * whose replication or transfer stream failed.
  */
-export function recoverPeerSession(peerId: string, reason: string): void {
+export async function recoverPeerSession(
+  peerId: string,
+  reason: string,
+  protocol: string = REPLICATION_PROTOCOL
+): Promise<boolean> {
   const actions = defaultRecoveryActions()
 
-  recoverPeerSessionCore(peerId, reason, {
+  let pingAnswered = false
+  const recovered = await recoverPeerSessionCore(peerId, reason, {
     ...actions,
     ping: async (peerId) => {
-      const alive = await actions.ping(peerId)
-
-      if (alive) {
-        logger.info(
-          { event: 'peer_session_recovery_skipped', peerId, reason },
-          'Peer answered a liveness ping; keeping the existing libp2p session'
-        )
-      }
-
-      return alive
+      const alive = await actions.ping?.(peerId)
+      pingAnswered = Boolean(alive)
+      return pingAnswered
     },
     reset: async (peerId) => {
       logger.warn(
-        { event: 'peer_session_recovery', peerId, reason },
+        {
+          event: 'peer_session_recovery',
+          peerId,
+          protocol,
+          reason,
+          pingAnswered,
+          vetoUsed: false
+        },
         'Resetting libp2p session to a configured peer after a transfer failure'
       )
       await actions.reset(peerId)
     }
   })
+
+  if (recovered) {
+    logger.info(
+      { event: 'peer_session_recovered', peerId, protocol },
+      'Successfully recovered libp2p session to a configured peer'
+    )
+  }
+
+  return recovered
 }

@@ -72,6 +72,11 @@ export interface HealthConfig {
   peerAttestationTimeoutMs: number
   /** Minimum number of configured remote peers that must attest a round. */
   requiredPeerCount: number
+  /**
+   * Number of consecutive complete unsuccessful repair cycles during which a
+   * non-zero backlog does not fail repairFresh.
+   */
+  repairBacklogGraceCycles: number
 }
 
 export interface Config {
@@ -256,6 +261,12 @@ function resolveHealthConfig(value: unknown, nodeCount: number): HealthConfig {
     nodeCount > 1 ? 1 : 0,
     0
   )
+  const repairBacklogGraceCycles = optionalInteger(
+    raw.repairBacklogGraceCycles,
+    'health.repairBacklogGraceCycles',
+    0,
+    0
+  )
 
   if (requiredPeerCount > Math.max(0, nodeCount - 1)) {
     fail('health.requiredPeerCount', 'cannot exceed the number of configured remote peers')
@@ -268,7 +279,8 @@ function resolveHealthConfig(value: unknown, nodeCount: number): HealthConfig {
     repairMaxAgeMs,
     clockSkewToleranceMs,
     peerAttestationTimeoutMs,
-    requiredPeerCount
+    requiredPeerCount,
+    repairBacklogGraceCycles
   }
 }
 

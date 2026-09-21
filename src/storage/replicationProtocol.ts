@@ -172,9 +172,13 @@ function encodeMessage(message: unknown): Uint8Array {
   return frame
 }
 
+function isSignalAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true
+}
+
 /** Read exactly one framed message, without waiting for the stream to end. */
-async function readMessage(stream: Stream, signal?: AbortSignal): Promise<unknown> {
-  if (signal?.aborted === true) {
+export async function readMessage(stream: Stream, signal?: AbortSignal): Promise<unknown> {
+  if (isSignalAborted(signal)) {
     throw new Error('Replication message timed out')
   }
 
@@ -212,7 +216,16 @@ async function readMessage(stream: Stream, signal?: AbortSignal): Promise<unknow
       }
     }
 
+    if (isSignalAborted(signal)) {
+      throw new Error('Replication message timed out')
+    }
+
     throw new Error('Replication stream ended before a complete message arrived')
+  } catch (err) {
+    if (isSignalAborted(signal)) {
+      throw new Error('Replication message timed out', { cause: err })
+    }
+    throw err
   } finally {
     signal?.removeEventListener('abort', abort)
   }

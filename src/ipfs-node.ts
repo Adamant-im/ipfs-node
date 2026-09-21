@@ -84,7 +84,7 @@ export async function createIpfsNode(options: IpfsNodeOptions): Promise<IpfsNode
         peerDiscovery,
         services: {
           identify: identify(),
-          ping: ping()
+          ping: ping({ maxInboundStreams: 32, maxOutboundStreams: 32 })
         },
         connectionManager: {
           maxConnections: options.maxConnections ?? DEFAULT_MAX_CONNECTIONS,

@@ -248,12 +248,34 @@ components:
             reserveHealthy: { type: boolean }
         replication:
           type: object
-          required: [repairRequired, lastCompleteAt, ageMs, backlog]
+          required:
+            - repairRequired
+            - schedule
+            - lastCompleteAt
+            - ageMs
+            - backlog
+            - consecutiveUnsuccessfulCycles
+            - lastCycle
           properties:
             repairRequired: { type: boolean }
+            schedule: { type: string, description: Configured replication repair cron expression }
             lastCompleteAt: { type: [integer, 'null'] }
             ageMs: { type: [integer, 'null'], minimum: 0 }
             backlog: { type: integer, minimum: 0 }
+            consecutiveUnsuccessfulCycles:
+              type: integer
+              minimum: 0
+              description: Complete repair cycles in a row that ended with backlog or unrecoverable records
+            lastCycle:
+              type: [object, 'null']
+              description: Summary of the last completed repair cycle
+              required: [examined, stillMissing, unrecoverable, completedAt, successful]
+              properties:
+                examined: { type: integer, minimum: 0 }
+                stillMissing: { type: integer, minimum: 0 }
+                unrecoverable: { type: integer, minimum: 0 }
+                completedAt: { type: [integer, 'null'] }
+                successful: { type: boolean }
         checks:
           type: object
           description: Checkpoint, storage, and repair freshness are recomputed at read time; every other check describes evaluatedAt

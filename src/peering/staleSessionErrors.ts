@@ -12,6 +12,12 @@ export function isStalePeerSessionError(message: string): boolean {
     message.includes('Replication stream ended before') ||
     message.includes('Replication request timed out') ||
     message.includes('Replication message timed out') ||
-    message.includes('The connection is closed')
+    message.includes('The connection is closed') ||
+    message.includes('The stream has been reset') ||
+    message.includes('stream has been reset') ||
+    message.includes('stream reset') ||
+    message.includes('connection reset') ||
+    message.includes('ECONNRESET') ||
+    message.includes('EPIPE')
   )
 }

@@ -115,6 +115,9 @@
     repairMaxAgeMs: 3600000,
     clockSkewToleranceMs: 10000,
     peerAttestationTimeoutMs: 5000,
-    requiredPeerCount: 1
+    requiredPeerCount: 1,
+    // Consecutive complete unsuccessful repair cycles during which a non-zero
+    // backlog does not fail repairFresh. 0 preserves current strict behaviour.
+    repairBacklogGraceCycles: 0
   }
 }

@@ -17,7 +17,11 @@ const valid: RepairCycleEvidence = {
   unrecoverable: 0,
   lastCompletedAt: NOW - 30_000,
   lastCompletedSuccessfully: true,
-  lastCompletedBacklog: 0
+  lastCompletedBacklog: 0,
+  consecutiveUnsuccessfulCycles: 0,
+  lastCompletedExamined: 120,
+  lastCompletedStillMissing: 0,
+  lastCompletedUnrecoverable: 0
 }
 
 describe('persisted repair evidence', () => {
@@ -48,7 +52,11 @@ describe('persisted repair evidence', () => {
       'repaired',
       'stillMissing',
       'unrecoverable',
-      'lastCompletedBacklog'
+      'lastCompletedBacklog',
+      'consecutiveUnsuccessfulCycles',
+      'lastCompletedExamined',
+      'lastCompletedStillMissing',
+      'lastCompletedUnrecoverable'
     ] as const) {
       assert.equal(parseEvidence({ ...valid, [field]: -1 }, NOW), null, field)
     }
@@ -75,10 +83,18 @@ describe('persisted repair evidence', () => {
     const legacy = { ...valid }
     delete (legacy as Partial<RepairCycleEvidence>).examined
     delete (legacy as Partial<RepairCycleEvidence>).superseded
+    delete (legacy as Partial<RepairCycleEvidence>).consecutiveUnsuccessfulCycles
+    delete (legacy as Partial<RepairCycleEvidence>).lastCompletedExamined
+    delete (legacy as Partial<RepairCycleEvidence>).lastCompletedStillMissing
+    delete (legacy as Partial<RepairCycleEvidence>).lastCompletedUnrecoverable
 
     const parsed = parseEvidence(legacy, NOW)
 
     assert.equal(parsed?.examined, valid.checked)
     assert.equal(parsed?.superseded, false)
+    assert.equal(parsed?.consecutiveUnsuccessfulCycles, 0)
+    assert.equal(parsed?.lastCompletedExamined, 0)
+    assert.equal(parsed?.lastCompletedStillMissing, 0)
+    assert.equal(parsed?.lastCompletedUnrecoverable, 0)
   })
 })
