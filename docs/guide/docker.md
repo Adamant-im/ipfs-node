@@ -277,7 +277,9 @@ docker build -t ipfs-node:local .
 ```
 
 The build needs network access, and install scripts must run: `node-datachannel` downloads its
-prebuilt binary during `npm ci`, and a tree installed with `--ignore-scripts` fails at startup.
+prebuilt binary during `npm ci`. The image copies `package.json` `allowScripts` and `.npmrc`
+`strict-allow-scripts=true`, so that download is permitted and a new unreviewed install script
+fails the build. A tree installed with `--ignore-scripts` fails at startup.
 
 | Build argument   | Default                      | Purpose                                   |
 | ---------------- | ---------------------------- | ----------------------------------------- |

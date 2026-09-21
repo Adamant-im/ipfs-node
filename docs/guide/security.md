@@ -345,7 +345,9 @@ Two practical notes:
   to be installed separately.
 - an install for auditing only may use `--ignore-scripts`, but the resulting tree cannot start the
   node, because a native dependency of the WebRTC transport package needs its install script. Use a
-  normal `npm ci` for anything that has to run.
+  normal `npm ci` for anything that has to run. npm 12 also needs that package named in
+  `package.json` `allowScripts`; this repository already lists it, and `.npmrc`
+  `strict-allow-scripts=true` fails the install if a new unreviewed script appears
 
 ## Reporting a vulnerability
 

@@ -20,9 +20,22 @@ cp config.default.json5 config.json5
 npm run dev
 ```
 
-`npm run dev` runs the service under nodemon. `npm ci` must be allowed to run install scripts: a
-native module of the WebRTC transport package downloads its prebuilt binary during installation, and
-a tree installed with `--ignore-scripts` fails at startup.
+`npm run dev` runs the service under nodemon. `npm ci` must run install scripts: Helia pulls
+`@libp2p/webrtc`, whose `node-datachannel` native module downloads a prebuilt binary during
+installation. npm 12 blocks that download unless the package is in `package.json` `allowScripts`;
+this repository already lists `node-datachannel`, `esbuild`, and `fsevents`. `.npmrc` sets
+`strict-allow-scripts=true`, so a new unreviewed install script fails the install instead of
+silently skipping. A tree installed with `--ignore-scripts` fails at startup.
+
+When a lockfile change introduces a package with an install script, run `npm install-scripts ls`,
+review the name, and approve only what this project needs:
+
+```bash
+npm install-scripts approve --no-allow-scripts-pin <pkg>
+```
+
+Do not use `approve --all` without reading each name. The documentation-site and security-audit CI
+jobs are the only installs that use `--ignore-scripts`.
 
 Replace the peer list in `config.json5` before starting. The shipped template points at the ADAMANT
 production mesh.
@@ -35,6 +48,7 @@ production mesh.
 | `src/middleware/`   | Rate limiting, admission control, upload and download guards, error handling      |
 | `src/security/`     | CORS, trusted proxy, API key, rate-limit policy, access-policy mounting           |
 | `src/storage/`      | Lifecycle registry, admission, placement, replication, repair, collection         |
+| `src/peering/`      | libp2p ping liveness, session recovery, and in-flight peering-pass sharing        |
 | `src/health/`       | Checkpoint state, health service, libp2p health protocol, membership              |
 | `src/utils/`        | Logger, CID helpers, download responses, filename sanitization                    |
 | `test/`             | Unit suites                                                                       |

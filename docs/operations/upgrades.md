@@ -44,14 +44,20 @@ git -C /opt/ipfs-node fetch --tags
 git -C /opt/ipfs-node checkout <tag>
 cd /opt/ipfs-node
 nvm use
+rm -rf node_modules
 npm ci
 npm run build
 sudo systemctl start ipfs-node
 ```
 
-`npm ci` must run install scripts: the WebRTC transport package pulls a native module whose prebuilt
-binary is downloaded during installation, and a tree installed with `--ignore-scripts` fails at
-startup.
+`npm ci` must run install scripts: the WebRTC transport package pulls a native module whose
+prebuilt binary is downloaded during installation. npm 12 blocks that download unless the package
+is listed in `package.json` `allowScripts`; this repository already lists `node-datachannel`.
+`.npmrc` sets `strict-allow-scripts=true`, so a lockfile bump that introduces a new install script
+fails the install instead of starting a process that cannot load Helia. A tree installed with
+`--ignore-scripts`, or without deleting `node_modules` after a major dependency change, can fail
+the same way. Confirm `node_modules/node-datachannel/build/Release/node_datachannel.node` exists
+before starting.
 
 Review the configuration file against [Configuration](/guide/configuration) before starting.
 Unknown keys are ignored, so a removed option does not fail the start — it simply stops doing

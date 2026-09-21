@@ -85,8 +85,11 @@ a warning that TLS is not handled at the application level, and a warning while 
 
 `npm ci` must run install scripts. `helia` depends on `@helia/libp2p`, which depends on
 `@libp2p/webrtc`, whose `node-datachannel` native module downloads a prebuilt binary from GitHub
-releases during installation. Installing with `--ignore-scripts` produces a tree that fails at
-startup, and an installer that reaches the npm registry but not GitHub releases fails the same way.
+releases during installation. npm 12 blocks that download unless the package is listed in
+`package.json` `allowScripts`; this repository already lists it, and `.npmrc` sets
+`strict-allow-scripts=true` so a new unreviewed install script fails the install instead of
+silently skipping. Installing with `--ignore-scripts` produces a tree that fails at startup, and an
+installer that reaches the npm registry but not GitHub releases fails the same way.
 
 `--ignore-scripts` is useful for two things and nothing else:
 
@@ -101,8 +104,8 @@ It is not suitable for running the service, for `npm test`, or for producing a d
 configured here. That pulls two things into the tree:
 
 - `node-datachannel`, a native module whose prebuilt binary is downloaded from GitHub releases
-  during `npm install`. Upstream publishes both glibc and musl builds, but glibc is the one this
-  project is tested on.
+  during `npm install`. npm 12 runs that script only because `allowScripts` names the package.
+  Upstream publishes both glibc and musl builds, but glibc is the one this project is tested on.
 - `react-native-webrtc`, and through it `react-native` and its Metro bundler, in the development
   tree only
 
@@ -282,9 +285,9 @@ full boundary, including the administrative key rules, is described in
 
 ## Upgrading
 
-An upgrade is a `git` update, a fresh `npm ci`, a rebuild, and a restart. The store directory is not
-touched, so the peer identity, the blockstore, the pin set, the lifecycle registry, and the health
-checkpoint survive; no store migration is required.
+An upgrade is a `git` update, a deleted `node_modules` tree, a fresh `npm ci`, a rebuild, and a
+restart. The store directory is not touched, so the peer identity, the blockstore, the pin set, the
+lifecycle registry, and the health checkpoint survive; no store migration is required.
 
 Read [Upgrades and rollback](/operations/upgrades) for the procedure, the order to follow across a
 mesh, and how to roll back.

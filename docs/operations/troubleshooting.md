@@ -101,6 +101,25 @@ Likely causes:
 The node never answers `404` for a CID it cannot retrieve, because it cannot know whether the
 content exists elsewhere. A `404` on this API means an unknown registry record or an unrouted path.
 
+## The process exits with `Cannot find module node_datachannel.node`
+
+Helia depends on `@libp2p/webrtc`, which loads the `node-datachannel` native binary at import time.
+The binary is downloaded during `npm ci`, not during `npm run build`. npm 12 skips that download
+unless `package.json` `allowScripts` names the package; this repository already lists it.
+
+Typical causes:
+
+- `npm ci --ignore-scripts` was used on a tree that has to start
+- `node_modules` was copied from a host that never ran the install script
+- the installer reached the npm registry but not GitHub releases, where the prebuild lives
+- a lockfile change introduced a new install script and `strict-allow-scripts` was not yet in
+  `.npmrc`, so npm 12 skipped `node-datachannel` silently
+
+Delete `node_modules`, run a normal `npm ci` that can reach GitHub releases, and confirm
+`node_modules/node-datachannel/build/Release/node_datachannel.node` exists before starting. If
+`npm ci` lists skipped install scripts, run `npm install-scripts ls` and approve only what this
+project needs, as described in [Contributing](/guide/contributing).
+
 ## Replication never places copies
 
 - `replication.enabled` is `false`. The node then stores content best effort, one local copy, and

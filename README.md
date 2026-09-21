@@ -111,8 +111,10 @@ node dist/index.js
 ```
 
 `npm ci` must run install scripts. Helia depends on `@libp2p/webrtc`, whose `node-datachannel`
-native module downloads a prebuilt binary from GitHub releases; installing with `--ignore-scripts`
-produces a tree that fails at startup. See [Dependency notes](#dependency-notes).
+native module downloads a prebuilt binary from GitHub releases. npm 12 blocks that download unless
+the package is listed in `package.json` `allowScripts`; this repository already lists it.
+Installing with `--ignore-scripts`, or on a host that cannot reach GitHub releases, produces a tree
+that fails at startup. See [Dependency notes](#dependency-notes).
 
 Copy `config.default.json5` to `config.json5` before starting. **Its peer list points at the ADAMANT
 production mesh**, so a deployment that is not joining ADAMANT must replace `nodes`,
@@ -269,9 +271,12 @@ Use `npm run security:audit:raw` to inspect the unfiltered npm result.
 configured here. That pulls two things into the tree:
 
 - `node-datachannel`, a native module whose prebuilt binary is downloaded from GitHub releases
-  during `npm install`. An installer that reaches the npm registry but not GitHub releases produces
-  a tree that fails at startup, so `--ignore-scripts` is suitable only for auditing and for building
-  the documentation site, not for running or testing
+  during `npm install`. npm 12 runs that script only because `allowScripts` names the package.
+  `.npmrc` sets `strict-allow-scripts=true`, so a new unreviewed install script fails `npm ci`
+  instead of silently skipping. An installer that reaches the npm registry but not GitHub
+  releases, or one run with `--ignore-scripts`, produces a tree that fails at startup, so
+  `--ignore-scripts` is suitable only for auditing and for building the documentation site, not
+  for running or testing
 - `react-native-webrtc`, and through it `react-native` and its Metro bundler, in the development
   tree only
 

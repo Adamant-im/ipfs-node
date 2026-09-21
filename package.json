@@ -119,5 +119,10 @@
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "allowScripts": {
+    "node-datachannel": true,
+    "esbuild": true,
+    "fsevents": true
   }
 }

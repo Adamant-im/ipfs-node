@@ -105,6 +105,34 @@ Preserve backward compatibility unless the task explicitly approves a breaking c
 - Preserve existing privacy, decentralization, and self-hosting properties
 - Stop and request maintainer guidance when a change has unclear security, privacy, compatibility, or data-integrity consequences
 
+## Install scripts
+
+npm 12 blocks dependency `preinstall`, `install`, and `postinstall` scripts unless the package is
+listed in `package.json` `allowScripts`. `.npmrc` sets `strict-allow-scripts=true`, so `npm ci`
+fails when a new unreviewed script appears instead of silently skipping it and producing a tree
+that cannot start Helia.
+
+This repository allows only:
+
+- `node-datachannel` — Helia depends on `@libp2p/webrtc`; the native binary is required to import the runtime
+- `esbuild` — VitePress documentation tooling
+- `fsevents` — optional macOS file watching for `npm run dev`
+
+The entries are package names, not pinned versions, so a routine lockfile bump of the same package
+does not need a second approval.
+
+When a lockfile change introduces a package with an install script:
+
+1. Run `npm install-scripts ls` and read the names
+2. Approve only what this project needs: `npm install-scripts approve --no-allow-scripts-pin <pkg>`
+3. Do not use `approve --all` without reviewing each name
+4. Never install a runnable or testable tree with `--ignore-scripts`; that flag is only for the
+   documentation-site and security-audit CI jobs, and for auditing
+
+A process that crashes with `Cannot find module '.../node_datachannel.node'` was installed without
+the native binary. Delete `node_modules`, run a normal `npm ci` that can reach GitHub releases, and
+confirm `node_modules/node-datachannel/build/Release/node_datachannel.node` exists before starting.
+
 ## Validation Policy
 
 - Use repository-defined scripts and configuration as the source of truth for checks

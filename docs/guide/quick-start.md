@@ -46,10 +46,12 @@ npm run build
 node dist/index.js
 ```
 
-`npm ci` must be allowed to run install scripts. Helia depends on `@libp2p/webrtc`, whose
-`node-datachannel` native module downloads a prebuilt binary during installation. Installing with
-`--ignore-scripts` produces a dependency tree that fails at startup; that flag is suitable only for
-auditing dependencies and for building the documentation site.
+`npm ci` must run install scripts. Helia depends on `@libp2p/webrtc`, whose
+`node-datachannel` native module downloads a prebuilt binary during installation. npm 12 blocks
+that download unless the package is listed in `package.json` `allowScripts`; this repository
+already lists it. Installing with `--ignore-scripts` produces a dependency tree that fails at
+startup; that flag is suitable only for auditing dependencies and for building the documentation
+site.
 
 The build compiles TypeScript into `dist/`. Rerun `npm run build` after every code change; the
 running process does not pick up source edits on its own.

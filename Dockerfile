@@ -24,8 +24,10 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 # Install scripts must run: @libp2p/webrtc pulls node-datachannel, whose binary
-# is downloaded here. A tree installed with --ignore-scripts fails at startup.
-COPY package.json package-lock.json ./
+# is downloaded here. package.json allowScripts permits that download; .npmrc
+# fails the build if a new unreviewed install script appears. A tree installed
+# with --ignore-scripts fails at startup.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 COPY tsconfig.json tsconfig.build.json ./
