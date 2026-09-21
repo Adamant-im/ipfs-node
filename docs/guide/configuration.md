@@ -295,15 +295,16 @@ nodes, independent operators, and what each of them keeps running.
 The `health` section bounds the checkpoint that `GET /api/node/health` reports. The whole section is
 optional.
 
-| Option                            | Type                              | Default                                                  | Description                                                 |
-| --------------------------------- | --------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------- |
-| `health.checkpointIntervalMs`     | integer >= 1000                   | `60000`                                                  | Length of one checkpoint round                              |
-| `health.maxCheckpointAgeMs`       | integer >= `checkpointIntervalMs` | `checkpointIntervalMs * 3`                               | Age at which the last completed checkpoint becomes stale    |
-| `health.storageMaxAgeMs`          | integer >= `checkpointIntervalMs` | `checkpointIntervalMs * 2`                               | Maximum age of the cached storage scan a checkpoint accepts |
-| `health.repairMaxAgeMs`           | integer >= `checkpointIntervalMs` | `3600000`                                                | Maximum age of a completed full repair sweep                |
-| `health.clockSkewToleranceMs`     | integer >= 0                      | `10000`                                                  | Allowed clock difference between two attesting peers        |
-| `health.peerAttestationTimeoutMs` | integer >= 1                      | `5000`                                                   | Bound for one peer attestation call                         |
-| `health.requiredPeerCount`        | integer >= 0                      | `1` when more than one node is configured, otherwise `0` | Configured remote peers that must attest a round            |
+| Option                            | Type                              | Default                                                  | Description                                                                                          |
+| --------------------------------- | --------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `health.checkpointIntervalMs`     | integer >= 1000                   | `60000`                                                  | Length of one checkpoint round                                                                       |
+| `health.maxCheckpointAgeMs`       | integer >= `checkpointIntervalMs` | `checkpointIntervalMs * 3`                               | Age at which the last completed checkpoint becomes stale                                             |
+| `health.storageMaxAgeMs`          | integer >= `checkpointIntervalMs` | `checkpointIntervalMs * 2`                               | Maximum age of the cached storage scan a checkpoint accepts                                          |
+| `health.repairMaxAgeMs`           | integer >= `checkpointIntervalMs` | `3600000`                                                | Maximum age of a completed full repair sweep                                                         |
+| `health.clockSkewToleranceMs`     | integer >= 0                      | `10000`                                                  | Allowed clock difference between two attesting peers                                                 |
+| `health.peerAttestationTimeoutMs` | integer >= 1                      | `5000`                                                   | Bound for one peer attestation call                                                                  |
+| `health.requiredPeerCount`        | integer >= 0                      | `1` when more than one node is configured, otherwise `0` | Configured remote peers that must attest a round                                                     |
+| `health.repairBacklogGraceCycles` | integer >= 0                      | `0`                                                      | Consecutive complete unsuccessful repair cycles with backlog during which `repairFresh` remains true |
 
 Three consequences worth planning for:
 

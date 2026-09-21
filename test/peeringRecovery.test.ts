@@ -31,6 +31,12 @@ describe('isStalePeerSessionError', () => {
       true
     )
     assert.equal(isStalePeerSessionError('The connection is closed'), true)
+    assert.equal(isStalePeerSessionError('The stream has been reset'), true)
+    assert.equal(isStalePeerSessionError('stream has been reset'), true)
+    assert.equal(isStalePeerSessionError('stream reset'), true)
+    assert.equal(isStalePeerSessionError('connection reset'), true)
+    assert.equal(isStalePeerSessionError('read ECONNRESET'), true)
+    assert.equal(isStalePeerSessionError('write EPIPE'), true)
   })
 
   it('ignores unrelated errors', () => {
@@ -102,30 +108,14 @@ describe('dropUnhealthyConnectedPeers', () => {
   })
 })
 
-async function waitForRecovery(done: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (done()) {
-      return
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-
-  assert.fail('peer session recovery did not finish')
-}
-
 describe('recoverPeerSession', () => {
   it('ignores unknown peers and enforces cooldown', async () => {
     resetPeerSessionRecoveryStateForTests()
     let now = 1_000
-    const calls = { ping: 0, reset: 0, redial: 0 }
+    const calls = { reset: 0, redial: 0 }
 
     const actions = {
       isConfiguredPeer: (peerId: string) => peerId === 'known-peer',
-      ping: async () => {
-        calls.ping += 1
-        return false
-      },
       reset: async () => {
         calls.reset += 1
       },
@@ -135,34 +125,27 @@ describe('recoverPeerSession', () => {
       now: () => now
     }
 
-    recoverPeerSession('unknown-peer', 'test', actions)
-    recoverPeerSession('known-peer', 'first', actions)
-    await waitForRecovery(() => calls.redial >= 1)
-    assert.equal(calls.ping, 1)
+    await recoverPeerSession('unknown-peer', 'test', actions)
+    await recoverPeerSession('known-peer', 'first', actions)
     assert.equal(calls.reset, 1)
     assert.equal(calls.redial, 1)
 
     now += RECOVERY_COOLDOWN_MS - 1
-    recoverPeerSession('known-peer', 'cooldown', actions)
-    await waitForRecovery(() => calls.redial >= 1)
-    assert.equal(calls.ping, 1)
+    await recoverPeerSession('known-peer', 'cooldown', actions)
+    assert.equal(calls.reset, 1)
 
     now += 1
-    recoverPeerSession('known-peer', 'after cooldown', actions)
-    await waitForRecovery(() => calls.redial >= 2)
-    assert.equal(calls.ping, 2)
+    await recoverPeerSession('known-peer', 'after cooldown', actions)
+    assert.equal(calls.reset, 2)
+    assert.equal(calls.redial, 2)
   })
 
-  it('skips reset when ping succeeds', async () => {
+  it('hangs up without waiting on ping', async () => {
     resetPeerSessionRecoveryStateForTests()
-    const calls = { reset: 0, redial: 0, ping: 0 }
+    const calls = { reset: 0, redial: 0 }
 
-    recoverPeerSession('known-peer', 'healthy', {
+    await recoverPeerSession('known-peer', 'replication stream ended', {
       isConfiguredPeer: () => true,
-      ping: async () => {
-        calls.ping += 1
-        return true
-      },
       reset: async () => {
         calls.reset += 1
       },
@@ -172,9 +155,35 @@ describe('recoverPeerSession', () => {
       now: Date.now
     })
 
-    await waitForRecovery(() => calls.ping >= 1)
-    assert.equal(calls.reset, 0)
-    assert.equal(calls.redial, 0)
+    assert.equal(calls.reset, 1)
+    assert.equal(calls.redial, 1)
+  })
+
+  it('coalesces concurrent recovery attempts for the same peer', async () => {
+    resetPeerSessionRecoveryStateForTests()
+    let resetStarted = 0
+    let resetDone = 0
+
+    const actions = {
+      isConfiguredPeer: () => true,
+      reset: async () => {
+        resetStarted += 1
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        resetDone += 1
+      },
+      redial: async () => {},
+      now: Date.now
+    }
+
+    const [first, second] = await Promise.all([
+      recoverPeerSession('peer-1', 'reason 1', actions),
+      recoverPeerSession('peer-1', 'reason 2', actions)
+    ])
+
+    assert.equal(first, true)
+    assert.equal(second, true)
+    assert.equal(resetStarted, 1)
+    assert.equal(resetDone, 1)
   })
 })
 
@@ -234,5 +243,32 @@ describe('pingPeer', () => {
 
     assert.equal(alive, false)
     assert.equal(Date.now() - startedAt < 500, true)
+  })
+
+  it('coalesces concurrent ping requests for the same peer', async () => {
+    let rawPings = 0
+    const node = {
+      libp2p: {
+        services: {
+          ping: {
+            ping: async () => {
+              rawPings += 1
+              await new Promise((resolve) => setTimeout(resolve, 20))
+              return 42
+            }
+          }
+        }
+      }
+    }
+
+    const peerId = { toString: () => 'coalesced-peer' } as never
+    const [alive1, alive2] = await Promise.all([
+      pingPeer(node as never, peerId),
+      pingPeer(node as never, peerId)
+    ])
+
+    assert.equal(alive1, true)
+    assert.equal(alive2, true)
+    assert.equal(rawPings, 1)
   })
 })

@@ -64,9 +64,18 @@ so expect up to `health.checkpointIntervalMs` of lag once the underlying fault c
   },
   "replication": {
     "repairRequired": true,
+    "schedule": "0 */30 * * * *",
     "lastCompleteAt": 1720614900000,
     "ageMs": 98797,
-    "backlog": 0
+    "backlog": 0,
+    "consecutiveUnsuccessfulCycles": 0,
+    "lastCycle": {
+      "examined": 1400,
+      "stillMissing": 0,
+      "unrecoverable": 0,
+      "completedAt": 1720614900000,
+      "successful": true
+    }
   },
   "checks": {
     "checkpointFresh": true,
@@ -90,6 +99,10 @@ Field by field:
 - `checkpoint.observedAt` dates the last attempt that succeeded, so it differs from `evaluatedAt`
   whenever the most recent attempt failed
 - `membership.version` is a 64-character digest of the configured peer set
+- `replication.consecutiveUnsuccessfulCycles` counts complete repair sweeps in a row that ended with
+  backlog or unrecoverable records; it resets to `0` on any complete clean cycle
+- `replication.schedule` exposes the configured repair cron expression so monitors know the cycle interval
+- `replication.lastCycle` summarizes candidate counts and outcome of the last completed repair sweep
 
 The `checks` object splits into two kinds. `checkpointFresh`, `storageFresh`, and `repairFresh` are
 recomputed at read time, because elapsed time alone can invalidate them. Every other check, along
@@ -97,7 +110,11 @@ with `membership` and `startup`, describes `evaluatedAt`.
 
 `repairFresh` is automatically true when repair is not required — that is, when
 `replication.enabled` or `replication.repairEnabled` is false. When repair is required, the check
-demands a complete, healthy cycle with no backlog, completed within `health.repairMaxAgeMs`.
+demands a completed cycle within `health.repairMaxAgeMs` and zero backlog, unless
+`health.repairBacklogGraceCycles` allows consecutive complete unsuccessful cycles with backlog. A cycle
+that never completes still fails `repairFresh` through `health.repairMaxAgeMs`. Immediate prerequisites
+(Helia, disk reserve, clock consistency, startup, and peer attestations) remain immediate and are
+never delayed by grace cycles.
 
 A clock that moves behind the checkpoint this node already recorded clears `clockConsistent` and
 stops advancement until it catches up, rather than persisting a round that starts after it finished.
@@ -106,15 +123,18 @@ stops advancement until it catches up, rather than persisting a round that start
 
 Express thresholds in terms of the configured values, not in absolute seconds.
 
-- `state` is not `ready` for longer than a small multiple of `health.checkpointIntervalMs`
-- `checkpoint.ageMs` exceeds `checkpoint.maxAgeMs`, which is the definition of `stale`
-- `checks.storageReserve` is false: free space has fallen into `storage.diskReserveBytes`, and
-  uploads answer `507`
-- `checks.clockConsistent` is false: the host clock moved backwards
-- `replication.backlog` is non-zero across more than one repair cycle
-- `replication.ageMs` approaches `health.repairMaxAgeMs`, which means a cycle is not completing
-  inside its window
-- `membership.attestedPeers` below `membership.requiredPeers`
+Split monitoring into immediate prerequisites and repair durability:
+
+- **Immediate alerts**:
+  - `checks.helia` is false: the libp2p/Helia subsystem is down
+  - `checks.storageReserve` is false: free space has fallen into `storage.diskReserveBytes`, and uploads answer `507`
+  - `checks.clockConsistent` is false: the host clock moved backwards
+  - `checks.startupReconciliation` is false: startup validation failed
+  - `checks.peerAttestations` is false: `membership.attestedPeers` is below `membership.requiredPeers`
+  - `checkpoint.ageMs` exceeds `checkpoint.maxAgeMs`, which is the definition of `stale`
+- **Repair durability alerts**:
+  - `checks.repairFresh` is false (with default `repairBacklogGraceCycles: 0`, any non-zero backlog or unhealthy cycle fails freshness immediately; with grace configured, `replication.consecutiveUnsuccessfulCycles > health.repairBacklogGraceCycles`)
+  - `replication.ageMs` approaches `health.repairMaxAgeMs`, which means a cycle is not completing inside its window
 - `membership.version` changed without a configuration change being deployed
 - `height` frozen while `state` is `ready` on other nodes of the same membership version
 

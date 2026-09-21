@@ -128,7 +128,11 @@ async function placeReplicas(
       try {
         await requestCache(helia, peer.multiAddr, cid, callOptions())
       } catch (err) {
-        recoverOutboundReplicationSession(peer, err)
+        const recovered = await recoverOutboundReplicationSession(peer, err)
+        if (recovered) {
+          await requestCache(helia, peer.multiAddr, cid, callOptions())
+          return
+        }
         throw err
       }
     }
@@ -299,12 +303,17 @@ export async function prepareFileRetrieval(cid: CID, signal?: AbortSignal): Prom
   )
 }
 
-function recoverOutboundReplicationSession(peer: ReplicationPeer, err: unknown): void {
+async function recoverOutboundReplicationSession(
+  peer: ReplicationPeer,
+  err: unknown
+): Promise<boolean> {
   const message = err instanceof Error ? err.message : String(err)
 
   if (isStalePeerSessionError(message)) {
-    recoverPeerSession(peer.peerId, message)
+    return recoverPeerSession(peer.peerId, message)
   }
+
+  return false
 }
 
 /**
@@ -321,51 +330,84 @@ function recoverOutboundReplicationSession(peer: ReplicationPeer, err: unknown):
  * offered as an unpinned copy instead: the peer can serve it from then on, and
  * nothing is counted as durable that is not.
  */
+async function attemptPlaceCopy(
+  peer: ReplicationPeer,
+  cid: string,
+  transactionId?: string
+): Promise<PlacementOutcome | ReplicationStoreResult> {
+  if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+    return { outcome: 'stored', staged: false }
+  }
+
+  if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+    throw new Error('peer has no room for another copy')
+  }
+
+  if (transactionId !== undefined) {
+    const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
+    return { outcome: 'stored', staged: result.staged }
+  }
+
+  await requestStore(helia, peer.multiAddr, cid, callOptions())
+  return { outcome: 'stored', staged: false }
+}
+
+function failedStageResult(err: unknown): ReplicationStoreResult {
+  return {
+    outcome: 'failed',
+    staged: isMaybeStagedError(err),
+    error: (err as Error).message
+  }
+}
+
+/**
+ * Place one copy during upload.
+ *
+ * A stale session is reset and the placement is tried once more on the fresh
+ * connection, the same as repair. A stage that still fails after that is
+ * reported so abort can withdraw a pin the peer may have taken.
+ */
 async function placeCopy(
   peer: ReplicationPeer,
   cid: string,
   transactionId?: string
 ): Promise<PlacementOutcome | ReplicationStoreResult> {
   try {
-    if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-      return { outcome: 'stored', staged: false }
+    return await attemptPlaceCopy(peer, cid, transactionId)
+  } catch (err) {
+    if (isNotAuthorizedError(err)) {
+      await requestCache(helia, peer.multiAddr, cid, callOptions())
+      return 'cached'
     }
 
-    if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
-      throw new Error('peer has no room for another copy')
-    }
-
-    if (transactionId !== undefined) {
+    const recovered = await recoverOutboundReplicationSession(peer, err)
+    if (recovered) {
       try {
-        const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
-        return { outcome: 'stored', staged: result.staged }
-      } catch (err) {
-        if (isNotAuthorizedError(err)) {
-          throw err
+        logger.info(
+          {
+            event: 'replication_retry_after_session_recovery',
+            peer: peer.name,
+            peerId: peer.peerId
+          },
+          `Retrying upload replication to ${peer.name} after session recovery`
+        )
+        return await attemptPlaceCopy(peer, cid, transactionId)
+      } catch (retryErr) {
+        if (isNotAuthorizedError(retryErr)) {
+          await requestCache(helia, peer.multiAddr, cid, callOptions())
+          return 'cached'
         }
-
-        recoverOutboundReplicationSession(peer, err)
-
-        // A lost ack after a pin must still be aborted. A structured refusal
-        // (busy, not staged, already aborted) never took ownership.
-        return {
-          outcome: 'failed',
-          staged: isMaybeStagedError(err),
-          error: (err as Error).message
+        if (transactionId !== undefined) {
+          return failedStageResult(retryErr)
         }
+        throw retryErr
       }
     }
 
-    await requestStore(helia, peer.multiAddr, cid, callOptions())
-    return { outcome: 'stored', staged: false }
-  } catch (err) {
-    if (!isNotAuthorizedError(err)) {
-      recoverOutboundReplicationSession(peer, err)
-      throw err
+    if (transactionId !== undefined) {
+      return failedStageResult(err)
     }
-
-    await requestCache(helia, peer.multiAddr, cid, callOptions())
-    return 'cached'
+    throw err
   }
 }
 
@@ -400,6 +442,35 @@ function isMaybeStagedError(err: unknown): boolean {
   )
 }
 
+async function performRepairCopy(
+  peer: ReplicationPeer,
+  cid: string,
+  commitTransactionId?: string
+): Promise<PlacementOutcome | ReplicationStoreResult> {
+  if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+    return { outcome: 'stored', staged: false }
+  }
+
+  if (commitTransactionId !== undefined) {
+    try {
+      await requestCommit(helia, peer.multiAddr, cid, commitTransactionId, callOptions())
+      if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+        return { outcome: 'stored', staged: false }
+      }
+    } catch (err) {
+      await recoverOutboundReplicationSession(peer, err)
+      // No matching stage, or the peer is still temporary; `store` is next.
+    }
+  }
+
+  if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+    throw new Error('peer has no room for another copy')
+  }
+
+  await requestStore(helia, peer.multiAddr, cid, callOptions())
+  return { outcome: 'stored', staged: false }
+}
+
 /**
  * Restore a missing durable copy without creating a new upload transaction.
  *
@@ -407,6 +478,9 @@ function isMaybeStagedError(err: unknown): boolean {
  * a peer that kept the prepared pin can promote it instead of waiting for TTL
  * and a later `store`. `store` remains the fallback for an empty peer, and it
  * still refuses a live stage it does not own.
+ *
+ * If replication to a configured peer fails due to a stale stream session,
+ * reactive recovery resets and redials the peer before attempting replication once more.
  */
 async function repairCopy(
   peer: ReplicationPeer,
@@ -414,36 +488,35 @@ async function repairCopy(
   commitTransactionId?: string
 ): Promise<PlacementOutcome | ReplicationStoreResult> {
   try {
-    if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-      return { outcome: 'stored', staged: false }
+    return await performRepairCopy(peer, cid, commitTransactionId)
+  } catch (err) {
+    if (isNotAuthorizedError(err)) {
+      await requestCache(helia, peer.multiAddr, cid, callOptions())
+      return 'cached'
     }
 
-    if (commitTransactionId !== undefined) {
+    const recovered = await recoverOutboundReplicationSession(peer, err)
+    if (recovered) {
       try {
-        await requestCommit(helia, peer.multiAddr, cid, commitTransactionId, callOptions())
-        if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-          return { outcome: 'stored', staged: false }
+        logger.info(
+          {
+            event: 'replication_retry_after_session_recovery',
+            peer: peer.name,
+            peerId: peer.peerId
+          },
+          `Retrying repair replication to ${peer.name} after session recovery`
+        )
+        return await performRepairCopy(peer, cid, commitTransactionId)
+      } catch (retryErr) {
+        if (isNotAuthorizedError(retryErr)) {
+          await requestCache(helia, peer.multiAddr, cid, callOptions())
+          return 'cached'
         }
-      } catch (err) {
-        recoverOutboundReplicationSession(peer, err)
-        // No matching stage, or the peer is still temporary; `store` is next.
+        throw retryErr
       }
     }
 
-    if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
-      throw new Error('peer has no room for another copy')
-    }
-
-    await requestStore(helia, peer.multiAddr, cid, callOptions())
-    return { outcome: 'stored', staged: false }
-  } catch (err) {
-    if (!isNotAuthorizedError(err)) {
-      recoverOutboundReplicationSession(peer, err)
-      throw err
-    }
-
-    await requestCache(helia, peer.multiAddr, cid, callOptions())
-    return 'cached'
+    throw err
   }
 }
 
@@ -849,7 +922,10 @@ async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise
     holders.map(async (peer) => {
       try {
         return (await probeHave(helia, peer.multiAddr, cid, callOptions())) ? peer.name : undefined
-      } catch {
+      } catch (err) {
+        // Recovery runs concurrently in background; 30s cooldown prevents recovery storms,
+        // and any peer still unrecovered will be evaluated in the next repair sweep.
+        void recoverOutboundReplicationSession(peer, err)
         return undefined
       }
     })

@@ -36,7 +36,11 @@ function emptyEvidence(now = Date.now()): RepairCycleEvidence {
     unrecoverable: 0,
     lastCompletedAt: config.replication.enabled && config.replication.repairEnabled ? null : now,
     lastCompletedSuccessfully: !config.replication.enabled || !config.replication.repairEnabled,
-    lastCompletedBacklog: 0
+    lastCompletedBacklog: 0,
+    consecutiveUnsuccessfulCycles: 0,
+    lastCompletedExamined: 0,
+    lastCompletedStillMissing: 0,
+    lastCompletedUnrecoverable: 0
   }
 }
 
@@ -110,6 +114,12 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
     // schedule rather than advancing on a coverage gap.
     const superseded = current.superseded || lastReport.uncovered > 0 || !lastReport.coverageProven
     const publishes = lastReport.cycleCompleted && !superseded
+    const completedSuccessfully = aggregate.stillMissing === 0 && aggregate.unrecoverable === 0
+    const nextConsecutiveUnsuccessfulCycles = publishes
+      ? completedSuccessfully
+        ? 0
+        : current.consecutiveUnsuccessfulCycles + 1
+      : current.consecutiveUnsuccessfulCycles
 
     await saveEvidence(
       lastReport.cycleCompleted
@@ -117,11 +127,19 @@ export async function repairUnderReplicatedFiles(): Promise<RepairReport> {
             ...emptyEvidence(),
             lastCompletedAt: publishes ? Date.now() : current.lastCompletedAt,
             lastCompletedSuccessfully: publishes
-              ? aggregate.stillMissing === 0 && aggregate.unrecoverable === 0
+              ? completedSuccessfully
               : current.lastCompletedSuccessfully,
             lastCompletedBacklog: publishes
               ? aggregate.stillMissing + aggregate.unrecoverable
-              : current.lastCompletedBacklog
+              : current.lastCompletedBacklog,
+            consecutiveUnsuccessfulCycles: nextConsecutiveUnsuccessfulCycles,
+            lastCompletedExamined: publishes ? aggregate.examined : current.lastCompletedExamined,
+            lastCompletedStillMissing: publishes
+              ? aggregate.stillMissing
+              : current.lastCompletedStillMissing,
+            lastCompletedUnrecoverable: publishes
+              ? aggregate.unrecoverable
+              : current.lastCompletedUnrecoverable
           }
         : {
             ...current,
@@ -241,7 +259,8 @@ export function getReplicationState() {
           unrecoverable: evidence.unrecoverable,
           lastCompletedAt: evidence.lastCompletedAt,
           lastCompletedSuccessfully: evidence.lastCompletedSuccessfully,
-          lastCompletedBacklog: evidence.lastCompletedBacklog
+          lastCompletedBacklog: evidence.lastCompletedBacklog,
+          consecutiveUnsuccessfulCycles: evidence.consecutiveUnsuccessfulCycles
         }
       : null,
     lastRun: lastReport
@@ -264,19 +283,44 @@ export async function initializeReplicationRepairState(): Promise<void> {
   await loadEvidence()
 }
 
+export interface RepairLastCycleEvidence {
+  examined: number
+  stillMissing: number
+  unrecoverable: number
+  completedAt: number | null
+  successful: boolean
+}
+
 /** Last successful complete repair cycle used by the health checkpoint. */
 export function getRepairHealthEvidence(): {
   required: boolean
+  schedule: string
   completedAt: number | null
   healthy: boolean
   backlog: number
+  consecutiveUnsuccessfulCycles: number
+  lastCycle: RepairLastCycleEvidence | null
 } {
   const required = config.replication.enabled && config.replication.repairEnabled
   const activeBacklog = (evidence?.stillMissing ?? 0) + (evidence?.unrecoverable ?? 0)
+  const lastCycle: RepairLastCycleEvidence | null =
+    evidence?.lastCompletedAt !== null && evidence?.lastCompletedAt !== undefined
+      ? {
+          examined: evidence.lastCompletedExamined,
+          stillMissing: evidence.lastCompletedStillMissing,
+          unrecoverable: evidence.lastCompletedUnrecoverable,
+          completedAt: evidence.lastCompletedAt,
+          successful: evidence.lastCompletedSuccessfully
+        }
+      : null
+
   return {
     required,
+    schedule: config.replication.repairSchedule,
     completedAt: evidence?.lastCompletedAt ?? (required ? null : Date.now()),
     healthy: !required || evidence?.lastCompletedSuccessfully === true,
-    backlog: required ? Math.max(evidence?.lastCompletedBacklog ?? 0, activeBacklog) : 0
+    backlog: required ? Math.max(evidence?.lastCompletedBacklog ?? 0, activeBacklog) : 0,
+    consecutiveUnsuccessfulCycles: required ? (evidence?.consecutiveUnsuccessfulCycles ?? 0) : 0,
+    lastCycle
   }
 }

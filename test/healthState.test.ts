@@ -9,6 +9,7 @@ const policy: HealthConfig = {
   maxCheckpointAgeMs: 3_000,
   storageMaxAgeMs: 2_000,
   repairMaxAgeMs: 5_000,
+  repairBacklogGraceCycles: 0,
   clockSkewToleranceMs: 100,
   peerAttestationTimeoutMs: 100,
   requiredPeerCount: 1
@@ -23,9 +24,12 @@ const healthy = (now: number) => ({
   storageAvailableBytes: 2_000,
   storageReservedBytes: 1_000,
   repairRequired: true,
+  repairSchedule: '0 */30 * * * *',
   repairCompletedAt: now,
   repairHealthy: true,
   repairBacklog: 0,
+  repairConsecutiveUnsuccessfulCycles: 0,
+  repairLastCycle: null,
   attestedPeers: 1,
   membershipVersion: 'a'.repeat(64),
   previous: null
@@ -99,6 +103,98 @@ describe('health checkpoint state', () => {
     assert.equal(result.snapshot.state, 'degraded')
     assert.equal(result.snapshot.checks.repairFresh, false)
     assert.equal(result.completed, undefined)
+  })
+
+  it('tolerates repair backlog within repairBacklogGraceCycles', () => {
+    const gracePolicy: HealthConfig = {
+      ...policy,
+      repairBacklogGraceCycles: 2
+    }
+    const result = evaluateHealth(gracePolicy, {
+      ...healthy(12_345),
+      repairHealthy: false,
+      repairBacklog: 3,
+      repairConsecutiveUnsuccessfulCycles: 2
+    })
+
+    assert.equal(result.snapshot.state, 'ready')
+    assert.equal(result.snapshot.checks.repairFresh, true)
+    assert.equal(result.snapshot.replication.consecutiveUnsuccessfulCycles, 2)
+    assert.equal(result.snapshot.replication.backlog, 3)
+    assert.notEqual(result.completed, undefined)
+  })
+
+  it('marks state degraded when consecutive unsuccessful cycles exceed repairBacklogGraceCycles', () => {
+    const gracePolicy: HealthConfig = {
+      ...policy,
+      repairBacklogGraceCycles: 2
+    }
+    const result = evaluateHealth(gracePolicy, {
+      ...healthy(12_345),
+      repairHealthy: false,
+      repairBacklog: 3,
+      repairConsecutiveUnsuccessfulCycles: 3
+    })
+
+    assert.equal(result.snapshot.state, 'degraded')
+    assert.equal(result.snapshot.checks.repairFresh, false)
+    assert.equal(result.snapshot.replication.consecutiveUnsuccessfulCycles, 3)
+    assert.equal(result.completed, undefined)
+  })
+
+  it('immediately fails state when non-repair checks fail regardless of repair grace', () => {
+    const gracePolicy: HealthConfig = {
+      ...policy,
+      repairBacklogGraceCycles: 5
+    }
+    const result = evaluateHealth(gracePolicy, {
+      ...healthy(12_345),
+      repairHealthy: false,
+      repairBacklog: 3,
+      repairConsecutiveUnsuccessfulCycles: 1,
+      storageAvailableBytes: 500
+    })
+
+    assert.equal(result.snapshot.state, 'degraded')
+    assert.equal(result.snapshot.checks.storageReserve, false)
+    assert.equal(result.snapshot.checks.repairFresh, true)
+    assert.equal(result.completed, undefined)
+  })
+
+  it('marks repairFresh false and state degraded when repair cycle is overdue even within grace', () => {
+    const gracePolicy: HealthConfig = {
+      ...policy,
+      repairBacklogGraceCycles: 5
+    }
+    const result = evaluateHealth(gracePolicy, {
+      ...healthy(12_345),
+      repairHealthy: false,
+      repairCompletedAt: 12_345 - (policy.repairMaxAgeMs + 100),
+      repairBacklog: 1,
+      repairConsecutiveUnsuccessfulCycles: 1
+    })
+
+    assert.equal(result.snapshot.state, 'degraded')
+    assert.equal(result.snapshot.checks.repairFresh, false)
+    assert.equal(result.completed, undefined)
+  })
+
+  it('marks cached snapshot stale when repair cycle expires even within grace', () => {
+    const gracePolicy: HealthConfig = {
+      ...policy,
+      repairBacklogGraceCycles: 5
+    }
+    const ready = evaluateHealth(gracePolicy, {
+      ...healthy(12_345),
+      repairHealthy: false,
+      repairBacklog: 1,
+      repairConsecutiveUnsuccessfulCycles: 1
+    }).snapshot
+    assert.equal(ready.state, 'ready')
+
+    const expired = refreshHealthSnapshot(ready, 12_345 + policy.repairMaxAgeMs + 100, gracePolicy)
+    assert.equal(expired.state, 'stale')
+    assert.equal(expired.checks.repairFresh, false)
   })
 
   it('reports a cached ready checkpoint as stale when its age expires', () => {

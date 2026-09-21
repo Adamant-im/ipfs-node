@@ -10,6 +10,14 @@ export interface HealthCheckpoint {
   attestedPeers: number
 }
 
+export interface HealthRepairLastCycle {
+  examined: number
+  stillMissing: number
+  unrecoverable: number
+  completedAt: number | null
+  successful: boolean
+}
+
 export interface HealthInputs {
   now: number
   heliaReady: boolean
@@ -19,9 +27,12 @@ export interface HealthInputs {
   storageAvailableBytes: number
   storageReservedBytes: number
   repairRequired: boolean
+  repairSchedule: string
   repairCompletedAt: number | null
   repairHealthy: boolean
   repairBacklog: number
+  repairConsecutiveUnsuccessfulCycles: number
+  repairLastCycle: HealthRepairLastCycle | null
   attestedPeers: number
   membershipVersion: string
   previous: HealthCheckpoint | null
@@ -64,9 +75,12 @@ export interface HealthSnapshot {
   }
   replication: {
     repairRequired: boolean
+    schedule: string
     lastCompleteAt: number | null
     ageMs: number | null
     backlog: number
+    consecutiveUnsuccessfulCycles: number
+    lastCycle: HealthRepairLastCycle | null
   }
   checks: {
     checkpointFresh: boolean
@@ -136,10 +150,12 @@ export function evaluateHealth(
     repairFresh:
       !input.repairRequired ||
       (clockConsistent &&
-        input.repairHealthy &&
-        input.repairBacklog === 0 &&
         input.repairCompletedAt !== null &&
-        input.now - input.repairCompletedAt <= policy.repairMaxAgeMs),
+        input.now - input.repairCompletedAt <= policy.repairMaxAgeMs &&
+        (input.repairBacklog === 0
+          ? input.repairHealthy
+          : (policy.repairBacklogGraceCycles ?? 0) > 0 &&
+            input.repairConsecutiveUnsuccessfulCycles <= (policy.repairBacklogGraceCycles ?? 0))),
     peerAttestations: input.attestedPeers >= policy.requiredPeerCount
   }
   const complete = Object.values(prerequisiteChecks).every(Boolean)
@@ -198,9 +214,12 @@ export function evaluateHealth(
       },
       replication: {
         repairRequired: input.repairRequired,
+        schedule: input.repairSchedule,
         lastCompleteAt: input.repairCompletedAt,
         ageMs: age(input.now, input.repairCompletedAt),
-        backlog: input.repairBacklog
+        backlog: input.repairBacklog,
+        consecutiveUnsuccessfulCycles: input.repairConsecutiveUnsuccessfulCycles,
+        lastCycle: input.repairLastCycle
       },
       checks
     },
@@ -212,7 +231,9 @@ export function evaluateHealth(
 export function refreshHealthSnapshot(
   current: HealthSnapshot,
   timestamp: number,
-  policy: Pick<HealthConfig, 'storageMaxAgeMs' | 'repairMaxAgeMs'>
+  policy: Pick<HealthConfig, 'storageMaxAgeMs' | 'repairMaxAgeMs'> & {
+    repairBacklogGraceCycles?: number
+  }
 ): HealthSnapshot {
   const checkpointAge = age(timestamp, current.checkpoint.observedAt)
   const storageAge = age(timestamp, current.storage.measuredAt)
@@ -241,7 +262,10 @@ export function refreshHealthSnapshot(
       !current.replication.repairRequired ||
       (current.checks.repairFresh &&
         clockConsistent &&
-        current.replication.backlog === 0 &&
+        (current.replication.backlog === 0 ||
+          ((policy.repairBacklogGraceCycles ?? 0) > 0 &&
+            current.replication.consecutiveUnsuccessfulCycles <=
+              (policy.repairBacklogGraceCycles ?? 0))) &&
         repairAge !== null &&
         repairAge <= policy.repairMaxAgeMs)
   }
