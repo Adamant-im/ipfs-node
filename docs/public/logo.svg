@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="ipfs-node-logo-title">
+  <title id="ipfs-node-logo-title">ADAMANT IPFS Node</title>
+  <rect width="48" height="48" rx="10" fill="#0e7490"/>
+  <g stroke="#fff" stroke-width="2.2" stroke-linecap="round">
+    <path d="M24 24 12 15M24 24l12-9M24 24v12"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="24" cy="24" r="5"/>
+    <circle cx="12" cy="15" r="3.2"/>
+    <circle cx="36" cy="15" r="3.2"/>
+    <circle cx="24" cy="36" r="3.2"/>
+  </g>
+</svg>
