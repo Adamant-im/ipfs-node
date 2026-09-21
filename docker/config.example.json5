@@ -109,6 +109,9 @@
     clockSkewToleranceMs: 10000,
     // Must not exceed the number of configured remote peers, so a single node
     // has to keep this at 0. Raise it once every required peer is upgraded.
-    requiredPeerCount: 0
+    requiredPeerCount: 0,
+    // Consecutive complete unsuccessful repair cycles with backlog during which
+    // repairFresh stays true. 0 is strict: any backlog fails the checkpoint.
+    repairBacklogGraceCycles: 0
   }
 }

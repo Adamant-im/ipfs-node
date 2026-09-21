@@ -2,7 +2,7 @@ import { peerIdFromString } from '@libp2p/peer-id'
 import { helia } from '../helia.js'
 import { getNodesList } from '../utils/utils.js'
 import { logger } from '../utils/logger.js'
-import { pingPeer, resetPeerConnection } from './liveness.js'
+import { resetPeerConnection } from './liveness.js'
 import { redialKnownPeer } from './redialKnownPeer.js'
 import {
   recoverPeerSession as recoverPeerSessionCore,
@@ -16,7 +16,6 @@ function defaultRecoveryActions(): PeerSessionRecoveryActions {
   return {
     isConfiguredPeer: (peerId) =>
       getNodesList([selfPeerId]).some((node) => node.peerId.toString() === peerId),
-    ping: async (peerId) => pingPeer(helia, peerIdFromString(peerId)),
     reset: async (peerId) => resetPeerConnection(helia, peerIdFromString(peerId)),
     redial: redialKnownPeer,
     now: Date.now
@@ -26,8 +25,8 @@ function defaultRecoveryActions(): PeerSessionRecoveryActions {
 /**
  * Reset a configured peer session when reactive recovery is warranted.
  *
- * Ping is diagnostic only and never vetoes resetting an application session
- * whose replication or transfer stream failed.
+ * Hang-up is immediate: ping stays on the scheduled peering pass and does not
+ * run here, because a live ping does not mean replication still works.
  */
 export async function recoverPeerSession(
   peerId: string,
@@ -36,14 +35,8 @@ export async function recoverPeerSession(
 ): Promise<boolean> {
   const actions = defaultRecoveryActions()
 
-  let pingAnswered = false
   const recovered = await recoverPeerSessionCore(peerId, reason, {
     ...actions,
-    ping: async (peerId) => {
-      const alive = await actions.ping?.(peerId)
-      pingAnswered = Boolean(alive)
-      return pingAnswered
-    },
     reset: async (peerId) => {
       logger.warn(
         {
@@ -51,7 +44,6 @@ export async function recoverPeerSession(
           peerId,
           protocol,
           reason,
-          pingAnswered,
           vetoUsed: false
         },
         'Resetting libp2p session to a configured peer after a transfer failure'

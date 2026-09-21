@@ -108,30 +108,14 @@ describe('dropUnhealthyConnectedPeers', () => {
   })
 })
 
-async function waitForRecovery(done: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (done()) {
-      return
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
-
-  assert.fail('peer session recovery did not finish')
-}
-
 describe('recoverPeerSession', () => {
   it('ignores unknown peers and enforces cooldown', async () => {
     resetPeerSessionRecoveryStateForTests()
     let now = 1_000
-    const calls = { ping: 0, reset: 0, redial: 0 }
+    const calls = { reset: 0, redial: 0 }
 
     const actions = {
       isConfiguredPeer: (peerId: string) => peerId === 'known-peer',
-      ping: async () => {
-        calls.ping += 1
-        return false
-      },
       reset: async () => {
         calls.reset += 1
       },
@@ -141,34 +125,27 @@ describe('recoverPeerSession', () => {
       now: () => now
     }
 
-    recoverPeerSession('unknown-peer', 'test', actions)
-    recoverPeerSession('known-peer', 'first', actions)
-    await waitForRecovery(() => calls.redial >= 1)
-    assert.equal(calls.ping, 1)
+    await recoverPeerSession('unknown-peer', 'test', actions)
+    await recoverPeerSession('known-peer', 'first', actions)
     assert.equal(calls.reset, 1)
     assert.equal(calls.redial, 1)
 
     now += RECOVERY_COOLDOWN_MS - 1
-    recoverPeerSession('known-peer', 'cooldown', actions)
-    await waitForRecovery(() => calls.redial >= 1)
-    assert.equal(calls.ping, 1)
+    await recoverPeerSession('known-peer', 'cooldown', actions)
+    assert.equal(calls.reset, 1)
 
     now += 1
-    recoverPeerSession('known-peer', 'after cooldown', actions)
-    await waitForRecovery(() => calls.redial >= 2)
-    assert.equal(calls.ping, 2)
+    await recoverPeerSession('known-peer', 'after cooldown', actions)
+    assert.equal(calls.reset, 2)
+    assert.equal(calls.redial, 2)
   })
 
-  it('does not skip reset when ping succeeds', async () => {
+  it('hangs up without waiting on ping', async () => {
     resetPeerSessionRecoveryStateForTests()
-    const calls = { reset: 0, redial: 0, ping: 0 }
+    const calls = { reset: 0, redial: 0 }
 
-    recoverPeerSession('known-peer', 'healthy', {
+    await recoverPeerSession('known-peer', 'replication stream ended', {
       isConfiguredPeer: () => true,
-      ping: async () => {
-        calls.ping += 1
-        return true
-      },
       reset: async () => {
         calls.reset += 1
       },
@@ -178,25 +155,20 @@ describe('recoverPeerSession', () => {
       now: Date.now
     })
 
-    await waitForRecovery(() => calls.redial >= 1)
-    assert.equal(calls.ping, 1)
     assert.equal(calls.reset, 1)
     assert.equal(calls.redial, 1)
   })
 
   it('coalesces concurrent recovery attempts for the same peer', async () => {
     resetPeerSessionRecoveryStateForTests()
-    let pingStarted = 0
+    let resetStarted = 0
     let resetDone = 0
 
     const actions = {
       isConfiguredPeer: () => true,
-      ping: async () => {
-        pingStarted += 1
-        await new Promise((resolve) => setTimeout(resolve, 20))
-        return false
-      },
       reset: async () => {
+        resetStarted += 1
+        await new Promise((resolve) => setTimeout(resolve, 20))
         resetDone += 1
       },
       redial: async () => {},
@@ -210,7 +182,7 @@ describe('recoverPeerSession', () => {
 
     assert.equal(first, true)
     assert.equal(second, true)
-    assert.equal(pingStarted, 1)
+    assert.equal(resetStarted, 1)
     assert.equal(resetDone, 1)
   })
 })

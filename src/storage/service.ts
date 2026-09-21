@@ -128,7 +128,11 @@ async function placeReplicas(
       try {
         await requestCache(helia, peer.multiAddr, cid, callOptions())
       } catch (err) {
-        recoverOutboundReplicationSession(peer, err)
+        const recovered = await recoverOutboundReplicationSession(peer, err)
+        if (recovered) {
+          await requestCache(helia, peer.multiAddr, cid, callOptions())
+          return
+        }
         throw err
       }
     }
@@ -326,51 +330,84 @@ async function recoverOutboundReplicationSession(
  * offered as an unpinned copy instead: the peer can serve it from then on, and
  * nothing is counted as durable that is not.
  */
+async function attemptPlaceCopy(
+  peer: ReplicationPeer,
+  cid: string,
+  transactionId?: string
+): Promise<PlacementOutcome | ReplicationStoreResult> {
+  if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
+    return { outcome: 'stored', staged: false }
+  }
+
+  if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
+    throw new Error('peer has no room for another copy')
+  }
+
+  if (transactionId !== undefined) {
+    const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
+    return { outcome: 'stored', staged: result.staged }
+  }
+
+  await requestStore(helia, peer.multiAddr, cid, callOptions())
+  return { outcome: 'stored', staged: false }
+}
+
+function failedStageResult(err: unknown): ReplicationStoreResult {
+  return {
+    outcome: 'failed',
+    staged: isMaybeStagedError(err),
+    error: (err as Error).message
+  }
+}
+
+/**
+ * Place one copy during upload.
+ *
+ * A stale session is reset and the placement is tried once more on the fresh
+ * connection, the same as repair. A stage that still fails after that is
+ * reported so abort can withdraw a pin the peer may have taken.
+ */
 async function placeCopy(
   peer: ReplicationPeer,
   cid: string,
   transactionId?: string
 ): Promise<PlacementOutcome | ReplicationStoreResult> {
   try {
-    if (await probeHave(helia, peer.multiAddr, cid, callOptions())) {
-      return { outcome: 'stored', staged: false }
+    return await attemptPlaceCopy(peer, cid, transactionId)
+  } catch (err) {
+    if (isNotAuthorizedError(err)) {
+      await requestCache(helia, peer.multiAddr, cid, callOptions())
+      return 'cached'
     }
 
-    if (!(await probeAccept(helia, peer.multiAddr, cid, callOptions()))) {
-      throw new Error('peer has no room for another copy')
-    }
-
-    if (transactionId !== undefined) {
+    const recovered = await recoverOutboundReplicationSession(peer, err)
+    if (recovered) {
       try {
-        const result = await requestStage(helia, peer.multiAddr, cid, transactionId, callOptions())
-        return { outcome: 'stored', staged: result.staged }
-      } catch (err) {
-        if (isNotAuthorizedError(err)) {
-          throw err
+        logger.info(
+          {
+            event: 'replication_retry_after_session_recovery',
+            peer: peer.name,
+            peerId: peer.peerId
+          },
+          `Retrying upload replication to ${peer.name} after session recovery`
+        )
+        return await attemptPlaceCopy(peer, cid, transactionId)
+      } catch (retryErr) {
+        if (isNotAuthorizedError(retryErr)) {
+          await requestCache(helia, peer.multiAddr, cid, callOptions())
+          return 'cached'
         }
-
-        void recoverOutboundReplicationSession(peer, err)
-
-        // A lost ack after a pin must still be aborted. A structured refusal
-        // (busy, not staged, already aborted) never took ownership.
-        return {
-          outcome: 'failed',
-          staged: isMaybeStagedError(err),
-          error: (err as Error).message
+        if (transactionId !== undefined) {
+          return failedStageResult(retryErr)
         }
+        throw retryErr
       }
     }
 
-    await requestStore(helia, peer.multiAddr, cid, callOptions())
-    return { outcome: 'stored', staged: false }
-  } catch (err) {
-    if (!isNotAuthorizedError(err)) {
-      void recoverOutboundReplicationSession(peer, err)
-      throw err
+    if (transactionId !== undefined) {
+      return failedStageResult(err)
     }
-
-    await requestCache(helia, peer.multiAddr, cid, callOptions())
-    return 'cached'
+    throw err
   }
 }
 

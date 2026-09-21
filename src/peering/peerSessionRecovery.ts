@@ -6,17 +6,18 @@ const inFlightRecoveries = new Map<string, Promise<boolean>>()
 
 export type PeerSessionRecoveryActions = {
   isConfiguredPeer: (peerId: string) => boolean
-  ping?: (peerId: string) => Promise<boolean>
   reset: (peerId: string) => Promise<void>
   redial: (peerId: string) => Promise<void>
   now: () => number
 }
 
 /**
- * Drop connections to a configured peer after an application-level transfer failure
- * and redial that peer.
+ * Drop connections to a configured peer after an application-level transfer
+ * failure and redial that peer.
  *
- * Ping remains a diagnostic probe and does NOT veto session reset after an application failure.
+ * Ping is a scheduled liveness probe on connected peers, not a step on this
+ * path: a session can still answer ping while replication streams are dead, so
+ * waiting on ping would delay hang-up and can exhaust `/ipfs/ping/1.0.0`.
  *
  * @param peerId Configured peer identifier string
  * @param reason Operator-facing explanation
@@ -48,10 +49,6 @@ export async function recoverPeerSession(
 
   const recoveryPromise = (async () => {
     try {
-      if (actions.ping) {
-        await actions.ping(peerId).catch(() => false)
-      }
-
       await actions.reset(peerId)
       await actions.redial(peerId)
       return true
