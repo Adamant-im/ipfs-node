@@ -46,6 +46,16 @@ export interface IpfsNodeOptions {
 export const DEFAULT_MAX_CONNECTIONS = 100
 
 /**
+ * Maximum concurrent inbound and outbound ping protocol streams per peer connection.
+ *
+ * Libp2p defaults to 1/1, which exhausts streams when concurrent probes occur.
+ * Outbound requests are already serialized per peer via coalescing (`pingPeer`),
+ * so 4 streams per connection provides ample headroom for diagnostics and API calls
+ * while protecting the node against stream resource exhaustion / DoS from individual peers.
+ */
+export const MAX_PING_STREAMS_PER_CONNECTION = 4
+
+/**
  * Create a Helia node configured for the ADAMANT topology.
  *
  * The node is composed explicitly out of `createHeliaLight`, `withLibp2pLight`
@@ -84,7 +94,10 @@ export async function createIpfsNode(options: IpfsNodeOptions): Promise<IpfsNode
         peerDiscovery,
         services: {
           identify: identify(),
-          ping: ping({ maxInboundStreams: 32, maxOutboundStreams: 32 })
+          ping: ping({
+            maxInboundStreams: MAX_PING_STREAMS_PER_CONNECTION,
+            maxOutboundStreams: MAX_PING_STREAMS_PER_CONNECTION
+          })
         },
         connectionManager: {
           maxConnections: options.maxConnections ?? DEFAULT_MAX_CONNECTIONS,

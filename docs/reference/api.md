@@ -197,8 +197,8 @@ This route always returns HTTP `200`. Consumers must read `state`, which is `sta
 
 `height` is a persisted, monotonic Unix-millisecond checkpoint at the start of a fixed round. It
 advances only when startup reconciliation, storage freshness and reserve, a complete successful
-repair cycle with no known backlog, and the configured peer attestations all pass, and it freezes on
-failure.
+repair cycle (or a cycle within configured `health.repairBacklogGraceCycles`), and the configured peer
+attestations all pass, and it freezes on failure.
 
 State changes are asymmetric. The response is served from the last checkpoint, and reading it
 recomputes only what elapsed time can decide, so a node may be downgraded to `degraded` or `stale`

@@ -886,6 +886,8 @@ async function liveHolderNames(holders: ReplicationPeer[], cid: string): Promise
       try {
         return (await probeHave(helia, peer.multiAddr, cid, callOptions())) ? peer.name : undefined
       } catch (err) {
+        // Recovery runs concurrently in background; 30s cooldown prevents recovery storms,
+        // and any peer still unrecovered will be evaluated in the next repair sweep.
         void recoverOutboundReplicationSession(peer, err)
         return undefined
       }

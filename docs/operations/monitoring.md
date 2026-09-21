@@ -133,7 +133,7 @@ Split monitoring into immediate prerequisites and repair durability:
   - `checks.peerAttestations` is false: `membership.attestedPeers` is below `membership.requiredPeers`
   - `checkpoint.ageMs` exceeds `checkpoint.maxAgeMs`, which is the definition of `stale`
 - **Repair durability alerts**:
-  - `replication.consecutiveUnsuccessfulCycles >= health.repairBacklogGraceCycles` (or `checks.repairFresh` is false once grace is configured)
+  - `checks.repairFresh` is false (with default `repairBacklogGraceCycles: 0`, any non-zero backlog or unhealthy cycle fails freshness immediately; with grace configured, `replication.consecutiveUnsuccessfulCycles > health.repairBacklogGraceCycles`)
   - `replication.ageMs` approaches `health.repairMaxAgeMs`, which means a cycle is not completing inside its window
 - `membership.version` changed without a configuration change being deployed
 - `height` frozen while `state` is `ready` on other nodes of the same membership version

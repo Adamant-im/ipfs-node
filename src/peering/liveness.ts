@@ -10,6 +10,12 @@ export const PEER_PING_TIMEOUT_MS = 5000
  */
 export const PEER_DIAL_TIMEOUT_MS = 10_000
 
+/**
+ * Time allowed for libp2p to clear a hung-up peer from its connected peers list.
+ * 1,000 ms is sufficient for local yamux muxer teardown while bounding batch delays.
+ */
+export const PEER_HANG_UP_TIMEOUT_MS = 1_000
+
 const inFlightPings = new Map<string, Promise<boolean>>()
 
 /** Clear in-flight ping cache between unit tests. */
@@ -60,7 +66,7 @@ export async function pingPeer(
 export async function resetPeerConnection(
   node: IpfsNode,
   peerId: PeerId,
-  timeoutMs: number = 5000
+  timeoutMs: number = PEER_HANG_UP_TIMEOUT_MS
 ): Promise<void> {
   await node.libp2p.hangUp(peerId).catch(() => {})
 

@@ -3,8 +3,8 @@
  *
  * Call this only from replication error paths. Substring matching is coarse:
  * `'stream ended before'` also appears in the health protocol, and
- * `'The connection is closed'` can match a benign shutdown race. A match only
- * schedules a ping, never an immediate hang-up.
+ * `'The connection is closed'` can match a benign shutdown race. A match
+ * triggers reactive recovery (immediate hang-up and redial).
  */
 export function isStalePeerSessionError(message: string): boolean {
   return (

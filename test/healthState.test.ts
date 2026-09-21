@@ -112,6 +112,7 @@ describe('health checkpoint state', () => {
     }
     const result = evaluateHealth(gracePolicy, {
       ...healthy(12_345),
+      repairHealthy: false,
       repairBacklog: 3,
       repairConsecutiveUnsuccessfulCycles: 2
     })
@@ -130,6 +131,7 @@ describe('health checkpoint state', () => {
     }
     const result = evaluateHealth(gracePolicy, {
       ...healthy(12_345),
+      repairHealthy: false,
       repairBacklog: 3,
       repairConsecutiveUnsuccessfulCycles: 3
     })
@@ -147,6 +149,7 @@ describe('health checkpoint state', () => {
     }
     const result = evaluateHealth(gracePolicy, {
       ...healthy(12_345),
+      repairHealthy: false,
       repairBacklog: 3,
       repairConsecutiveUnsuccessfulCycles: 1,
       storageAvailableBytes: 500
@@ -165,6 +168,7 @@ describe('health checkpoint state', () => {
     }
     const result = evaluateHealth(gracePolicy, {
       ...healthy(12_345),
+      repairHealthy: false,
       repairCompletedAt: 12_345 - (policy.repairMaxAgeMs + 100),
       repairBacklog: 1,
       repairConsecutiveUnsuccessfulCycles: 1
@@ -182,6 +186,7 @@ describe('health checkpoint state', () => {
     }
     const ready = evaluateHealth(gracePolicy, {
       ...healthy(12_345),
+      repairHealthy: false,
       repairBacklog: 1,
       repairConsecutiveUnsuccessfulCycles: 1
     }).snapshot
