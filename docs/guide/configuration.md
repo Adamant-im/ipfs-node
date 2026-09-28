@@ -128,7 +128,11 @@ Entry rules, enforced when the matcher is compiled:
   equal the parsed origin exactly.
 - A wildcard has the form `https://*.example.org`, optionally with a port. The suffix hostname must
   contain a dot, must not start or end with a dot, must not contain `..`, and must be at most 253
-  characters. A port above 65535 is rejected.
+  characters. A port above 65535 is rejected. The sole exception is `http://*.onion` (or
+  `https://*.onion`): the suffix label is `onion`, and only origins whose hostname matches a v3
+  onion shape (`<56-character base32 label>.onion`, with optional subdomain labels) are accepted.
+- The opaque browser origin is configured as the literal string `null` when clients send
+  `Origin: null` (some Tor Browser cross-`.onion` requests).
 - An exact desktop origin is `app://.` or `app://<host>`. The host is either the single dot Chromium
   uses for `app://./…`, or a lowercase hostname (`localhost`, `bundle`, `files.example.org`). No
   wildcard, port, userinfo, path, query, or fragment. `APP://.` and `app://./` are rejected; write

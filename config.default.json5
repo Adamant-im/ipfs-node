@@ -47,9 +47,20 @@
     // scheme can. `*` and `file:` are rejected.
     allowedOrigins: [
       'https://*.adamant.im',
+      // HTTP mirrors such as msg-testnet.adamant.im (Surge); HTTPS subdomains use the rule above.
+      'http://*.adamant.im',
       'https://adm.im',
       'https://*.vercel.app',
       'https://*.surge.sh',
+      // GitHub Pages builds, including user forks from repository Actions.
+      'https://*.github.io',
+      // Massa DeWeb PWA hosts; add your own frontend origins explicitly.
+      'https://adm.massahub.network',
+      'https://adm.deweb.half-red.net',
+      // Tor: one wildcard for v3 hidden services, or list exact PWA / site onions.
+      // 'http://*.onion',
+      // Tor Browser may send `Origin: null` for cross-onion API calls; opt in explicitly:
+      // 'null',
       // 'app://.',
       'http://localhost:8080'
     ]

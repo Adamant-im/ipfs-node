@@ -179,6 +179,9 @@ Operational notes:
 - a canonical HTTP or HTTPS origin, such as `https://adm.im` or `http://localhost:8080`
 - an any-depth subdomain wildcard of the form `https://*.adamant.im`
 - an exact desktop origin, `app://.` or `app://<host>`
+- the opaque browser origin, configured as the literal string `null`, when clients send
+  `Origin: null` (Tor Browser does this for some cross-`.onion` API calls)
+- a Tor hidden-service wildcard `http://*.onion` (suffix label `onion`; v3 hostname shape only)
 
 Startup rejects a bare `*`, an entry carrying a path, credentials, query string, or fragment, a
 scheme other than `http`, `https`, or exact `app`, an entry longer than 255 characters, a wildcard
