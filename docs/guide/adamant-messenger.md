@@ -67,8 +67,15 @@ authorization it needs.
 
 `config.default.json5` is the ADAMANT production template. Its `nodes` and
 `peerDiscovery.bootstrap` lists point at the ADAMANT production mesh, and its `cors.allowedOrigins`
-entries are ADAMANT origins. **A deployment that is not joining ADAMANT must replace all three.**
-Leaving `nodes` and `peerDiscovery.bootstrap` empty runs a standalone node.
+entries are ADAMANT web origins (`https://*.adamant.im` and the compatibility hosts listed there).
+**A deployment that is not joining ADAMANT must replace all three.** Leaving `nodes` and
+`peerDiscovery.bootstrap` empty runs a standalone node.
+
+Those web origins are one adopter's set, not a required list. The Electron build of the same client
+loads from the `app` scheme and sends `Origin: app://.`. That entry is commented in the template
+until an operator enables it. A PWA on `https://msg.adamant.im` is already covered by the wildcard
+and does not need the desktop origin. Another application lists its own origins and, if it has a
+desktop shell, the exact custom-scheme origin that shell sends.
 
 Start at [Quick start](/guide/quick-start), or [Docker](/guide/docker) for a container. The
 messenger client itself is developed in

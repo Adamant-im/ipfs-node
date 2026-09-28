@@ -113,8 +113,8 @@ Notes on the less obvious entries:
 
 ## CORS
 
-`cors.allowedOrigins` is required and must be a non-empty array. Each entry is either a canonical
-HTTP or HTTPS origin, or an any-depth subdomain wildcard.
+`cors.allowedOrigins` is required and must be a non-empty array. Each entry is a canonical HTTP or
+HTTPS origin, an any-depth subdomain wildcard, or an exact `app://` desktop origin.
 
 | Option                | Type             | Default  | Description                         |
 | --------------------- | ---------------- | -------- | ----------------------------------- |
@@ -123,18 +123,34 @@ HTTP or HTTPS origin, or an any-depth subdomain wildcard.
 Entry rules, enforced when the matcher is compiled:
 
 - Each entry is a non-empty string of at most 255 characters
-- An exact origin must be canonical: scheme `http` or `https`, no credentials, no `*` in the
+- An exact HTTP(S) origin must be canonical: scheme `http` or `https`, no credentials, no `*` in the
   hostname, path exactly `/`, no query string, no fragment, and no trailing slash. The string must
   equal the parsed origin exactly.
 - A wildcard has the form `https://*.example.org`, optionally with a port. The suffix hostname must
   contain a dot, must not start or end with a dot, must not contain `..`, and must be at most 253
   characters. A port above 65535 is rejected.
-- A bare `*` is rejected in every position
+- An exact desktop origin is `app://.` or `app://<host>`. The host is either the single dot Chromium
+  uses for `app://./…`, or a lowercase hostname (`localhost`, `bundle`, `files.example.org`). No
+  wildcard, port, userinfo, path, query, or fragment. `APP://.` and `app://./` are rejected; write
+  the canonical string the client sends.
+- A bare `*` is rejected in every position. `file:`, `data:`, and `blob:` are rejected.
 
 Matching is exact on scheme and port. A wildcard matches any subdomain at any depth but never the
 suffix origin itself, so `https://*.example.org` accepts `https://app.example.org` and
 `https://a.b.example.org` but not `https://example.org`. Add the bare origin as its own entry when
-it is needed.
+it is needed. `app://.` matches that origin only, not `app://localhost`.
+
+For a deployment that browsers and a desktop client both call:
+
+- list each web origin, or one `https://*.example.org` wildcard, for the pages that call the API
+- add `app://.` only when a desktop build sends that origin. The official ADAMANT Electron build
+  does. Another build may send `app://localhost` or `app://<host>` instead; add that exact string.
+- leave the desktop entry out until those clients are in scope. [ADAMANT Messenger](/guide/adamant-messenger)
+  shows one adopter's set, not a list to copy.
+
+`app://` is not a web origin a page on `https://` can set. Allowing it lets any local application
+that registered the `app` scheme read responses in a browser engine. The threat model is in
+[Security](/guide/security).
 
 A request without an `Origin` header is treated as a non-browser request and is allowed. CORS is a
 browser-side control: it does not authenticate anything, and it does not restrict `curl` or any
@@ -172,9 +188,24 @@ Rejected forms:
 - comma-separated values inside one string
 - strings with surrounding whitespace, and empty strings
 
-Behind a reverse proxy, list the exact proxy addresses. While `trustProxy` is `false` the node logs
-a warning at startup, because every client behind a proxy would otherwise share the proxy address
-for rate-limiting purposes.
+Behind a reverse proxy, set a hop count or list the proxy addresses. While `trustProxy` is `false`
+the node logs a warning at startup, because every client behind a proxy would otherwise share the
+proxy address for rate-limiting purposes.
+
+The choice is the same whether operators call the deployment production or a test network. What
+matters is the path in front of the process:
+
+- Clients connect straight to `serverPort`, and nothing adds `X-Forwarded-For`. Keep `false`.
+- One reverse proxy overwrites `X-Forwarded-For` and is the only hop. Use `1`. That covers host
+  nginx in front of Docker published as `127.0.0.1:4000:4000`, and nginx on the same machine as a
+  PM2 or systemd process. The nginx config is in [Installation](/guide/installation).
+- Proxy connections come from loopback and a hop count would be wider than the socket you want to
+  trust. Use `['127.0.0.1/8', '::1/128']`, or the single address of that proxy.
+- More than one trusted proxy appends a sanitized forwarding header. Set the hop count to that
+  number, and only if every path crosses exactly those hops.
+
+`true` is rejected in all of these cases. Do not treat a Docker deployment as exempt, and do not
+leave a bare PM2 process at `false` once nginx is in front of it.
 
 ## Rate limits
 
@@ -195,9 +226,10 @@ The `read` policy covers `GET /api/file/:cid`, `GET /api/file/:cid/status`,
 
 Behaviour of the limiters:
 
-- Exceeding a window returns `429` with the body `{"error":"Too many requests. Please try again later."}`
-- Standard `RateLimit` headers are sent in the IETF draft-8 form; the legacy `X-RateLimit-*` headers
-  are disabled
+- Exceeding a window returns `429` with
+  `{"error":"Too many requests. Please try again later.","code":"rate_limited"}`
+- `Retry-After` carries the seconds left in the window. Standard `RateLimit` and `RateLimit-Policy`
+  headers are sent in the IETF draft-8 form; the legacy `X-RateLimit-*` headers are disabled
 - The window is fixed, not sliding, and keyed by the client address that `trustProxy` resolves
 
 These limits are separate from the storage concurrency limits, which also answer `429`; see
@@ -451,10 +483,15 @@ its node reports at `GET /api/node/details`, and use the reachable address of th
 
   cors: {
     // Replace with the origins of your own application.
-    allowedOrigins: ['https://app.example.org', 'https://*.example.org']
+    // Uncomment 'app://.' only for a desktop client that sends that origin.
+    allowedOrigins: [
+      'https://app.example.org',
+      'https://*.example.org'
+      // 'app://.'
+    ]
   },
 
-  // Behind a reverse proxy, list the exact proxy addresses instead.
+  // Direct clients. One overwriting reverse proxy: trustProxy: 1
   trustProxy: false,
 
   rateLimits: {

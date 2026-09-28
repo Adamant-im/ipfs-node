@@ -65,16 +65,66 @@ Expected at a round boundary: peers may attest an adjacent round.
 That is the fail-safe result. Set `health.requiredPeerCount: 0` on the transitioning fleet and raise
 it once every required peer is upgraded; see [Upgrades and rollback](/operations/upgrades).
 
+## The app shows the node offline while probes succeed
+
+`curl` and a Zabbix or container probe call the API with no `Origin` header. CORS does not apply,
+so `GET /api/node/health` can report `ready` while a browser or desktop renderer never sees the
+body. `fetch` and axios then surface a network error, and the client shows the node offline.
+
+Check the origin the client actually sends:
+
+- A PWA or other web app sends `https://<page-host>`. It must match an entry in
+  `cors.allowedOrigins` on scheme, host, and port. `https://*.example.org` does not match
+  `http://`, a different port, or the bare `https://example.org`.
+- The official ADAMANT Electron build sends `Origin: app://.`. Other Electron builds send
+  `app://localhost` or `app://<host>` when they load pages from that host. The entry has to be
+  exact, and it is commented out until an operator adds it. A web wildcard does not cover it.
+- Confirm with `curl -D - -H 'Origin: app://.' https://<host>/api/node/info`. A working desktop
+  origin answers `Access-Control-Allow-Origin: app://.`. A missing header with HTTP 200 is this
+  failure. Injecting the header in the client hides it only until every node the client uses lists
+  the origin.
+
+The same miss fails `POST /api/file/upload`. Clients that retry across nodes and then show a generic
+"failed to upload" message are often aggregating these network errors. This repository does not
+emit that client string. Read the node response, or the `curl` check above, before raising rate
+limits.
+
+`GET /api/node/health` staying `degraded` is a different fault. The probe is then telling the truth;
+read `checks` in the health body. A desktop CORS failure does not change `state`.
+
 ## Uploads are rejected
 
-| Status | Cause                                                                                                            | Action                                                                                                                       |
-| ------ | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `400`  | No file was sent, more files than `maxFileCount`, one file over `uploadLimitSizeBytes`, or a non-file text field | Send `files` parts only, within both limits                                                                                  |
-| `413`  | Combined size over `storage.maxRequestSizeBytes`                                                                 | Raise the limit or split the request; the check runs against `Content-Length` before parsing                                 |
-| `429`  | Upload rate limit, or the concurrent upload limit                                                                | Compare `concurrency.uploads` on `GET /api/node/details` against the limit: a full limiter is capacity, an empty one is rate |
-| `503`  | `replication.requireQuorumOnUpload` is on and the quorum was not reached                                         | Check peer connectivity; the upload was rolled back cleanly                                                                  |
-| `507`  | The request would consume `storage.diskReserveBytes`                                                             | Free space, lower the reserve, or collect garbage with `POST /api/storage/gc?force=true`                                     |
-| `500`  | Storage or replica settlement failed                                                                             | Not a clean rejection. The content may be partially durable; re-uploading is safe because content-addressed dedup absorbs it |
+Operational failures on the upload and read paths include a stable `code` next to `error`. Branch
+on `code`. The full list is in [API overview](/reference/api).
+
+| Status | `code`                 | Cause                                                                                | Action                                                                                                                       |
+| ------ | ---------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `400`  | `no_file`              | No file part was sent                                                                | Send one or more `files` parts                                                                                               |
+| `400`  | `too_many_files`       | More files than `maxFileCount`                                                       | Stay within the limit                                                                                                        |
+| `400`  | `file_too_large`       | One file is over `uploadLimitSizeBytes`                                              | Stay within the per-file limit                                                                                               |
+| `400`  | `multipart_fields`     | A non-file text field was sent                                                       | Send `files` parts only                                                                                                      |
+| `413`  | `request_too_large`    | Combined size over `storage.maxRequestSizeBytes`                                     | Raise the limit or split the request; the check runs against `Content-Length` before parsing                                 |
+| `429`  | `rate_limited`         | Upload rate window exceeded. Default is 10 requests per 900000 ms per client address | Wait for `Retry-After`. If every client shares one bucket, fix `trustProxy` before raising the limit                         |
+| `429`  | `upload_concurrency`   | `storage.maxConcurrentUploads` slots are full                                        | `Retry-After: 5`. Compare `concurrency.uploads` on `GET /api/node/details` with the limit                                    |
+| `503`  | `replication_quorum`   | `replication.requireQuorumOnUpload` is on and the quorum was not reached             | Check peer connectivity; the upload was rolled back cleanly                                                                  |
+| `507`  | `insufficient_storage` | The request would consume `storage.diskReserveBytes`                                 | Free space, lower the reserve, or collect garbage with `POST /api/storage/gc?force=true`                                     |
+| `500`  |                        | Storage or replica settlement failed                                                 | Not a clean rejection. The content may be partially durable; re-uploading is safe because content-addressed dedup absorbs it |
+
+**Ten uploads fail in a row and the client stops.**
+The default upload window is 10 requests per 15 minutes for one client address. Eleven rapid
+uploads from that address produce `429` / `rate_limited` on the eleventh, with `Retry-After` and
+`RateLimit` headers. Ten failures can also be ten CORS or connection errors that never reached this
+counter. A shared address makes the window a deployment-wide budget: with `trustProxy: false`
+behind nginx, every client is the proxy. The startup log warns about that. Set hop count `1` or
+the proxy CIDR, on a test network the same way as on a public deployment. Do not set `true`.
+
+**The upload never returns a status.**
+Admission answers `507` when the disk reserve would be consumed, and `429` / `upload_concurrency`
+when the in-flight slots are full. A request that sits with no status is not one of those
+refusals. The process does not cap its own memory; the host cgroup or service limit does. A
+blockstore scan on `diskUsageScanPeriod` shares the disk with uploads, and a node whose
+`storageFresh` check is failing is already late on that scan. Check host memory and disk wait, and
+`checks.storageFresh` on `GET /api/node/health`, before treating the hang as a client bug.
 
 **A proxy rejects the upload before the node sees it.**
 Set the proxy body limit at or below `uploadLimitSizeBytes` and disable request buffering for the
@@ -82,7 +132,8 @@ upload path. An nginx example is in [Installation](/guide/installation).
 
 ## Downloads time out
 
-`408` is the only timeout answer, and three separate deadlines can produce it: discovery bounded by
+`408` with `code` `file_timeout` is the only timeout answer, and three separate deadlines can
+produce it: discovery bounded by
 `findFileTimeout`, a stalled transfer bounded by `downloadIdleTimeout`, and a size-aware complete
 deadline derived from `downloadMinBytesPerSecond` and capped by `downloadMaxDurationMs`. A failing
 request may spend more than one `findFileTimeout` before answering.
@@ -100,6 +151,12 @@ Likely causes:
 
 The node never answers `404` for a CID it cannot retrieve, because it cannot know whether the
 content exists elsewhere. A `404` on this API means an unknown registry record or an unrouted path.
+
+A client that just uploaded can still see `408` / `file_timeout` on the node it did not upload to.
+That is replication lag or a peer that does not hold the CID yet, not a failed upload. Check
+`GET /api/file/:cid/status`, `replication` on `GET /api/node/health`, and whether repair is behind
+(`repairFresh`, `replication.backlog`). Raising `findFileTimeout` waits longer for the same lookup;
+it does not place a missing copy.
 
 ## The process exits with `Cannot find module node_datachannel.node`
 
@@ -147,8 +204,11 @@ own counters, so the effective limit is per process. Enforce rates at the proxy 
 multi-process deployment.
 
 **A `429` with no obvious rate abuse.**
-It may be admission, not rate. `GET /api/node/details` reports limiter occupancy under
-`concurrency`; an admission refusal also carries `Retry-After: 5`.
+Read `code`. `rate_limited` is the window and carries `Retry-After` plus `RateLimit` headers.
+`upload_concurrency`, `download_concurrency`, and `download_client_concurrency` are admission:
+`Retry-After: 5`, and `GET /api/node/details` shows occupancy under `concurrency`. An empty
+limiter with `rate_limited` from many users at once is a shared client address; see the upload
+section above.
 
 ## Disk fills up
 

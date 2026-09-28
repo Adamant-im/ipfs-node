@@ -196,7 +196,8 @@ Every option, default, and cross-field rule, plus the migration notes for `autoP
 | Disabled by default  | all `/api/debug/*`                                                                                                                                        | Not mounted unless `enableDebugApi` is `true`; still requires `x-api-key`                                                                                                                   |
 | Authenticated user   | None                                                                                                                                                      | The service has no end-user identity or session layer                                                                                                                                       |
 
-CORS is a browser control and is never treated as authentication.
+CORS is a browser control and is never treated as authentication. Exact `app://`
+origins can be listed for a desktop client; they are not in the default set.
 `GET /api/helia/routing/findProviders/:cid` no longer exists: provider lookup requires content
 routing, and this deployment intentionally runs none.
 

@@ -1,4 +1,5 @@
 import type { Request, RequestHandler } from 'express'
+import { publicErrorBodies } from '../security/errors.js'
 
 export interface DownloadConcurrencyLimiter {
   tryAcquire(): boolean
@@ -37,15 +38,13 @@ export function createDownloadAdmission(
 
     if (perClientLimit !== undefined && held >= perClientLimit) {
       res.set('Retry-After', '5')
-      res
-        .status(429)
-        .send({ error: 'Too many concurrent downloads from this client. Please try again later.' })
+      res.status(429).send(publicErrorBodies.downloadClientConcurrency)
       return
     }
 
     if (!limiter.tryAcquire()) {
       res.set('Retry-After', '5')
-      res.status(429).send({ error: 'Too many concurrent downloads. Please try again later.' })
+      res.status(429).send(publicErrorBodies.downloadConcurrency)
       return
     }
 

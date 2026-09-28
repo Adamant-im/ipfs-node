@@ -38,17 +38,29 @@
   downloadMinBytesPerSecond: 32768,
   downloadMaxDurationMs: 14400000, // 4 h absolute ceiling for one response
   cors: {
-    // Exact origins and left-most subdomain wildcards are supported.
+    // Exact HTTP(S) origins and left-most subdomain wildcards are supported.
+    // A desktop client that loads the UI from Electron's `app` scheme sends
+    // `Origin: app://.` (some builds send `app://localhost` or `app://<host>`).
+    // Uncomment the matching entry only for a node that serves that client.
+    // A web page cannot forge `app://`; any local app that registered the
+    // scheme can. `*` and `file:` are rejected.
     allowedOrigins: [
       'https://*.adamant.im',
       'https://adm.im',
       'https://*.vercel.app',
       'https://*.surge.sh',
       'http://localhost:8080'
+      // 'app://.'
     ]
   },
-  // Keep false when clients connect directly. Prefer exact proxy IP/CIDR values
-  // when a reverse proxy forwards requests to this process.
+  // Keep false when clients connect to this process directly.
+  // Behind one reverse proxy that overwrites X-Forwarded-For, use hop count 1
+  // or the proxy's own addresses, for example:
+  //   trustProxy: 1
+  //   trustProxy: ['127.0.0.1/8', '::1/128']
+  // The same choice applies on every environment that uses that topology.
+  // `true` is rejected. Leaving this false behind a proxy makes every client
+  // share the proxy address for rate limits.
   trustProxy: false,
   rateLimits: {
     upload: { windowMs: 900000, limit: 10 },

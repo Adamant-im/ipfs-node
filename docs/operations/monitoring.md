@@ -188,7 +188,18 @@ placeholders.
 
 Two warnings are expected on a fresh installation and are not faults: the TLS notice at listen time,
 and the `trustProxy is false` notice. Do not widen the proxy trust rule merely to silence the
-second; see [Security and privacy](/guide/security).
+second; see [Security and privacy](/guide/security). Silence it when a reverse proxy really is in
+front, on a test network the same way as on a public one, by setting hop count `1` or the proxy's
+addresses.
+
+Health probes and browser clients are not the same request. `GET /api/node/health` from Zabbix, the
+container health check, or `curl` sends no `Origin` header, so CORS does not apply and a `ready`
+body means the process is up. A browser or an Electron renderer sends `Origin`. If that origin is
+not allowed, the HTTP status can still be 200 while the page never sees the body: `fetch` and axios
+report a network error, and the app shows the node offline. Confirm with
+`curl -D - -H 'Origin: https://app.example.org' https://<host>/api/node/info` or, for the official
+ADAMANT desktop build, `-H 'Origin: app://.'`, and look for `Access-Control-Allow-Origin` echoing
+that value. See [Troubleshooting](/operations/troubleshooting).
 
 ## Staged rollouts and membership epochs
 

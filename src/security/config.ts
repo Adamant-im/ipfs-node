@@ -21,6 +21,8 @@ type SecurityConfigInput = {
 /**
  * Validate configuration values that define HTTP security boundaries.
  * Missing optional admin and proxy settings fail closed at runtime.
+ * Origin rules, including exact `app://` desktop origins, are compiled by
+ * `createOriginMatcher`.
  *
  * @param config parsed application configuration
  */

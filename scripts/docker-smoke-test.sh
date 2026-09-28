@@ -91,6 +91,9 @@ write_config() {
   maxFileCount: $2,
   findFileTimeout: 20000,
   cors: { allowedOrigins: ['http://localhost:8080'] },
+  // Direct probe of the published port. No Origin header and no forwarding
+  // hop, so a green run does not prove reverse-proxy client identity or
+  // desktop CORS. Those live in the mounted config; see docs/guide/docker.md.
   trustProxy: false,
   rateLimits: {
     upload: { windowMs: 900000, limit: 100 },

@@ -44,7 +44,10 @@ describe('download response streaming', () => {
       assert.equal(response.status, 408)
       assert.match(response.headers.get('content-type') ?? '', /^application\/json/)
       assert.equal(response.headers.get('content-disposition'), null)
-      assert.deepEqual(await response.json(), { error: 'File request timed out' })
+      assert.deepEqual(await response.json(), {
+        error: 'File request timed out',
+        code: 'file_timeout'
+      })
     } finally {
       await server.close()
     }

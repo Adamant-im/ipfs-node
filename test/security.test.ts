@@ -19,7 +19,9 @@ describe('CORS origin policy', () => {
   const matches = createOriginMatcher([
     'https://adm.im',
     'https://*.adamant.im',
-    'http://localhost:8080'
+    'http://localhost:8080',
+    'app://.',
+    'app://localhost'
   ])
 
   it('accepts exact and wildcard subdomain origins', () => {
@@ -29,17 +31,35 @@ describe('CORS origin policy', () => {
     assert.equal(matches('http://localhost:8080'), true)
   })
 
+  it('accepts a configured desktop origin and no other app host', () => {
+    assert.equal(matches('app://.'), true)
+    assert.equal(matches('app://localhost'), true)
+    assert.equal(matches('APP://.'), true)
+    assert.equal(matches('app://bundle'), false)
+    assert.equal(matches('app://.evil.example'), false)
+    assert.equal(matches('app://./'), false)
+    assert.equal(matches('app://./index.html'), false)
+    assert.equal(matches('app://user@.'), false)
+  })
+
   it('rejects suffix confusion, paths, and unlisted schemes', () => {
     assert.equal(matches('https://adamant.im.evil.example'), false)
     assert.equal(matches('https://adamant.im'), false)
     assert.equal(matches('https://chat.adamant.im/path'), false)
     assert.equal(matches('http://chat.adamant.im'), false)
+    assert.equal(matches('file:///'), false)
   })
 
   it('rejects invalid configured origin rules', () => {
     assert.throws(() => createOriginMatcher(['*']))
     assert.throws(() => createOriginMatcher(['https://example.org/path']))
     assert.throws(() => createOriginMatcher(['https://*example.org']))
+    assert.throws(() => createOriginMatcher(['app://*']))
+    assert.throws(() => createOriginMatcher(['app://*.localhost']))
+    assert.throws(() => createOriginMatcher(['app://./']))
+    assert.throws(() => createOriginMatcher(['APP://.']))
+    assert.throws(() => createOriginMatcher(['file:///']))
+    assert.throws(() => createOriginMatcher(['app://localhost:80']))
   })
 
   it('emits an allow-origin header only for an accepted browser origin', async () => {
@@ -51,9 +71,61 @@ describe('CORS origin policy', () => {
     try {
       const allowed = await fetch(server.url, { headers: { origin: 'https://adm.im' } })
       const rejected = await fetch(server.url, { headers: { origin: 'https://evil.example' } })
+      const desktop = await fetch(server.url, { headers: { origin: 'app://.' } })
 
       assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://adm.im')
       assert.equal(rejected.headers.get('access-control-allow-origin'), null)
+      assert.equal(desktop.headers.get('access-control-allow-origin'), null)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('allows a configured app://. origin on info and upload, including preflight', async () => {
+    const app = express()
+    app.use(
+      cors({
+        origin: createCorsOriginDelegate(['https://*.adamant.im', 'app://.']),
+        credentials: false,
+        methods: ['GET', 'POST'],
+        allowedHeaders: ['content-type', 'x-api-key'],
+        maxAge: 600
+      })
+    )
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    app.post('/api/file/upload', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const info = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'app://.' } })
+      const preflight = await fetch(`${server.url}/api/file/upload`, {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'app://.',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type'
+        }
+      })
+      const upload = await fetch(`${server.url}/api/file/upload`, {
+        method: 'POST',
+        headers: { origin: 'app://.', 'content-type': 'text/plain' },
+        body: 'desktop'
+      })
+      const otherHost = await fetch(`${server.url}/api/node/info`, {
+        headers: { origin: 'app://localhost' }
+      })
+      const wildcard = await fetch(`${server.url}/api/node/info`, {
+        headers: { origin: 'https://msg.adamant.im' }
+      })
+
+      assert.equal(info.status, 200)
+      assert.equal(info.headers.get('access-control-allow-origin'), 'app://.')
+      assert.equal(preflight.headers.get('access-control-allow-origin'), 'app://.')
+      assert.match(preflight.headers.get('access-control-allow-methods') ?? '', /POST/)
+      assert.equal(upload.status, 200)
+      assert.equal(upload.headers.get('access-control-allow-origin'), 'app://.')
+      assert.equal(otherHost.headers.get('access-control-allow-origin'), null)
+      assert.equal(wildcard.headers.get('access-control-allow-origin'), 'https://msg.adamant.im')
     } finally {
       await server.close()
     }
@@ -72,6 +144,12 @@ describe('security configuration', () => {
 
   it('accepts a fail-closed default configuration', () => {
     assert.doesNotThrow(() => validateSecurityConfig(baseConfig))
+    assert.doesNotThrow(() =>
+      validateSecurityConfig({
+        ...baseConfig,
+        cors: { allowedOrigins: ['https://adm.im', 'app://.'] }
+      })
+    )
   })
 
   it('rejects unsafe proxy trust and placeholder admin keys', () => {
@@ -111,7 +189,7 @@ describe('public error mapping', () => {
   it('preserves the public timeout response without exposing internal details', () => {
     assert.deepEqual(getPublicError(new FileNotFoundError('/private/path was not found')), {
       status: 408,
-      body: { error: 'File request timed out' }
+      body: { error: 'File request timed out', code: 'file_timeout' }
     })
   })
 
@@ -128,7 +206,7 @@ describe('public error mapping', () => {
   it('reports an active lifecycle without exposing transaction details', () => {
     assert.deepEqual(getPublicError(new FileLifecycleBusyError('secret-cid')), {
       status: 409,
-      body: { error: 'File lifecycle is busy' }
+      body: { error: 'File lifecycle is busy', code: 'lifecycle_busy' }
     })
   })
 })
@@ -169,7 +247,10 @@ describe('streaming multipart limits', () => {
     const response = await sendFiles(serverUrl, 1, true)
 
     assert.equal(response.status, 400)
-    assert.deepEqual(await response.json(), { error: 'Multipart fields are not allowed' })
+    assert.deepEqual(await response.json(), {
+      error: 'Multipart fields are not allowed',
+      code: 'multipart_fields'
+    })
   })
 })
 
@@ -345,7 +426,14 @@ describe('rate limiting behind a trusted proxy', () => {
     const secondClient = { 'x-forwarded-for': '198.51.100.11' }
 
     assert.equal((await fetch(`${serverUrl}/upload`, { headers: firstClient })).status, 200)
-    assert.equal((await fetch(`${serverUrl}/upload`, { headers: firstClient })).status, 429)
+    const limited = await fetch(`${serverUrl}/upload`, { headers: firstClient })
+    assert.equal(limited.status, 429)
+    assert.deepEqual(await limited.json(), {
+      error: 'Too many requests. Please try again later.',
+      code: 'rate_limited'
+    })
+    assert.ok(Number(limited.headers.get('retry-after')) >= 1)
+    assert.match(limited.headers.get('ratelimit') ?? '', /r=0/)
     assert.equal((await fetch(`${serverUrl}/upload`, { headers: secondClient })).status, 200)
   })
 })

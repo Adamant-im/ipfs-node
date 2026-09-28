@@ -260,18 +260,34 @@ The proxy must overwrite untrusted forwarding headers. `$proxy_add_x_forwarded_f
 whatever the client sent, so at an internet-facing edge use `$remote_addr`; the appending form is
 correct only when the hop in front of nginx is itself trusted and sanitizing.
 
-Overwriting is only half of it: `trustProxy` has to list the proxy addresses, otherwise Express
-keeps using the socket address and every client shares the proxy's identity and rate-limit bucket.
-The process logs a startup warning while the value is `false`. Configure exact addresses or CIDR
-ranges:
+Overwriting is only half of it: `trustProxy` has to name that proxy, otherwise Express keeps using
+the socket address and every client shares the proxy's identity and rate-limit bucket. The process
+logs a startup warning while the value is `false`. This block is one hop and it overwrites
+`X-Forwarded-For`, so either of these is correct:
+
+```json5
+trustProxy: 1
+```
 
 ```json5
 trustProxy: ['127.0.0.1/8', '::1/128']
 ```
 
+Use `1` when every request crosses exactly this one proxy, including a PM2 or systemd process on
+the same host with nginx in front. Use the address list when you would rather trust the loopback
+socket than a hop count. The same pair of choices applies to a test network and to a public
+deployment: the label does not change the header the process sees. Docker published only on
+loopback uses this same nginx. The container side is in [Docker](/guide/docker).
+
 A numeric hop count is accepted only for a fixed topology where every path to the application
 crosses exactly that many trusted hops. The blanket value `true` is rejected, because a client
 could then spoof `X-Forwarded-For` whenever the last proxy does not overwrite it.
+
+Browsers and desktop clients also need their `Origin` listed in `cors.allowedOrigins`. A page on
+`https://app.example.org` needs that origin or a matching wildcard. The official ADAMANT Electron
+build sends `app://.`; add that exact entry only on nodes that serve it. Probes that omit `Origin`,
+including `curl` and Zabbix, are not subject to CORS, so a green health check does not prove the
+app can read the response. The checklist is in [Security](/guide/security).
 
 `client_max_body_size` bounds one request at the edge; the node independently rejects a single file
 over `uploadLimitSizeBytes` and a combined request over `storage.maxRequestSizeBytes`. Keep the

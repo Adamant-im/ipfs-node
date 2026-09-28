@@ -1,4 +1,5 @@
 import { rateLimit, type RateLimitRequestHandler } from 'express-rate-limit'
+import { publicErrorBodies } from './errors.js'
 
 export type RateLimitPolicy = {
   windowMs: number
@@ -19,7 +20,7 @@ export function createRateLimiter(policy: RateLimitPolicy): RateLimitRequestHand
     limit: policy.limit,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
-    message: { error: 'Too many requests. Please try again later.' }
+    message: publicErrorBodies.rateLimited
   })
 }
 

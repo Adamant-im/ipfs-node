@@ -42,13 +42,33 @@
   downloadMaxDurationMs: 14400000, // 4 h absolute ceiling for one response
 
   cors: {
-    // Exact origins and any-depth subdomain wildcards. Replace these with the
-    // origins of your own application; `*` is rejected.
-    allowedOrigins: ['http://localhost:8080']
+    // Exact HTTP(S) origins and any-depth subdomain wildcards. `*` is rejected.
+    // Replace localhost with the origins of the application that calls this
+    // node. A browser page on another host is refused until its origin is listed.
+    //
+    // Electron and other custom-scheme desktops send a non-HTTP Origin. The
+    // official ADAMANT desktop build sends `app://.`. Other builds may send
+    // `app://localhost` or `app://<host>`. Uncomment the exact value only when
+    // this node should answer those clients. A web page cannot forge `app://`;
+    // any local app that registered the scheme can. Wildcards are not accepted
+    // for that scheme.
+    allowedOrigins: [
+      'http://localhost:8080'
+      // 'app://.'
+    ]
   },
 
-  // Keep false when clients connect directly. Behind a reverse proxy, list the
-  // exact proxy addresses or CIDR ranges instead.
+  // false is correct when clients connect to this process directly. The
+  // container smoke test does that, and it does not cover a proxied deployment.
+  //
+  // Behind one reverse proxy that overwrites X-Forwarded-For — host nginx in
+  // front of a loopback publish (`127.0.0.1:4000:4000`), or nginx in front of
+  // a pm2 or systemd process — set the hop count, or trust only the proxy:
+  //   trustProxy: 1
+  //   trustProxy: ['127.0.0.1/8', '::1/128']
+  // Use the same setting on every environment with that topology. `true` is
+  // rejected. Leaving this false behind a proxy puts every client in one
+  // rate-limit bucket, the proxy's own address.
   trustProxy: false,
 
   rateLimits: {
