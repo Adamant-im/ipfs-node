@@ -20,7 +20,7 @@ import * as routers from './api/index.js'
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js'
 import { mountApiRoutes } from './security/accessPolicy.js'
 import { createApiKeyAuth } from './security/apiKey.js'
-import { createCorsOriginDelegate, createCorsOriginRewriteMiddleware } from './security/cors.js'
+import { createCorsOriginDelegate } from './security/cors.js'
 import { parseTrustProxy } from './security/trustProxy.js'
 import {
   setStartupReconciliationResult,
@@ -139,7 +139,6 @@ if (trustProxy === false) {
 app.use(httpLogger)
 app.use(collectHttpMetrics)
 
-app.use(createCorsOriginRewriteMiddleware(config.cors.allowedOrigins))
 app.use(
   cors({
     origin: createCorsOriginDelegate(config.cors.allowedOrigins),

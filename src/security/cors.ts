@@ -1,5 +1,4 @@
 import type { CorsOptions } from 'cors'
-import type { NextFunction, Request, Response } from 'express'
 
 type OriginRule = {
   protocol: string
@@ -108,54 +107,16 @@ export function createCorsOriginDelegate(allowedOrigins: unknown): CorsOptions['
       return
     }
 
-    // Referer rewrite runs first; a remaining `Origin: null` is usually Tor
-    // cross-`.onion` while the document origin is the PWA onion. Browsers reject
-    // `Access-Control-Allow-Origin: null` in that case. Public routes use
-    // `credentials: false`, so `*` is valid. True opaque origins are uncommon here.
     if (origin === 'null') {
-      callback(null, '*')
+      // Opt-in only via the literal `null` entry. Tor cross-`.onion` fetches often
+      // send this header while the document origin is an onion URL; reflecting
+      // `Access-Control-Allow-Origin: null` fails the browser CORS check in that
+      // case. Public routes use `credentials: false`, so `*` is valid when opted in.
+      callback(null, matchesOrigin('null') ? '*' : false)
       return
     }
 
     callback(null, matchesOrigin(origin) ? origin : false)
-  }
-}
-
-/**
- * Tor Browser may send `Origin: null` on cross-`.onion` fetches while the document
- * origin remains the PWA hidden service. Browsers compare `Access-Control-Allow-Origin`
- * to the document origin, so reflect the `Referer` origin when it is allowlisted.
- *
- * @param allowedOrigins browser origins accepted by the API
- * @returns Express middleware that runs before `cors`
- */
-export function createCorsOriginRewriteMiddleware(
-  allowedOrigins: unknown
-): (req: Request, _res: Response, next: NextFunction) => void {
-  const matchesOrigin = createOriginMatcher(allowedOrigins)
-
-  return (req, _res, next): void => {
-    if (req.headers.origin !== 'null') {
-      next()
-      return
-    }
-
-    const referer = req.headers.referer
-    if (typeof referer !== 'string') {
-      next()
-      return
-    }
-
-    try {
-      const refererOrigin = new URL(referer).origin
-      if (matchesOrigin(refererOrigin)) {
-        req.headers.origin = refererOrigin
-      }
-    } catch {
-      // ignore malformed Referer
-    }
-
-    next()
   }
 }
 
