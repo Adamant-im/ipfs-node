@@ -179,6 +179,8 @@ Operational notes:
 - a canonical HTTP or HTTPS origin, such as `https://adm.im` or `http://localhost:8080`
 - an any-depth subdomain wildcard of the form `https://*.adamant.im`
 - an exact desktop origin, `app://.` or `app://<host>`
+- the opaque browser origin, configured as the literal string `null` (see below)
+- a Tor hidden-service wildcard `http://*.onion` (suffix label `onion`; v3 hostname shape only)
 
 Startup rejects a bare `*`, an entry carrying a path, credentials, query string, or fragment, a
 scheme other than `http`, `https`, or exact `app`, an entry longer than 255 characters, a wildcard
@@ -220,6 +222,25 @@ the list every deployment should copy. A PWA on `https://msg.adamant.im` is cove
 document that made the request, so allowing `app://.` does not let an arbitrary website read the
 API. It does let any local application that registered the `app` scheme. That is why the entry is
 an explicit opt-in rather than a default.
+
+### Opaque `null` origin
+
+Some browsers, including Tor Browser on certain cross-`.onion` fetches, send the header
+`Origin: null`. The configuration entry is the literal four-character string `null`, not JSON
+null. Enabling it tells the CORS middleware to reflect `Access-Control-Allow-Origin: null` for
+those requests.
+
+**This permission is not limited to Tor.** Any opaque browser origin serializes as `null`. That
+includes `data:` documents, some `file:` documents, and a cross-origin
+`<iframe sandbox="allow-scripts">` embedded by an arbitrary clearnet site. The allowlist cannot
+distinguish a Tor messenger tab from such a frame: if the API is reachable from the user's browser,
+code running in the frame can read responses the same way. Rejecting literal `data:` or `file:`
+entries in `cors.allowedOrigins` does not block those documents once `null` is allowed. See
+[MDN: `Access-Control-Allow-Origin: null`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Origin#null).
+
+Keep `null` commented out in defaults and add it only on meshes that accept this trade-off. CORS
+still does not authenticate callers; administrative routes still require the API key, and rate
+limits still apply independently of whether `null` is allowed.
 
 The rest of the CORS configuration is fixed: methods `GET` and `POST`, allowed request headers
 `content-type` and `x-api-key`, `credentials: false`, and a preflight `maxAge` of 600 seconds.

@@ -16,11 +16,19 @@ type OriginRule = {
 const APP_ORIGIN =
   /^app:\/\/(?:\.|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$/
 
+/** v3 onion service names: optional subdomain labels, then a 56-character base32 label. */
+const ONION_V3_ORIGIN_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z2-7]{56}\.onion$/
+
 /**
  * Compile a list of exact origins and any-depth subdomain suffix wildcards.
  * HTTP(S) wildcards use the form `https://*.example.org`; paths, credentials,
  * query strings, fragments, and the suffix origin itself are rejected.
  * Desktop clients opt in with an exact `app://.` or `app://<host>` entry.
+ * Tor hidden services use `http://*.onion` (suffix `onion` is the only wildcard label without an
+ * interior dot). Matching requires a v3 onion hostname shape, not merely any string ending in
+ * `.onion`.
+ * Tor Browser may send `Origin: null` for cross-`.onion` fetches; opt in with the exact entry
+ * `null` (the four-character string, not JSON null).
  * `file:`, `data:`, `blob:`, and a bare `*` stay rejected.
  *
  * @param allowedOrigins browser origins accepted by the API
@@ -34,6 +42,10 @@ export function createOriginMatcher(allowedOrigins: unknown): (origin: string) =
   const rules = allowedOrigins.map(parseOriginRule)
 
   return (origin: string): boolean => {
+    if (origin === 'null') {
+      return rules.some((rule) => rule.protocol === 'null:')
+    }
+
     let parsed: URL
     try {
       parsed = new URL(origin)
@@ -70,6 +82,10 @@ export function createOriginMatcher(allowedOrigins: unknown): (origin: string) =
         return parsed.hostname === rule.hostname
       }
 
+      if (rule.hostname === 'onion') {
+        return matchesOnionV3OriginHost(parsed.hostname)
+      }
+
       return parsed.hostname !== rule.hostname && parsed.hostname.endsWith(`.${rule.hostname}`)
     })
   }
@@ -95,6 +111,15 @@ function parseOriginRule(value: unknown): OriginRule {
     throw new Error('Each CORS origin must be a non-empty string of at most 255 characters')
   }
 
+  if (value === 'null') {
+    return {
+      protocol: 'null:',
+      hostname: '',
+      port: '',
+      wildcard: false
+    }
+  }
+
   if (/^app:/i.test(value)) {
     return parseAppOrigin(value)
   }
@@ -102,7 +127,7 @@ function parseOriginRule(value: unknown): OriginRule {
   const wildcardMatch = /^(https?):\/\/\*\.([a-z0-9.-]+)(?::([0-9]{1,5}))?$/i.exec(value)
   if (wildcardMatch) {
     const [, protocol, hostname, port = ''] = wildcardMatch
-    validateHostname(hostname)
+    validateWildcardSuffix(hostname)
     validatePort(port)
     return {
       protocol: `${protocol.toLowerCase()}:`,
@@ -189,6 +214,22 @@ function validateHostname(hostname: string): void {
   ) {
     throw new Error(`Invalid wildcard CORS hostname: ${hostname}`)
   }
+}
+
+/**
+ * Wildcard suffix for `http://*.onion` uses the label `onion` alone; every other suffix still
+ * needs an interior dot.
+ */
+function validateWildcardSuffix(hostname: string): void {
+  if (hostname === 'onion') {
+    return
+  }
+
+  validateHostname(hostname)
+}
+
+function matchesOnionV3OriginHost(hostname: string): boolean {
+  return ONION_V3_ORIGIN_HOST.test(hostname.toLowerCase())
 }
 
 function validatePort(port: string): void {

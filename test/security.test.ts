@@ -48,6 +48,34 @@ describe('CORS origin policy', () => {
     assert.equal(matches('https://chat.adamant.im/path'), false)
     assert.equal(matches('http://chat.adamant.im'), false)
     assert.equal(matches('file:///'), false)
+    assert.equal(matches('null'), false)
+  })
+
+  it('accepts the opaque browser origin when null is configured', () => {
+    const opaque = createOriginMatcher(['https://adm.im', 'null'])
+    assert.equal(opaque('null'), true)
+    assert.equal(opaque('https://adm.im'), true)
+    assert.equal(opaque('https://evil.example'), false)
+  })
+
+  it('accepts http://*.onion for v3 hidden-service origins', () => {
+    const tor = createOriginMatcher(['http://*.onion'])
+    const pwa = 'http://adamant6457join2rxdkr2y7iqatar7n4n72lordxeknj435i4cjhpyd.onion'
+    const ipfs = 'http://z455rax4mwcseyc7efog7czrbwdvphwocatl5sjcc6htcoj2k2vz7dad.onion'
+
+    assert.equal(tor(pwa), true)
+    assert.equal(tor(ipfs), true)
+    assert.equal(tor('http://short.onion'), false)
+    assert.equal(
+      tor('https://z455rax4mwcseyc7efog7czrbwdvphwocatl5sjcc6htcoj2k2vz7dad.onion'),
+      false
+    )
+    assert.equal(tor('http://notadamant.im'), false)
+  })
+
+  it('parses http://*.onion at startup', () => {
+    assert.doesNotThrow(() => createOriginMatcher(['http://*.onion', 'https://*.onion']))
+    assert.throws(() => createOriginMatcher(['http://*..onion']))
   })
 
   it('rejects invalid configured origin rules', () => {
@@ -76,6 +104,20 @@ describe('CORS origin policy', () => {
       assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://adm.im')
       assert.equal(rejected.headers.get('access-control-allow-origin'), null)
       assert.equal(desktop.headers.get('access-control-allow-origin'), null)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('reflects Access-Control-Allow-Origin: null for the opaque origin', async () => {
+    const app = express()
+    app.use(cors({ origin: createCorsOriginDelegate(['null']) }))
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
+      assert.equal(response.headers.get('access-control-allow-origin'), 'null')
     } finally {
       await server.close()
     }

@@ -74,8 +74,12 @@ entries are ADAMANT web origins (`https://*.adamant.im` and the compatibility ho
 Those web origins are one adopter's set, not a required list. The Electron build of the same client
 loads from the `app` scheme and sends `Origin: app://.`. That entry is commented in the template
 until an operator enables it. A PWA on `https://msg.adamant.im` is already covered by the wildcard
-and does not need the desktop origin. Another application lists its own origins and, if it has a
-desktop shell, the exact custom-scheme origin that shell sends.
+and does not need the desktop origin. The Tor PWA is served from its own `.onion` hidden service;
+add `http://*.onion` on nodes that Tor clients call, or list each PWA onion exactly. Some Tor
+Browser builds send `Origin: null` for cross-`.onion` API calls instead of the PWA onion; that
+requires the separate `null` entry documented in [Security](/guide/security). Another application
+lists its own origins and, if it has a desktop shell, the exact custom-scheme origin that shell
+sends.
 
 Start at [Quick start](/guide/quick-start), or [Docker](/guide/docker) for a container. The
 messenger client itself is developed in
