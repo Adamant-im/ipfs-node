@@ -182,8 +182,13 @@ restore procedures are in [Persistence](/operations/persistence).
 
 Both ports are declared with `EXPOSE`; publishing them is the operator's decision.
 
-- Bind port 4000 to loopback and put a TLS-terminating reverse proxy in front of it. The image
-  contains no TLS, the process serves plain HTTP, and it logs a warning about that at startup
+- Bind port 4000 to loopback on the host and put a TLS-terminating reverse proxy in front of it.
+  The image contains no TLS, the process serves plain HTTP, and it logs a warning about that at
+  startup. Publishing `127.0.0.1:4000:4000` does not make the accepted socket loopback inside the
+  container. With one proxy that overwrites `X-Forwarded-For`, set `trustProxy: 1`, or set the
+  proxy address the process observes, which is the bridge gateway. `127.0.0.1/8` does not match
+  that socket. The image does not bake origins or proxy trust in; `config.default.json5` inside
+  the image is a template and is never selected automatically
 - Port 4001 has to be reachable by every peer listed in `nodes`, otherwise replication and health
   attestations cannot be exchanged
 - Upload and download routes are public by design, and rate limits and size limits are the only
@@ -193,8 +198,14 @@ Both ports are declared with `EXPOSE`; publishing them is the operator's decisio
   of content-routing metadata. It does not by itself make a deployment private, anonymous,
   trustless, or censorship-proof
 
+The mounted file is also where CORS lives. `docker/config.example.json5` starts from
+`http://localhost:8080` and leaves `app://.` commented. A browser on another host, and a desktop
+client that sends `Origin: app://.`, stay blocked until those entries are listed. Do not add an
+adopter's origins to the image to save that edit.
+
 Reverse proxy settings, `trustProxy`, CORS, and administrative key handling are covered in
-[Security](/guide/security).
+[Security](/guide/security). The same proxy and origin rules apply on a test network and on a public
+deployment.
 
 ## Health checks
 
@@ -347,3 +358,10 @@ The nine steps verify that the image:
 The same script runs in CI on both architectures for changes to the Dockerfile, the `docker/`
 directory, `src/`, or the dependency lockfile, and again against the published image after a
 release.
+
+The script keeps `trustProxy: false` and a single `http://localhost:8080` origin, then calls the
+published port with `curl` and no `Origin` header. That matches a direct probe. It does not
+terminate TLS, does not forward `X-Forwarded-For`, and does not check `Access-Control-Allow-Origin`,
+so a green run does not prove reverse-proxy client identity or desktop CORS. Those are settings in
+the mounted file, not in the image. The comment above `trustProxy` in
+`scripts/docker-smoke-test.sh` records the same limit.

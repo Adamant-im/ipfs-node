@@ -1,5 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express'
 import type { IpfsNode } from '../ipfs-node.js'
+import { publicErrorBodies } from '../security/errors.js'
 import { pinFile, unpinFile } from '../storage/pinning.js'
 import type { FileRecord, FileRegistry } from '../storage/registry.js'
 import type { ReplicationReport } from '../storage/replication.js'
@@ -251,7 +252,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
     try {
       if (!Array.isArray(req.files) || req.files.length === 0) {
         res.statusCode = 400
-        return res.send({ error: 'No file uploaded' })
+        return res.send(publicErrorBodies.noFile)
       }
 
       session = dependencies.getSession(req)
@@ -456,7 +457,7 @@ export function createUploadHandler(dependencies: UploadRouteDependencies): Requ
           )
         }
 
-        return res.status(503).send({ error: 'Replication quorum not reached' })
+        return res.status(503).send(publicErrorBodies.replicationQuorum)
       }
 
       // Commit the local decision before making prepared remote copies

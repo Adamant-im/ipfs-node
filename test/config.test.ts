@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import JSON5 from 'json5'
 import { ConfigError, config, configFileName, validateConfig } from '../src/config.js'
+import { createOriginMatcher } from '../src/security/cors.js'
 
 const PEER_ID = '12D3KooWSUCe86zWfas1Lo1UQzXzquZgS81d1DpPPYAuTNjSyniq'
 
@@ -233,3 +238,47 @@ describe('the config loaded at startup', () => {
     assert.equal(config.enableDebugApi, false)
   })
 })
+
+describe('commented desktop CORS examples', () => {
+  it('parses each example after the desktop origin is uncommented', () => {
+    const root = repoRoot()
+    const sources = [
+      readFileSync(join(root, 'config.default.json5'), 'utf8'),
+      readFileSync(join(root, 'docker/config.example.json5'), 'utf8'),
+      json5Fence(readFileSync(join(root, 'docs/guide/configuration.md'), 'utf8'), "// 'app://.'")
+    ]
+
+    for (const source of sources) {
+      assert.match(source, /\/\/ 'app:\/\/\.'/)
+      const parsed = JSON5.parse(source.replace("// 'app://.',", "'app://.',")) as {
+        cors: { allowedOrigins: string[] }
+      }
+
+      assert.ok(parsed.cors.allowedOrigins.includes('app://.'))
+      assert.equal(createOriginMatcher(parsed.cors.allowedOrigins)('app://.'), true)
+    }
+  })
+})
+
+function repoRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url))
+  for (;;) {
+    if (existsSync(join(dir, 'package.json'))) {
+      return dir
+    }
+    const parent = dirname(dir)
+    if (parent === dir) {
+      throw new Error('Cannot locate the repository root')
+    }
+    dir = parent
+  }
+}
+
+function json5Fence(markdown: string, needle: string): string {
+  for (const match of markdown.matchAll(/```json5\n([\s\S]*?)```/g)) {
+    if (match[1].includes(needle)) {
+      return match[1]
+    }
+  }
+  throw new Error(`No json5 example contains ${needle}`)
+}

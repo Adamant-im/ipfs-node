@@ -42,6 +42,10 @@ describe('download concurrency admission', () => {
     const rejected = await fetch(`${url}/file`)
     assert.equal(rejected.status, 429)
     assert.equal(rejected.headers.get('retry-after'), '5')
+    assert.deepEqual(await rejected.json(), {
+      error: 'Too many concurrent downloads. Please try again later.',
+      code: 'download_concurrency'
+    })
 
     finishFirst()
     assert.equal((await first).status, 200)
@@ -89,7 +93,13 @@ describe('per-client download share', () => {
     const held = fetch(`${url}/file`)
     while (release === undefined) await new Promise((resolve) => setImmediate(resolve))
 
-    assert.equal((await fetch(`${url}/file`)).status, 429)
+    const refused = await fetch(`${url}/file`)
+    assert.equal(refused.status, 429)
+    assert.equal(refused.headers.get('retry-after'), '5')
+    assert.deepEqual(await refused.json(), {
+      error: 'Too many concurrent downloads from this client. Please try again later.',
+      code: 'download_client_concurrency'
+    })
 
     // A different address is unaffected: the global limiter still has room.
     client = 'second'

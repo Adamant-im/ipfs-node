@@ -8,9 +8,20 @@ type OriginRule = {
 }
 
 /**
+ * Exact `app://` origins. The dot host is what Chromium serializes for a
+ * standard Electron scheme loaded as `app://./…` (`Origin: app://.`).
+ * A normal host covers builds that load `app://localhost/…` or `app://<name>/…`.
+ * No wildcard, port, userinfo, path, query, or fragment: each entry is one origin.
+ */
+const APP_ORIGIN =
+  /^app:\/\/(?:\.|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$/
+
+/**
  * Compile a list of exact origins and any-depth subdomain suffix wildcards.
- * Wildcards use the form `https://*.example.org`; paths, credentials, query
- * strings, fragments, and the suffix origin itself are rejected.
+ * HTTP(S) wildcards use the form `https://*.example.org`; paths, credentials,
+ * query strings, fragments, and the suffix origin itself are rejected.
+ * Desktop clients opt in with an exact `app://.` or `app://<host>` entry.
+ * `file:`, `data:`, `blob:`, and a bare `*` stay rejected.
  *
  * @param allowedOrigins browser origins accepted by the API
  * @returns a predicate suitable for testing a request Origin value
@@ -30,13 +41,23 @@ export function createOriginMatcher(allowedOrigins: unknown): (origin: string) =
       return false
     }
 
-    if (
-      parsed.username ||
-      parsed.password ||
-      parsed.pathname !== '/' ||
-      parsed.search ||
-      parsed.hash
-    ) {
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      return false
+    }
+
+    // `new URL('app://.')` has an empty path, not `/`, and an opaque origin.
+    // Only that canonical form matches a configured app rule.
+    if (parsed.protocol === 'app:') {
+      if (parsed.pathname !== '' || parsed.port !== '') {
+        return false
+      }
+
+      return rules.some(
+        (rule) => rule.protocol === 'app:' && !rule.wildcard && parsed.hostname === rule.hostname
+      )
+    }
+
+    if (parsed.pathname !== '/') {
       return false
     }
 
@@ -72,6 +93,10 @@ export function createCorsOriginDelegate(allowedOrigins: unknown): CorsOptions['
 function parseOriginRule(value: unknown): OriginRule {
   if (typeof value !== 'string' || value.length === 0 || value.length > 255) {
     throw new Error('Each CORS origin must be a non-empty string of at most 255 characters')
+  }
+
+  if (/^app:/i.test(value)) {
+    return parseAppOrigin(value)
   }
 
   const wildcardMatch = /^(https?):\/\/\*\.([a-z0-9.-]+)(?::([0-9]{1,5}))?$/i.exec(value)
@@ -111,6 +136,45 @@ function parseOriginRule(value: unknown): OriginRule {
     protocol: parsed.protocol,
     hostname: parsed.hostname,
     port: parsed.port,
+    wildcard: false
+  }
+}
+
+/**
+ * Accept one exact desktop origin. The configured string must already be the
+ * canonical serialization Chromium puts in `Origin`, so `APP://.` and
+ * `app://./` are rejected rather than silently rewritten.
+ *
+ * @param value candidate `app://` entry
+ * @returns a non-wildcard rule
+ */
+function parseAppOrigin(value: string): OriginRule {
+  if (!APP_ORIGIN.test(value)) {
+    throw new Error(
+      `CORS app origins must be canonical app://. or app://<host> values with no wildcard, port, path, or userinfo: ${value}`
+    )
+  }
+
+  const parsed = new URL(value)
+  if (
+    parsed.href !== value ||
+    parsed.protocol !== 'app:' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port !== '' ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.pathname !== ''
+  ) {
+    throw new Error(
+      `CORS app origins must be canonical app://. or app://<host> values with no wildcard, port, path, or userinfo: ${value}`
+    )
+  }
+
+  return {
+    protocol: 'app:',
+    hostname: parsed.hostname,
+    port: '',
     wildcard: false
   }
 }

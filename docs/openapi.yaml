@@ -66,13 +66,13 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '413':
-          description: Request or file limit exceeded
+          description: Combined request size exceeded (`code` `request_too_large`)
         '429':
-          description: Upload rate or concurrency limit exceeded
+          description: Upload rate window (`code` `rate_limited`) or concurrency limit (`code` `upload_concurrency`)
         '503':
-          description: Required replication quorum was not reached
+          description: Required replication quorum was not reached (`code` `replication_quorum`)
         '507':
-          description: The disk reserve would be consumed
+          description: The disk reserve would be consumed (`code` `insufficient_storage`)
   /api/file/{cid}:
     parameters:
       - $ref: '#/components/parameters/Cid'
@@ -97,9 +97,9 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '408':
-          description: Discovery or complete retrieval timed out
+          description: Discovery or complete retrieval timed out (`code` `file_timeout`)
         '429':
-          description: Read rate, per-client, or global download concurrency limit exceeded
+          description: Read rate window (`code` `rate_limited`) or download concurrency (`code` `download_concurrency` or `download_client_concurrency`)
   /api/file/{cid}/status:
     parameters:
       - $ref: '#/components/parameters/Cid'
@@ -387,9 +387,30 @@ components:
         availableSizeInMb: { type: number }
     Error:
       type: object
+      description: >
+        `error` is always present. Operational upload and read failures also set `code`.
+        Other responses omit `code`.
       required: [error]
       properties:
         error: { type: string }
+        code:
+          type: string
+          description: Stable identifier for an operational upload or read failure. Absent on other errors.
+          enum:
+            - no_file
+            - too_many_files
+            - file_too_large
+            - multipart_fields
+            - invalid_multipart
+            - request_too_large
+            - rate_limited
+            - upload_concurrency
+            - download_concurrency
+            - download_client_concurrency
+            - file_timeout
+            - lifecycle_busy
+            - replication_quorum
+            - insufficient_storage
   responses:
     BadRequest:
       description: Invalid request

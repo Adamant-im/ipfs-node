@@ -114,9 +114,9 @@ Notes on the keys above:
   blockstore and datastore in `$HOME/.adm-ipfs`. An absolute data directory is not implemented yet;
   it is tracked as [issue #30](https://github.com/Adamant-im/ipfs-node/issues/30)
 - `peerDiscovery.listen` must contain at least one multiaddr even for a standalone node
-- `cors.allowedOrigins` must be non-empty and accepts exact origins and any-depth subdomain
-  wildcards such as `https://*.example.org`. A bare `*` is rejected. Requests without an `Origin`
-  header, including `curl`, are not affected by CORS
+- `cors.allowedOrigins` must be non-empty and accepts exact HTTP(S) origins, any-depth subdomain
+  wildcards such as `https://*.example.org`, and an exact desktop origin such as `app://.`. A bare
+  `*` is rejected. Requests without an `Origin` header, including `curl`, are not affected by CORS
 - `health.requiredPeerCount` is `0` because there is no remote peer to attest a checkpoint round.
   It is also the default when fewer than two nodes are configured, and it can never exceed the
   number of configured remote peers

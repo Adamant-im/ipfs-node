@@ -5,6 +5,7 @@ import { checkRequestSize, parseContentLength } from '../storage/limits.js'
 import type { StorageOperationLease, StorageOperationLock } from '../storage/operationLock.js'
 import { claimSpace } from '../storage/reservation.js'
 import type { StorageConfig } from '../storage/config.js'
+import { publicErrorBodies } from '../security/errors.js'
 import { UploadSession } from '../storage/uploadSession.js'
 
 const SESSION_KEY = Symbol('uploadSession')
@@ -64,7 +65,7 @@ export function createUploadAdmission(dependencies: UploadAdmissionDependencies)
 
     if (!dependencies.limiter.tryAcquire()) {
       res.set('Retry-After', '5')
-      res.status(429).send({ error: 'Too many concurrent uploads. Please try again later.' })
+      res.status(429).send(publicErrorBodies.uploadConcurrency)
       return
     }
 
@@ -117,7 +118,7 @@ export function createUploadAdmission(dependencies: UploadAdmissionDependencies)
 
     if (!checkRequestSize(declaredBytes, storage.maxRequestSizeBytes).allowed) {
       release()
-      res.status(413).send({ error: 'Upload size limit exceeded' })
+      res.status(413).send(publicErrorBodies.requestTooLarge)
       return
     }
 
@@ -154,7 +155,7 @@ export function createUploadAdmission(dependencies: UploadAdmissionDependencies)
             `${storage.diskReserveBytes} byte reserve`
         )
         release()
-        res.status(507).send({ error: 'Insufficient storage' })
+        res.status(507).send(publicErrorBodies.insufficientStorage)
         return
       }
 

@@ -100,15 +100,20 @@ new clients should read the per-file field.
 The report is counts and per-attempt outcomes only. It never carries node names, peer ids, or peer
 error text.
 
-| Status | Meaning                                                                       |
-| ------ | ----------------------------------------------------------------------------- |
-| `200`  | Every file was stored and pinned                                              |
-| `400`  | No file was sent, too many files, or one file exceeded `uploadLimitSizeBytes` |
-| `413`  | The combined size exceeded `storage.maxRequestSizeBytes`                      |
-| `429`  | The upload rate limit or the concurrent upload limit was exceeded             |
-| `503`  | A required replication quorum could not be reached                            |
-| `507`  | Storing the request would consume `storage.diskReserveBytes`                  |
-| `500`  | Storage or replica settlement failed; do not treat it as a clean rejection    |
+| Status | `code`                 | Meaning                                                                    |
+| ------ | ---------------------- | -------------------------------------------------------------------------- |
+| `200`  |                        | Every file was stored and pinned                                           |
+| `400`  | `no_file`              | No file was sent                                                           |
+| `400`  | `too_many_files`       | More files than `maxFileCount`                                             |
+| `400`  | `file_too_large`       | One file exceeded `uploadLimitSizeBytes`                                   |
+| `400`  | `multipart_fields`     | A non-file text field was sent                                             |
+| `400`  | `invalid_multipart`    | The multipart body could not be parsed                                     |
+| `413`  | `request_too_large`    | The combined size exceeded `storage.maxRequestSizeBytes`                   |
+| `429`  | `rate_limited`         | The upload rate window was exceeded. `Retry-After` and `RateLimit` are set |
+| `429`  | `upload_concurrency`   | The concurrent upload limit was exceeded. `Retry-After` is `5`             |
+| `503`  | `replication_quorum`   | A required replication quorum could not be reached                         |
+| `507`  | `insufficient_storage` | Storing the request would consume `storage.diskReserveBytes`               |
+| `500`  |                        | Storage or replica settlement failed; do not treat it as a clean rejection |
 
 An interrupted upload leaves no blocks behind: each request owns a session that removes exactly the
 blocks it created. See [the storage lifecycle](/storage-lifecycle).
@@ -127,17 +132,19 @@ successful response carries an `ETag` holding the quoted CID,
 `Cache-Control: private, max-age=3600, must-revalidate`, and `Accept-Ranges: none`. A matching
 `If-None-Match` answers `304` after availability has been checked.
 
-| Status | Meaning                                                                                    |
-| ------ | ------------------------------------------------------------------------------------------ |
-| `200`  | The response contains the requested file as an attachment                                  |
-| `304`  | The `If-None-Match` validator matched                                                      |
-| `400`  | The CID is invalid                                                                         |
-| `408`  | The file could not be found or retrieved before the configured timeout                     |
-| `429`  | The read rate limit, the per-client, or the global download concurrency limit was exceeded |
-| `500`  | An unexpected internal failure occurred before streaming started                           |
+| Status | `code`                        | Meaning                                                                     |
+| ------ | ----------------------------- | --------------------------------------------------------------------------- |
+| `200`  |                               | The response contains the requested file as an attachment                   |
+| `304`  |                               | The `If-None-Match` validator matched                                       |
+| `400`  |                               | The CID is invalid. The body is `{"error":"Invalid CID"}` and has no `code` |
+| `408`  | `file_timeout`                | The file could not be found or retrieved before the configured timeout      |
+| `429`  | `rate_limited`                | The read rate window was exceeded. `Retry-After` and `RateLimit` are set    |
+| `429`  | `download_concurrency`        | The global download slot limit was exceeded. `Retry-After` is `5`           |
+| `429`  | `download_client_concurrency` | This client address holds its download share. `Retry-After` is `5`          |
+| `500`  |                               | An unexpected internal failure occurred before streaming started            |
 
 Range headers are ignored. Discovery, idle transfer time, and the size-aware complete transfer all
-have bounded deadlines and all end in `408 File request timed out`, so a failed request may spend
+have bounded deadlines and all end in `408` with `code` `file_timeout`, so a failed request may spend
 more than one `findFileTimeout` before answering. A client disconnect cancels the underlying
 retrieval. If an error occurs after response bytes have started, the server terminates the
 incomplete response, because a status and a JSON body can no longer be sent safely.
@@ -296,8 +303,34 @@ and this node registers none. `/api/debug/*` is not mounted at all unless `enabl
 
 ## Error format
 
-Errors are JSON objects with a single `error` string. `x-powered-by` is disabled, and an unmatched
-path answers `404` from the not-found handler.
+Errors are JSON objects with an `error` string. Operational upload and read failures also set
+`code` to a stable identifier. Clients should branch on `code` when it is present. Responses that
+are not in the table below omit `code`, including validation messages such as `Invalid CID`,
+authentication failures, and `500` `Internal Server Error`.
+
+| `code`                        | Status | Meaning                                                               |
+| ----------------------------- | ------ | --------------------------------------------------------------------- |
+| `no_file`                     | `400`  | The upload contained no `files` part                                  |
+| `too_many_files`              | `400`  | The upload contained more parts than `maxFileCount`                   |
+| `file_too_large`              | `400`  | One part exceeded `uploadLimitSizeBytes`                              |
+| `multipart_fields`            | `400`  | The multipart body contained a text field                             |
+| `invalid_multipart`           | `400`  | The multipart body was rejected for another parser limit              |
+| `request_too_large`           | `413`  | The declared or streamed size exceeded `storage.maxRequestSizeBytes`  |
+| `rate_limited`                | `429`  | The fixed window for this route was exceeded                          |
+| `upload_concurrency`          | `429`  | No upload slot was free                                               |
+| `download_concurrency`        | `429`  | No download slot was free                                             |
+| `download_client_concurrency` | `429`  | This client address holds its download share                          |
+| `file_timeout`                | `408`  | Discovery or retrieval hit its deadline                               |
+| `lifecycle_busy`              | `409`  | A confirm, release, or replication step found the file mid-transition |
+| `replication_quorum`          | `503`  | `requireQuorumOnUpload` rejected the upload                           |
+| `insufficient_storage`        | `507`  | Admitting the upload would consume `storage.diskReserveBytes`         |
+
+A `429` with `code` `rate_limited` is the window limiter. It sets `Retry-After` to the seconds left
+in the window and sends draft-8 `RateLimit` and `RateLimit-Policy` headers. An admission `429` sets
+`Retry-After: 5` and does not add its own rate-window headers. `POST /api/file/upload` and
+`GET /api/file/:cid` run the window limiter first, so an admission refusal can still carry the
+`RateLimit` headers that limiter already wrote. Identify the refusal by `code`. `x-powered-by` is
+disabled, and an unmatched path answers `404` from the not-found handler.
 
 ## Machine-readable specification
 

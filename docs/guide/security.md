@@ -118,6 +118,24 @@ The node logs a warning at startup whenever `trustProxy` is `false`, stating tha
 share the proxy address for rate limiting until exact trusted proxy addresses are configured. The
 warning is expected when clients connect directly, and is a defect to fix when they do not.
 
+The rule is the same on every environment. A public production node and a test network that both
+terminate TLS at nginx and forward to this process need the same `trustProxy` value. Nothing about
+the name of the network changes how Express reads `X-Forwarded-For`. Direct access to the process
+port, with no forwarding headers, keeps `false`.
+
+One proxy hop that overwrites `X-Forwarded-For`, on every path, is hop count `1`. That fits host
+nginx in front of a container and nginx on the same machine as a
+[PM2 or systemd](/guide/installation) process. Use a hop count only for a fixed topology where every
+path crosses exactly that many trusted proxies.
+
+An address list trusts the socket instead of counting hops. `['127.0.0.1/8', '::1/128']` is that
+list when the proxy connection arrives from loopback, which is nginx beside a PM2 or systemd
+process. It is not the address a container sees. Publishing the host port on `127.0.0.1` still
+presents the bridge gateway as the socket inside the container, so that list puts every forwarded
+client in one bucket. For the container, use hop count `1` or the gateway address the process
+observes. The nginx snippet is in [Installation](/guide/installation), and the container publish is
+in [Docker](/guide/docker).
+
 ## Administrative API key
 
 Generate a key with:
@@ -156,13 +174,16 @@ Operational notes:
 
 ## CORS
 
-`cors.allowedOrigins` is required and must be a non-empty array. Each entry is either a canonical
-HTTP or HTTPS origin, such as `https://adm.im` or `http://localhost:8080`, or an any-depth subdomain
-wildcard of the form `https://*.adamant.im`.
+`cors.allowedOrigins` is required and must be a non-empty array. Each entry is one of:
+
+- a canonical HTTP or HTTPS origin, such as `https://adm.im` or `http://localhost:8080`
+- an any-depth subdomain wildcard of the form `https://*.adamant.im`
+- an exact desktop origin, `app://.` or `app://<host>`
 
 Startup rejects a bare `*`, an entry carrying a path, credentials, query string, or fragment, a
-scheme other than `http` or `https`, an entry longer than 255 characters, a wildcard hostname
-without a dot or longer than 253 characters, and a port above 65535.
+scheme other than `http`, `https`, or exact `app`, an entry longer than 255 characters, a wildcard
+hostname without a dot or longer than 253 characters, a port above 65535, and any wildcard, port, or
+userinfo on an `app` entry. `file:`, `data:`, and `blob:` are rejected.
 
 Matching for the rule `https://*.adamant.im`:
 
@@ -176,8 +197,29 @@ Matching for the rule `https://*.adamant.im`:
 | `https://notadamant.im`       | Not allowed; the match requires the dot boundary  |
 
 An exact entry matches that origin and nothing else. A request that carries no `Origin` header is
-allowed through: those are non-browser clients such as `curl`, server-to-server calls, and mobile
-applications, which the browser origin model never governed.
+allowed through: those are non-browser clients such as `curl`, server-to-server calls, monitoring
+probes, and mobile applications, which the browser origin model never governed. A probe can therefore
+be green while a browser or desktop renderer shows the node offline; see
+[Troubleshooting](/operations/troubleshooting).
+
+### Desktop `app://` origins
+
+Electron, and similar custom-scheme desktops, load the UI outside `http` and `https`. Chromium then
+sends that scheme in `Origin`. For a privileged standard scheme named `app` whose pages are loaded
+as `app://./index.html`, the serialized origin is `app://.`. A build that loads
+`app://localhost/…` or `app://<name>/…` sends that host instead. Configure the exact value the
+client sends. There is no `app://*` wildcard.
+
+The official ADAMANT desktop build sends `app://.`. That entry is commented out in
+`config.default.json5` and in `docker/config.example.json5`. Add it only on a node that should
+answer that client. [ADAMANT Messenger](/guide/adamant-messenger) is one adopter's origin set, not
+the list every deployment should copy. A PWA on `https://msg.adamant.im` is covered by
+`https://*.adamant.im` and does not need the desktop entry.
+
+`app://` is not a web origin a page on `https://` can choose. Browsers set `Origin` from the
+document that made the request, so allowing `app://.` does not let an arbitrary website read the
+API. It does let any local application that registered the `app` scheme. That is why the entry is
+an explicit opt-in rather than a default.
 
 The rest of the CORS configuration is fixed: methods `GET` and `POST`, allowed request headers
 `content-type` and `x-api-key`, `credentials: false`, and a preflight `maxAge` of 600 seconds.
@@ -192,7 +234,12 @@ one more reason to keep the key out of browsers.
 Two independent mechanisms bound HTTP load, and both answer `429`.
 
 Rate limiters count requests per client address in a fixed window, using `express-rate-limit` with
-`draft-8` standard headers and legacy headers disabled.
+`draft-8` standard headers and legacy headers disabled. A window refusal is `429` with
+`{"error":"Too many requests. Please try again later.","code":"rate_limited"}`, a `Retry-After`
+header set to the seconds remaining in the window, and `RateLimit` / `RateLimit-Policy` headers.
+The limiter writes those rate-window headers on every request it handles, including one it allows
+through. Upload and download routes run it before admission, so a later admission `429` can still
+carry them. Identify the refusal by `code`.
 
 | Limiter | Option              | Default          | Routes                                                                                                                                                                                     |
 | ------- | ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -211,12 +258,12 @@ rates at the proxy as well.
 Admission limiters are a different mechanism: they bound how many operations may be in flight at
 once, not how often they may be requested.
 
-| Limiter                     | Option                                                       | Default | Refusal                              |
-| --------------------------- | ------------------------------------------------------------ | ------- | ------------------------------------ |
-| Uploads                     | `storage.maxConcurrentUploads`                               | 32      | `429` with `Retry-After: 5`          |
-| Downloads, global           | `storage.maxConcurrentDownloads`                             | 64      | `429` with `Retry-After: 5`          |
-| Downloads, per client       | `storage.maxConcurrentDownloadsPerClient`                    | 8       | `429` with `Retry-After: 5`          |
-| Incoming copies over libp2p | Derived as `max(4, floor(storage.maxConcurrentUploads / 4))` | 8       | Protocol refusal with code `no_room` |
+| Limiter                     | Option                                                       | Default | Refusal                                                       |
+| --------------------------- | ------------------------------------------------------------ | ------- | ------------------------------------------------------------- |
+| Uploads                     | `storage.maxConcurrentUploads`                               | 32      | `429`, `Retry-After: 5`, `code` `upload_concurrency`          |
+| Downloads, global           | `storage.maxConcurrentDownloads`                             | 64      | `429`, `Retry-After: 5`, `code` `download_concurrency`        |
+| Downloads, per client       | `storage.maxConcurrentDownloadsPerClient`                    | 8       | `429`, `Retry-After: 5`, `code` `download_client_concurrency` |
+| Incoming copies over libp2p | Derived as `max(4, floor(storage.maxConcurrentUploads / 4))` | 8       | Protocol refusal with code `no_room`                          |
 
 The per-client download share exists because a download slot is held for the whole transfer: without
 it, one address can hold every global slot and leave the rest of the network with `429` until those
@@ -225,9 +272,10 @@ HTTP rate limiters do not apply, and because a copy claims the aggregate request
 duration.
 
 Since a rate refusal and an admission refusal are both `429`, the status alone cannot tell an
-operator which one fired, and the two need opposite reactions. That is why `GET /api/node/details`
-reports limiter occupancy under `concurrency`: active count and limit for uploads, incoming copies,
-and downloads. See [Monitoring](/operations/monitoring).
+operator which one fired, and the two need opposite reactions. The JSON `code` tells them apart
+without reading the message text. `GET /api/node/details` also reports limiter occupancy under
+`concurrency`: active count and limit for uploads, incoming copies, and downloads. See
+[Monitoring](/operations/monitoring).
 
 ## Public upload decision
 
@@ -237,14 +285,16 @@ directly to the node. The decision is bounded rather than open-ended:
 - `uploadLimitSizeBytes` caps one file and `maxFileCount` caps the number of files in a request; both
   are enforced by the streaming multipart parser, so an over-limit part never reaches the blockstore
 - `storage.maxRequestSizeBytes` caps the combined size of one request and is checked from
-  `Content-Length` before the parser runs, answering `413`
-- the multipart body accepts `files` parts only; any text field is rejected with `400`
-- the upload rate limiter and the upload admission limiter apply, answering `429`
+  `Content-Length` before the parser runs, answering `413` with `code` `request_too_large`
+- the multipart body accepts `files` parts only; any text field is rejected with `400` and `code`
+  `multipart_fields`. A missing file part is `400` with `code` `no_file`
+- the upload rate limiter and the upload admission limiter apply, answering `429` with `code`
+  `rate_limited` or `upload_concurrency`
 - `storage.diskReserveBytes` is claimed before any block is written, so a request that would consume
-  the reserve is refused with `507`
+  the reserve is refused with `507` and `code` `insufficient_storage`
 - `storage.confirmationRequired` keeps an upload temporary until an authenticated confirmation, and
-  `replication.requireQuorumOnUpload` refuses an upload with `503` when the required copies were not
-  acknowledged
+  `replication.requireQuorumOnUpload` refuses an upload with `503` and `code` `replication_quorum`
+  when the required copies were not acknowledged
 
 Those limits bound what an uploader can consume. They are not an authorization guarantee: anyone who
 can reach the port can store bytes on the node. A deployment that needs signed upload authorization
