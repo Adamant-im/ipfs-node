@@ -227,8 +227,14 @@ an explicit opt-in rather than a default.
 
 Some browsers, including Tor Browser on certain cross-`.onion` fetches, send the header
 `Origin: null`. The configuration entry is the literal four-character string `null`, not JSON
-null. Enabling it tells the CORS middleware to reflect `Access-Control-Allow-Origin: null` for
-those requests.
+null. Enabling it tells the CORS middleware to respond with `Access-Control-Allow-Origin: *` for
+those requests (not the literal header value `null`). Tor Browser cross-`.onion` fetches often
+send `Origin: null` while the document origin is an onion URL; reflecting `null` fails the browser
+CORS check in that case. With `credentials: false`, `*` is valid. Redirect and other flows that
+keep `Origin: null` while a normal origin appears only in `Referer` must not rewrite the request
+origin server-side; the browser compares ACAO to the request origin, not to `Referer`.
+The node also sets `Vary: Origin` on every API response before CORS runs so private caches
+(including on file downloads) cannot store one origin's `*` response and serve it to another.
 
 **This permission is not limited to Tor.** Any opaque browser origin serializes as `null`. That
 includes `data:` documents, some `file:` documents, and a cross-origin

@@ -7,7 +7,12 @@ import multer from 'multer'
 import { mountApiRoutes } from '../src/security/accessPolicy.js'
 import { createApiKeyAuth } from '../src/security/apiKey.js'
 import { validateSecurityConfig } from '../src/security/config.js'
-import { createCorsOriginDelegate, createOriginMatcher } from '../src/security/cors.js'
+import {
+  createCorsOriginDelegate,
+  createOriginMatcher,
+  varyOriginForCorsMiddleware
+} from '../src/security/cors.js'
+import { setDownloadHeaders } from '../src/utils/downloadResponse.js'
 import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
@@ -109,7 +114,7 @@ describe('CORS origin policy', () => {
     }
   })
 
-  it('reflects Access-Control-Allow-Origin: null for the opaque origin', async () => {
+  it('reflects Access-Control-Allow-Origin * when null is configured and Origin is null', async () => {
     const app = express()
     app.use(cors({ origin: createCorsOriginDelegate(['null']) }))
     app.get('/api/node/info', (req, res) => res.send({ ok: true }))
@@ -117,7 +122,92 @@ describe('CORS origin policy', () => {
 
     try {
       const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
-      assert.equal(response.headers.get('access-control-allow-origin'), 'null')
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('omits Access-Control-Allow-Origin when Origin is null and null is not configured', async () => {
+    const app = express()
+    app.use(cors({ origin: createCorsOriginDelegate(['https://app.example.org']) }))
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
+      assert.equal(response.headers.get('access-control-allow-origin'), null)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('omits Access-Control-Allow-Origin for Origin null when only onion wildcards are configured', async () => {
+    const app = express()
+    app.use(cors({ origin: createCorsOriginDelegate(['http://*.onion']) }))
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
+      assert.equal(response.headers.get('access-control-allow-origin'), null)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('sets Vary Origin on private-cached downloads when opaque null gets ACAO *', async () => {
+    const app = express()
+    app.use(varyOriginForCorsMiddleware())
+    app.use(
+      cors({
+        origin: createCorsOriginDelegate(['https://adm.im', 'null']),
+        credentials: false
+      })
+    )
+    app.get('/api/file/download/bafytest', (req, res) => {
+      setDownloadHeaders(res, { cid: 'bafytest', fileSize: BigInt(4) })
+      res.send('data')
+    })
+    const server = await startServer(app)
+
+    try {
+      const opaque = await fetch(`${server.url}/api/file/download/bafytest`, {
+        headers: { origin: 'null' }
+      })
+      const disallowed = await fetch(`${server.url}/api/file/download/bafytest`, {
+        headers: { origin: 'https://evil.example' }
+      })
+
+      assert.equal(opaque.headers.get('access-control-allow-origin'), '*')
+      assert.match(opaque.headers.get('vary') ?? '', /origin/i)
+      assert.match(opaque.headers.get('cache-control') ?? '', /private/)
+      assert.equal(disallowed.headers.get('access-control-allow-origin'), null)
+      assert.match(disallowed.headers.get('vary') ?? '', /origin/i)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('does not reflect Referer as ACAO when Origin is null and null is configured', async () => {
+    const app = express()
+    app.use(
+      cors({
+        origin: createCorsOriginDelegate(['https://adm.im', 'null']),
+        credentials: false
+      })
+    )
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, {
+        headers: {
+          origin: 'null',
+          referer: 'https://adm.im/redirected-here'
+        }
+      })
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
     } finally {
       await server.close()
     }
