@@ -233,6 +233,8 @@ send `Origin: null` while the document origin is an onion URL; reflecting `null`
 CORS check in that case. With `credentials: false`, `*` is valid. Redirect and other flows that
 keep `Origin: null` while a normal origin appears only in `Referer` must not rewrite the request
 origin server-side; the browser compares ACAO to the request origin, not to `Referer`.
+The node also sets `Vary: Origin` on every API response before CORS runs so private caches
+(including on file downloads) cannot store one origin's `*` response and serve it to another.
 
 **This permission is not limited to Tor.** Any opaque browser origin serializes as `null`. That
 includes `data:` documents, some `file:` documents, and a cross-origin

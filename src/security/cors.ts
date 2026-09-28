@@ -1,4 +1,5 @@
 import type { CorsOptions } from 'cors'
+import type { NextFunction, Request, Response } from 'express'
 
 type OriginRule = {
   protocol: string
@@ -88,6 +89,25 @@ export function createOriginMatcher(allowedOrigins: unknown): (origin: string) =
 
       return parsed.hostname !== rule.hostname && parsed.hostname.endsWith(`.${rule.hostname}`)
     })
+  }
+}
+
+/**
+ * Mark responses as varying on `Origin` before the `cors` middleware runs. The
+ * package omits `Vary: Origin` when it emits `Access-Control-Allow-Origin: *`,
+ * but ACAO still depends on the request origin. Private download caching needs
+ * the header so caches do not reuse a `*` response for a disallowed origin.
+ *
+ * @returns Express middleware to register ahead of `cors()`
+ */
+export function varyOriginForCorsMiddleware(): (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => void {
+  return (_req, res, next): void => {
+    res.vary('Origin')
+    next()
   }
 }
 
