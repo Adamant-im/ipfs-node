@@ -132,7 +132,10 @@ Entry rules, enforced when the matcher is compiled:
   `https://*.onion`): the suffix label is `onion`, and only origins whose hostname matches a v3
   onion shape (`<56-character base32 label>.onion`, with optional subdomain labels) are accepted.
 - The opaque browser origin is configured as the literal string `null` when clients send
-  `Origin: null` (some Tor Browser cross-`.onion` requests).
+  `Origin: null` (some Tor Browser cross-`.onion` requests). **Warning:** this entry allows
+  **every** opaque origin, not only Tor: sandboxed iframes, `data:` pages, and some `file:` pages
+  also send `Origin: null`, and the matcher cannot restrict `null` to a specific client. See
+  [Security](/guide/security#opaque-null-origin).
 - An exact desktop origin is `app://.` or `app://<host>`. The host is either the single dot Chromium
   uses for `app://./…`, or a lowercase hostname (`localhost`, `bundle`, `files.example.org`). No
   wildcard, port, userinfo, path, query, or fragment. `APP://.` and `app://./` are rejected; write

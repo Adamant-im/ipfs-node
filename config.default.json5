@@ -59,7 +59,8 @@
       'https://adm.deweb.half-red.net',
       // Tor: one wildcard for v3 hidden services, or list exact PWA / site onions.
       // 'http://*.onion',
-      // Tor Browser may send `Origin: null` for cross-onion API calls; opt in explicitly:
+      // Opaque origin `null` (literal string): Tor cross-onion, but also ANY sandboxed iframe,
+      // data:, and some file: documents — not Tor-specific. See docs/guide/security.md.
       // 'null',
       // 'app://.',
       'http://localhost:8080'
