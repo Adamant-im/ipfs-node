@@ -8,9 +8,36 @@ import {
   createUploadAdmission,
   type UploadAdmissionDependencies
 } from '../src/middleware/uploadAdmission.js'
+import { createRateLimiter } from '../src/security/rateLimit.js'
 import { resetClaims } from '../src/storage/reservation.js'
 
 describe('upload admission diagnostics', () => {
+  it('keeps the window RateLimit headers on a later admission refusal', async () => {
+    const app = express()
+    app.post(
+      '/upload',
+      createRateLimiter({ windowMs: 60_000, limit: 10 }),
+      createUploadAdmission(dependencies(() => false)),
+      (req, res) => res.send({ ok: true })
+    )
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/upload`, { method: 'POST' })
+
+      assert.equal(response.status, 429)
+      assert.equal(response.headers.get('retry-after'), '5')
+      assert.deepEqual(await response.json(), {
+        error: 'Too many concurrent uploads. Please try again later.',
+        code: 'upload_concurrency'
+      })
+      assert.match(response.headers.get('ratelimit') ?? '', /r=9/)
+      assert.ok(response.headers.get('ratelimit-policy'))
+    } finally {
+      await server.close()
+    }
+  })
+
   it('names a concurrency refusal separately from the rate limiter', async () => {
     const app = express()
     app.post('/upload', createUploadAdmission(dependencies(() => false)), (req, res) =>

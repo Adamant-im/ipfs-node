@@ -182,11 +182,13 @@ restore procedures are in [Persistence](/operations/persistence).
 
 Both ports are declared with `EXPOSE`; publishing them is the operator's decision.
 
-- Bind port 4000 to loopback and put a TLS-terminating reverse proxy in front of it. The image
-  contains no TLS, the process serves plain HTTP, and it logs a warning about that at startup.
-  With one such proxy, set `trustProxy: 1` or `trustProxy: ['127.0.0.1/8', '::1/128']` in the
-  mounted `config.json5`. The image does not bake origins or proxy trust in; `config.default.json5`
-  inside the image is a template and is never selected automatically
+- Bind port 4000 to loopback on the host and put a TLS-terminating reverse proxy in front of it.
+  The image contains no TLS, the process serves plain HTTP, and it logs a warning about that at
+  startup. Publishing `127.0.0.1:4000:4000` does not make the accepted socket loopback inside the
+  container. With one proxy that overwrites `X-Forwarded-For`, set `trustProxy: 1`, or set the
+  proxy address the process observes, which is the bridge gateway. `127.0.0.1/8` does not match
+  that socket. The image does not bake origins or proxy trust in; `config.default.json5` inside
+  the image is a template and is never selected automatically
 - Port 4001 has to be reachable by every peer listed in `nodes`, otherwise replication and health
   attestations cannot be exchanged
 - Upload and download routes are public by design, and rate limits and size limits are the only

@@ -206,7 +206,8 @@ multi-process deployment.
 **A `429` with no obvious rate abuse.**
 Read `code`. `rate_limited` is the window and carries `Retry-After` plus `RateLimit` headers.
 `upload_concurrency`, `download_concurrency`, and `download_client_concurrency` are admission:
-`Retry-After: 5`, and `GET /api/node/details` shows occupancy under `concurrency`. An empty
+`Retry-After: 5`, and `GET /api/node/details` shows occupancy under `concurrency`. The window
+limiter runs first, so its `RateLimit` headers can still be present on an admission `429`. An empty
 limiter with `rate_limited` from many users at once is a shared client address; see the upload
 section above.
 

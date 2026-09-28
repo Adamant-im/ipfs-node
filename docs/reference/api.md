@@ -325,10 +325,12 @@ authentication failures, and `500` `Internal Server Error`.
 | `replication_quorum`          | `503`  | `requireQuorumOnUpload` rejected the upload                           |
 | `insufficient_storage`        | `507`  | Admitting the upload would consume `storage.diskReserveBytes`         |
 
-A `429` with `code` `rate_limited` also sends `Retry-After` (seconds left in the window) and the
-draft-8 `RateLimit` and `RateLimit-Policy` headers. An admission `429` sends `Retry-After: 5` and
-does not send `RateLimit`. `x-powered-by` is disabled, and an unmatched path answers `404` from the
-not-found handler.
+A `429` with `code` `rate_limited` is the window limiter. It sets `Retry-After` to the seconds left
+in the window and sends draft-8 `RateLimit` and `RateLimit-Policy` headers. An admission `429` sets
+`Retry-After: 5` and does not add its own rate-window headers. `POST /api/file/upload` and
+`GET /api/file/:cid` run the window limiter first, so an admission refusal can still carry the
+`RateLimit` headers that limiter already wrote. Identify the refusal by `code`. `x-powered-by` is
+disabled, and an unmatched path answers `404` from the not-found handler.
 
 ## Machine-readable specification
 

@@ -273,11 +273,11 @@ trustProxy: 1
 trustProxy: ['127.0.0.1/8', '::1/128']
 ```
 
-Use `1` when every request crosses exactly this one proxy, including a PM2 or systemd process on
-the same host with nginx in front. Use the address list when you would rather trust the loopback
-socket than a hop count. The same pair of choices applies to a test network and to a public
-deployment: the label does not change the header the process sees. Docker published only on
-loopback uses this same nginx. The container side is in [Docker](/guide/docker).
+Use `1` when every request crosses exactly this one proxy. Use the loopback list when this process
+accepts the proxy from loopback, which is a PM2 or systemd process on the same host. A container
+does not: a port published on the host's `127.0.0.1` is still the bridge gateway inside the
+container, and that list would share one rate-limit bucket. The container setting is in
+[Docker](/guide/docker). The same distinction applies on a test network and on a public deployment.
 
 A numeric hop count is accepted only for a fixed topology where every path to the application
 crosses exactly that many trusted hops. The blanket value `true` is rejected, because a client

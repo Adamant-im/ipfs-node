@@ -189,8 +189,9 @@ placeholders.
 Two warnings are expected on a fresh installation and are not faults: the TLS notice at listen time,
 and the `trustProxy is false` notice. Do not widen the proxy trust rule merely to silence the
 second; see [Security and privacy](/guide/security). Silence it when a reverse proxy really is in
-front, on a test network the same way as on a public one, by setting hop count `1` or the proxy's
-addresses.
+front, on a test network the same way as on a public one, by setting hop count `1` when that is
+the only proxy, or the address this process actually accepts the proxy from. A container's socket
+is the bridge gateway, not the host loopback it was published on.
 
 Health probes and browser clients are not the same request. `GET /api/node/health` from Zabbix, the
 container health check, or `curl` sends no `Origin` header, so CORS does not apply and a `ready`

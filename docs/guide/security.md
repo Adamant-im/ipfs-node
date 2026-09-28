@@ -123,13 +123,18 @@ terminate TLS at nginx and forward to this process need the same `trustProxy` va
 the name of the network changes how Express reads `X-Forwarded-For`. Direct access to the process
 port, with no forwarding headers, keeps `false`.
 
-One proxy hop that overwrites `X-Forwarded-For` is hop count `1`. That is the usual shape for host
-nginx in front of a container published on `127.0.0.1:4000:4000`, and for nginx on the same machine
-as a [PM2 or systemd](/guide/installation) process. An address list such as
-`['127.0.0.1/8', '::1/128']` trusts the socket instead of counting hops, which is the tighter choice
-when every proxy connection comes from loopback. Use a hop count only when every path to the process
-crosses exactly that many trusted proxies. The nginx snippet is in
-[Installation](/guide/installation), and the container publish is in [Docker](/guide/docker).
+One proxy hop that overwrites `X-Forwarded-For`, on every path, is hop count `1`. That fits host
+nginx in front of a container and nginx on the same machine as a
+[PM2 or systemd](/guide/installation) process. Use a hop count only for a fixed topology where every
+path crosses exactly that many trusted proxies.
+
+An address list trusts the socket instead of counting hops. `['127.0.0.1/8', '::1/128']` is that
+list when the proxy connection arrives from loopback, which is nginx beside a PM2 or systemd
+process. It is not the address a container sees. Publishing the host port on `127.0.0.1` still
+presents the bridge gateway as the socket inside the container, so that list puts every forwarded
+client in one bucket. For the container, use hop count `1` or the gateway address the process
+observes. The nginx snippet is in [Installation](/guide/installation), and the container publish is
+in [Docker](/guide/docker).
 
 ## Administrative API key
 
@@ -232,6 +237,9 @@ Rate limiters count requests per client address in a fixed window, using `expres
 `draft-8` standard headers and legacy headers disabled. A window refusal is `429` with
 `{"error":"Too many requests. Please try again later.","code":"rate_limited"}`, a `Retry-After`
 header set to the seconds remaining in the window, and `RateLimit` / `RateLimit-Policy` headers.
+The limiter writes those rate-window headers on every request it handles, including one it allows
+through. Upload and download routes run it before admission, so a later admission `429` can still
+carry them. Identify the refusal by `code`.
 
 | Limiter | Option              | Default          | Routes                                                                                                                                                                                     |
 | ------- | ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

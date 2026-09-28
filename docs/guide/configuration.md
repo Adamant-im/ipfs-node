@@ -196,11 +196,13 @@ The choice is the same whether operators call the deployment production or a tes
 matters is the path in front of the process:
 
 - Clients connect straight to `serverPort`, and nothing adds `X-Forwarded-For`. Keep `false`.
-- One reverse proxy overwrites `X-Forwarded-For` and is the only hop. Use `1`. That covers host
-  nginx in front of Docker published as `127.0.0.1:4000:4000`, and nginx on the same machine as a
-  PM2 or systemd process. The nginx config is in [Installation](/guide/installation).
-- Proxy connections come from loopback and a hop count would be wider than the socket you want to
-  trust. Use `['127.0.0.1/8', '::1/128']`, or the single address of that proxy.
+- One reverse proxy overwrites `X-Forwarded-For` and every path crosses that single hop. Use `1`.
+  That covers host nginx in front of a container and nginx on the same machine as a PM2 or systemd
+  process. The nginx config is in [Installation](/guide/installation).
+- The proxy connects from loopback. Use `['127.0.0.1/8', '::1/128']`. That is nginx beside a PM2 or
+  systemd process. A container published on the host's `127.0.0.1` still sees the bridge gateway, so
+  this list does not match that socket. Use `1`, or the address observed inside the container. See
+  [Docker](/guide/docker).
 - More than one trusted proxy appends a sanitized forwarding header. Set the hop count to that
   number, and only if every path crosses exactly those hops.
 
@@ -483,11 +485,12 @@ its node reports at `GET /api/node/details`, and use the reachable address of th
 
   cors: {
     // Replace with the origins of your own application.
-    // Uncomment 'app://.' only for a desktop client that sends that origin.
+    // Uncomment 'app://.', including its comma, only for a desktop client that
+    // sends that origin.
     allowedOrigins: [
       'https://app.example.org',
+      // 'app://.',
       'https://*.example.org'
-      // 'app://.'
     ]
   },
 

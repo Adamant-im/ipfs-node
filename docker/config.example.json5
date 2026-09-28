@@ -48,27 +48,29 @@
     //
     // Electron and other custom-scheme desktops send a non-HTTP Origin. The
     // official ADAMANT desktop build sends `app://.`. Other builds may send
-    // `app://localhost` or `app://<host>`. Uncomment the exact value only when
-    // this node should answer those clients. A web page cannot forge `app://`;
+    // `app://localhost` or `app://<host>`. Uncomment the exact value, including
+    // its comma, only when this node should answer those clients. A web page
+    // cannot forge `app://`;
     // any local app that registered the scheme can. Wildcards are not accepted
     // for that scheme.
     allowedOrigins: [
+      // 'app://.',
       'http://localhost:8080'
-      // 'app://.'
     ]
   },
 
   // false is correct when clients connect to this process directly. The
   // container smoke test does that, and it does not cover a proxied deployment.
   //
-  // Behind one reverse proxy that overwrites X-Forwarded-For — host nginx in
-  // front of a loopback publish (`127.0.0.1:4000:4000`), or nginx in front of
-  // a pm2 or systemd process — set the hop count, or trust only the proxy:
+  // Host nginx in front of a published port is one hop and must overwrite
+  // X-Forwarded-For. The socket inside the container is the bridge gateway,
+  // not the host loopback, even when the port is published on 127.0.0.1:
   //   trustProxy: 1
-  //   trustProxy: ['127.0.0.1/8', '::1/128']
-  // Use the same setting on every environment with that topology. `true` is
-  // rejected. Leaving this false behind a proxy puts every client in one
-  // rate-limit bucket, the proxy's own address.
+  // or the address this process actually sees for that proxy connection.
+  // ['127.0.0.1/8', '::1/128'] is for a process that accepts the proxy from
+  // loopback, such as pm2 or systemd beside nginx. It does not match this
+  // container. `true` is rejected. Leaving this false shares one rate-limit
+  // bucket, the proxy's own address.
   trustProxy: false,
 
   rateLimits: {

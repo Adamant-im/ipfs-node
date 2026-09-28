@@ -41,7 +41,8 @@
     // Exact HTTP(S) origins and left-most subdomain wildcards are supported.
     // A desktop client that loads the UI from Electron's `app` scheme sends
     // `Origin: app://.` (some builds send `app://localhost` or `app://<host>`).
-    // Uncomment the matching entry only for a node that serves that client.
+    // Uncomment the matching entry, including its comma, only for a node that
+    // serves that client.
     // A web page cannot forge `app://`; any local app that registered the
     // scheme can. `*` and `file:` are rejected.
     allowedOrigins: [
@@ -49,16 +50,16 @@
       'https://adm.im',
       'https://*.vercel.app',
       'https://*.surge.sh',
+      // 'app://.',
       'http://localhost:8080'
-      // 'app://.'
     ]
   },
   // Keep false when clients connect to this process directly.
-  // Behind one reverse proxy that overwrites X-Forwarded-For, use hop count 1
-  // or the proxy's own addresses, for example:
+  // One reverse proxy that overwrites X-Forwarded-For, on every path:
   //   trustProxy: 1
+  // The proxy connects from loopback. That is nginx beside pm2 or systemd.
+  // It is not the socket a container sees for a host-published port:
   //   trustProxy: ['127.0.0.1/8', '::1/128']
-  // The same choice applies on every environment that uses that topology.
   // `true` is rejected. Leaving this false behind a proxy makes every client
   // share the proxy address for rate limits.
   trustProxy: false,
