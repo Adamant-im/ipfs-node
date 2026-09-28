@@ -7,7 +7,11 @@ import multer from 'multer'
 import { mountApiRoutes } from '../src/security/accessPolicy.js'
 import { createApiKeyAuth } from '../src/security/apiKey.js'
 import { validateSecurityConfig } from '../src/security/config.js'
-import { createCorsOriginDelegate, createOriginMatcher } from '../src/security/cors.js'
+import {
+  createCorsOriginDelegate,
+  createCorsOriginRewriteMiddleware,
+  createOriginMatcher
+} from '../src/security/cors.js'
 import { getPublicError, InvalidRequestError } from '../src/security/errors.js'
 import { createRateLimiter } from '../src/security/rateLimit.js'
 import { parseTrustProxy } from '../src/security/trustProxy.js'
@@ -109,7 +113,7 @@ describe('CORS origin policy', () => {
     }
   })
 
-  it('reflects Access-Control-Allow-Origin: null for the opaque origin', async () => {
+  it('reflects Access-Control-Allow-Origin * when the browser sends Origin null', async () => {
     const app = express()
     app.use(cors({ origin: createCorsOriginDelegate(['null']) }))
     app.get('/api/node/info', (req, res) => res.send({ ok: true }))
@@ -117,7 +121,43 @@ describe('CORS origin policy', () => {
 
     try {
       const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
-      assert.equal(response.headers.get('access-control-allow-origin'), 'null')
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('uses Access-Control-Allow-Origin * when Origin is null without Referer', async () => {
+    const app = express()
+    app.use(cors({ origin: createCorsOriginDelegate(['http://*.onion']) }))
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, { headers: { origin: 'null' } })
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('rewrites Origin null to an allowlisted Referer origin for Tor cross-onion calls', async () => {
+    const allowed = ['http://*.onion', 'null']
+    const pwa = 'http://adamant6457join2rxdkr2y7iqatar7n4n72lordxeknj435i4cjhpyd.onion'
+    const app = express()
+    app.use(createCorsOriginRewriteMiddleware(allowed))
+    app.use(cors({ origin: createCorsOriginDelegate(allowed) }))
+    app.get('/api/node/info', (req, res) => res.send({ ok: true }))
+    const server = await startServer(app)
+
+    try {
+      const response = await fetch(`${server.url}/api/node/info`, {
+        headers: {
+          origin: 'null',
+          referer: `${pwa}/options/nodes`
+        }
+      })
+      assert.equal(response.headers.get('access-control-allow-origin'), pwa)
     } finally {
       await server.close()
     }
