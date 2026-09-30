@@ -1,0 +1,95 @@
+name: Container
+
+# Builds the production image and runs the documented runtime checks on it.
+# Nothing is pushed here: publication happens only from a GitHub Release, in
+# .github/workflows/publish-docker.yml.
+#
+# Both branches are covered: `dev` catches a regression when it is introduced,
+# and `master` is the branch a release is tagged from, so the image that
+# publication will build is exercised before the tag exists.
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+      - 'src/**'
+      - 'scripts/docker-smoke-test.sh'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [master, dev]
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+      - 'src/**'
+      - 'scripts/docker-smoke-test.sh'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-test:
+    name: Build and smoke-test (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both published architectures are exercised. linux/amd64 is native on
+        # the runner; linux/arm64 runs under QEMU, which is slower but proves
+        # that the native dependencies resolve and the service starts.
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        if: matrix.platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: ipfs-node:ci
+          build-args: |
+            IMAGE_VERSION=0.0.0-ci
+            IMAGE_REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Verify OCI metadata
+        run: |
+          docker image inspect ipfs-node:ci \
+            --format '{{ json .Config.Labels }}' | tee labels.json
+          for label in \
+            org.opencontainers.image.source \
+            org.opencontainers.image.documentation \
+            org.opencontainers.image.licenses \
+            org.opencontainers.image.revision \
+            org.opencontainers.image.version; do
+            grep -q "\"$label\"" labels.json || { echo "missing label: $label"; exit 1; }
+          done
+
+      - name: Run the documented runtime checks
+        run: ./scripts/docker-smoke-test.sh ipfs-node:ci ${{ matrix.platform }}

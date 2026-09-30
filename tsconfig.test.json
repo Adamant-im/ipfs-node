@@ -1,0 +1,10 @@
+{
+  // Test build: `src` and `test`, emitted to `dist-test` preserving both trees.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist-test",
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

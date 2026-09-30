@@ -1,0 +1,39 @@
+# Keep deployment configuration, secrets, persistent state, and developer
+# scratch space out of the build context. Everything the image needs is listed
+# explicitly in the Dockerfile, so anything excluded here can never end up in a
+# layer or in `docker history`.
+
+.git
+.github
+.husky
+.vscode
+.idea
+.DS_Store
+
+node_modules
+dist
+dist-test
+logs
+
+# Deployment configuration and secrets are mounted at runtime, never baked in.
+# config.default.json5 is copied by the Dockerfile as a documented template.
+config.json5
+config.*.json5
+!config.default.json5
+
+# Persistent node state: blockstore, datastore, peer identity, registry.
+.adm-ipfs
+.adm-ipfs-test
+docker/data
+
+# Reports and generated artifacts
+npm-audit-report.json
+semgrep-results.sarif
+.playwright-cli
+
+# Documentation site, tests, and agent working directories
+docs
+test
+.ai-ignored
+.ai-tasks
+.claude

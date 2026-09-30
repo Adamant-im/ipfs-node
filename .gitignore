@@ -1,0 +1,27 @@
+node_modules
+.idea
+.vscode
+.DS_Store
+
+logs
+dist/
+dist-test/
+config.json5
+semgrep-results.sarif
+npm-audit-report.json
+
+.playwright-cli/
+
+# ai
+.ai-ignored/
+.ai-tasks/
+.claude/
+
+# documentation site build output and generated pages
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/reference/endpoints.md
+docs/public/openapi.yaml
+
+# docker evaluation stack
+docker/data/

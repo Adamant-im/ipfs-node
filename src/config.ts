@@ -1,0 +1,486 @@
+import * as fs from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+import JSON5 from 'json5'
+import { peerIdFromString } from '@libp2p/peer-id'
+import { multiaddr } from '@multiformats/multiaddr'
+import { validateSecurityConfig } from './security/config.js'
+import type { RateLimitPolicy } from './security/rateLimit.js'
+import type { TrustProxySetting } from './security/trustProxy.js'
+import {
+  resolveReplicationConfig,
+  resolveStorageConfig,
+  type ReplicationConfig,
+  type StorageConfig
+} from './storage/config.js'
+
+/**
+ * Locate the repository root by walking up to the nearest `package.json`.
+ *
+ * The compiled entry point sits at `dist/config.js`, but the test build emits
+ * to `dist-test/src/config.js`, so a fixed number of `..` segments resolves the
+ * root correctly for only one of them.
+ */
+function findRootDir(start: string): string {
+  let dir = start
+
+  for (;;) {
+    if (fs.existsSync(join(dir, 'package.json'))) {
+      return dir
+    }
+
+    const parent = dirname(dir)
+    if (parent === dir) {
+      throw new ConfigError(`Cannot locate the project root above ${start}`)
+    }
+    dir = parent
+  }
+}
+
+const currDir = dirname(fileURLToPath(import.meta.url))
+
+/** Redial unconnected ADAMANT nodes every half minute unless configured otherwise. */
+const DEFAULT_PEERING_SCHEDULE = '*/30 * * * * *'
+
+/** Floor for the absolute download ceiling; the upload limit can raise it. */
+const DEFAULT_DOWNLOAD_MAX_DURATION_MS = 4 * 60 * 60 * 1_000
+
+/** Log levels accepted by `pino`, ordered from least to most verbose. */
+const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const
+
+export type LogLevel = (typeof LOG_LEVELS)[number]
+
+/** A known ADAMANT IPFS node this node peers with. */
+export interface ConfigNode {
+  name: string
+  multiAddr: string
+}
+
+/** Policy used to produce a bounded, network-aware health checkpoint. */
+export interface HealthConfig {
+  /** Length of one checkpoint round, in milliseconds. */
+  checkpointIntervalMs: number
+  /** Maximum age of the last completed checkpoint before it becomes stale. */
+  maxCheckpointAgeMs: number
+  /** Maximum age of the cached storage scan accepted by a checkpoint. */
+  storageMaxAgeMs: number
+  /** Maximum age of a completed full repair sweep. */
+  repairMaxAgeMs: number
+  /** Allowed clock difference between two attesting peers. */
+  clockSkewToleranceMs: number
+  /** Bound for one peer attestation call. */
+  peerAttestationTimeoutMs: number
+  /** Minimum number of configured remote peers that must attest a round. */
+  requiredPeerCount: number
+  /**
+   * Number of consecutive complete unsuccessful repair cycles during which a
+   * non-zero backlog does not fail repairFresh.
+   */
+  repairBacklogGraceCycles: number
+}
+
+export interface Config {
+  /** Known ADAMANT IPFS nodes. Their multiaddrs are also the connection manager allow list. */
+  nodes: ConfigNode[]
+  /** File storage directory, resolved from the user's home directory. */
+  storeFolder: string
+  logLevel: LogLevel
+  /** Enable human-oriented log formatting explicitly for local development. */
+  prettyLogs: boolean
+  peerDiscovery: {
+    /** Multiaddrs dialled on startup to join the ADAMANT peer set. */
+    bootstrap: string[]
+    /** Multiaddrs libp2p listens on. */
+    listen: string[]
+  }
+  /** API server port. */
+  serverPort: number
+  /** Disk space scanning period in cron format. */
+  diskUsageScanPeriod: string
+  /**
+   * How often the node redials the peers in `nodes` that are not connected,
+   * in cron format. Bootstrap only dials once, so without this a mesh never
+   * recovers from a restart.
+   */
+  peeringSchedule: string
+  /** Maximum size of a single uploaded file, in bytes. */
+  uploadLimitSizeBytes: number
+  /** Maximum number of files accepted per upload request. */
+  maxFileCount: number
+  /** Time limit, in milliseconds, for locating a file on the IPFS network. */
+  findFileTimeout: number
+  /** Maximum pause between download chunks before retrieval is cancelled. */
+  downloadIdleTimeout: number
+  /** Minimum sustained rate used to derive a size-aware complete-transfer deadline. */
+  downloadMinBytesPerSecond: number
+  /** Absolute ceiling for one complete download response. */
+  downloadMaxDurationMs: number
+  cors: {
+    /** Exact origins and left-most subdomain wildcards; see `src/security/cors.ts`. */
+    allowedOrigins: string[]
+  }
+  trustProxy: TrustProxySetting
+  rateLimits?: Partial<Record<'upload' | 'pin' | 'read', RateLimitPolicy>>
+  /** Administrative API key. An empty value makes administrative routes fail closed. */
+  adminApiKey: string
+  enableDebugApi: boolean
+  /** Bounded storage lifecycle; see `src/storage/config.ts`. */
+  storage: StorageConfig
+  /** Cross-node durability policy; see `src/storage/config.ts`. */
+  replication: ReplicationConfig
+  /** Network-aware readiness and checkpoint policy. */
+  health: HealthConfig
+}
+
+/**
+ * Build the config file name for an optional config suffix.
+ *
+ * Passing `test1` selects `config.test1.json5`; passing nothing selects `config.json5`.
+ * This mirrors the documented `node dist/index.js <name>` invocation.
+ *
+ * @param name Config suffix taken from `IPFS_NODE_CONFIG` or the first CLI argument
+ */
+export function configFileName(name?: string): string {
+  return name != null && name !== '' ? `config.${name}.json5` : 'config.json5'
+}
+
+/** Thrown when the config file is missing, unparseable, or fails validation. */
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfigError'
+  }
+}
+
+/** Repository root; config files and `package.json` are read from here. */
+const rootDir = findRootDir(currDir)
+
+function fail(path: string, expectation: string): never {
+  throw new ConfigError(`Invalid config: "${path}" ${expectation}`)
+}
+
+function requireObject(value: unknown, path: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail(path, 'must be an object')
+  }
+  return value as Record<string, unknown>
+}
+
+function requireString(value: unknown, path: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    fail(path, 'must be a non-empty string')
+  }
+  return value
+}
+
+function requireStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) {
+    fail(path, 'must be an array of strings')
+  }
+  return value.map((item, index) => requireString(item, `${path}[${index}]`))
+}
+
+/** Validate a node multiaddr and return its authenticated peer identity. */
+function requireNodePeerId(value: string, path: string): string {
+  try {
+    const components = multiaddr(value).getComponents()
+    const peerComponent = components.filter((component) => component.name === 'p2p').at(-1)
+
+    if (peerComponent?.value === undefined) {
+      fail(path, 'must contain a /p2p/<peer-id> component')
+    }
+
+    return peerIdFromString(peerComponent.value).toString()
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+
+    fail(path, 'must be a valid multiaddr with a peer id')
+  }
+}
+
+/**
+ * Validate a positive integer.
+ *
+ * @param min Smallest accepted value; used to reject zero or negative limits
+ */
+function requireInteger(value: unknown, path: string, min: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) {
+    fail(path, `must be an integer >= ${min}`)
+  }
+  return value
+}
+
+function optionalInteger(value: unknown, path: string, fallback: number, min: number): number {
+  return value === undefined ? fallback : requireInteger(value, path, min)
+}
+
+/** Resolve health defaults without breaking configuration files from earlier releases. */
+function resolveHealthConfig(value: unknown, nodeCount: number): HealthConfig {
+  const raw = value === undefined ? {} : requireObject(value, 'health')
+  const checkpointIntervalMs = optionalInteger(
+    raw.checkpointIntervalMs,
+    'health.checkpointIntervalMs',
+    60_000,
+    1_000
+  )
+  const maxCheckpointAgeMs = optionalInteger(
+    raw.maxCheckpointAgeMs,
+    'health.maxCheckpointAgeMs',
+    checkpointIntervalMs * 3,
+    checkpointIntervalMs
+  )
+  const storageMaxAgeMs = optionalInteger(
+    raw.storageMaxAgeMs,
+    'health.storageMaxAgeMs',
+    checkpointIntervalMs * 2,
+    checkpointIntervalMs
+  )
+  const repairMaxAgeMs = optionalInteger(
+    raw.repairMaxAgeMs,
+    'health.repairMaxAgeMs',
+    3_600_000,
+    checkpointIntervalMs
+  )
+  const clockSkewToleranceMs = optionalInteger(
+    raw.clockSkewToleranceMs,
+    'health.clockSkewToleranceMs',
+    10_000,
+    0
+  )
+  const peerAttestationTimeoutMs = optionalInteger(
+    raw.peerAttestationTimeoutMs,
+    'health.peerAttestationTimeoutMs',
+    5_000,
+    1
+  )
+  const requiredPeerCount = optionalInteger(
+    raw.requiredPeerCount,
+    'health.requiredPeerCount',
+    nodeCount > 1 ? 1 : 0,
+    0
+  )
+  const repairBacklogGraceCycles = optionalInteger(
+    raw.repairBacklogGraceCycles,
+    'health.repairBacklogGraceCycles',
+    0,
+    0
+  )
+
+  if (requiredPeerCount > Math.max(0, nodeCount - 1)) {
+    fail('health.requiredPeerCount', 'cannot exceed the number of configured remote peers')
+  }
+
+  return {
+    checkpointIntervalMs,
+    maxCheckpointAgeMs,
+    storageMaxAgeMs,
+    repairMaxAgeMs,
+    clockSkewToleranceMs,
+    peerAttestationTimeoutMs,
+    requiredPeerCount,
+    repairBacklogGraceCycles
+  }
+}
+
+/**
+ * Validate an untrusted parsed config object and return it as a typed `Config`.
+ *
+ * The HTTP security surface — CORS, trusted proxies, the administrative key,
+ * rate limits, and the upload limits — is validated by `validateSecurityConfig`
+ * so that this module does not duplicate those rules. Everything else, the
+ * fields the IPFS node and its cron jobs read, is validated here.
+ *
+ * Unknown keys are ignored so that config files can carry deployment-specific
+ * extras without breaking startup.
+ *
+ * @param raw Value parsed from a JSON5 config file
+ */
+export function validateConfig(raw: unknown): Config {
+  const root = requireObject(raw, 'config')
+
+  if (!Array.isArray(root.nodes)) {
+    fail('nodes', 'must be an array')
+  }
+  const nodes = root.nodes.map((node, index) => {
+    const entry = requireObject(node, `nodes[${index}]`)
+    const multiAddr = requireString(entry.multiAddr, `nodes[${index}].multiAddr`)
+
+    return {
+      name: requireString(entry.name, `nodes[${index}].name`),
+      multiAddr,
+      peerId: requireNodePeerId(multiAddr, `nodes[${index}].multiAddr`)
+    }
+  })
+
+  const peerIndexes = new Map<string, number>()
+  for (const [index, node] of nodes.entries()) {
+    const previousIndex = peerIndexes.get(node.peerId)
+
+    if (previousIndex !== undefined) {
+      fail(
+        `nodes[${index}].multiAddr`,
+        `must identify a unique peer; it duplicates nodes[${previousIndex}]`
+      )
+    }
+
+    peerIndexes.set(node.peerId, index)
+  }
+
+  const logLevel = requireString(root.logLevel, 'logLevel')
+  if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) {
+    fail('logLevel', `must be one of: ${LOG_LEVELS.join(', ')}`)
+  }
+
+  const peerDiscovery = requireObject(root.peerDiscovery, 'peerDiscovery')
+  const listen = requireStringArray(peerDiscovery.listen, 'peerDiscovery.listen')
+  if (listen.length === 0) {
+    fail('peerDiscovery.listen', 'must contain at least one multiaddr')
+  }
+
+  const storeFolder = requireString(root.storeFolder, 'storeFolder')
+  const serverPort = requireInteger(root.serverPort, 'serverPort', 1)
+  const diskUsageScanPeriod = requireString(root.diskUsageScanPeriod, 'diskUsageScanPeriod')
+  const peeringSchedule =
+    root.peeringSchedule === undefined
+      ? DEFAULT_PEERING_SCHEDULE
+      : requireString(root.peeringSchedule, 'peeringSchedule')
+  const findFileTimeout = requireInteger(root.findFileTimeout, 'findFileTimeout', 1)
+  const downloadIdleTimeout = optionalInteger(
+    root.downloadIdleTimeout,
+    'downloadIdleTimeout',
+    findFileTimeout,
+    1
+  )
+  const downloadMinBytesPerSecond = optionalInteger(
+    root.downloadMinBytesPerSecond,
+    'downloadMinBytesPerSecond',
+    32 * 1024,
+    1
+  )
+  const bootstrap = requireStringArray(peerDiscovery.bootstrap, 'peerDiscovery.bootstrap')
+
+  // Owns cors, trustProxy, adminApiKey, enableDebugApi, rateLimits,
+  // uploadLimitSizeBytes and maxFileCount. Throws with its own message.
+  validateSecurityConfig(root)
+
+  // `downloadFile` clamps its size-aware deadline to this ceiling, so the
+  // ceiling has to carry the largest file this node accepts, with the same idle
+  // headroom that deadline adds. The default is derived from the existing
+  // upload limit so a configuration written before this option stays valid; a
+  // ceiling the operator set explicitly is still refused when it would cut
+  // those transfers off mid-stream and report them as retrieval timeouts.
+  const largestDownloadMs =
+    Math.ceil((root.uploadLimitSizeBytes as number) / downloadMinBytesPerSecond) * 1_000 +
+    downloadIdleTimeout
+  const downloadMaxDurationMs = optionalInteger(
+    root.downloadMaxDurationMs,
+    'downloadMaxDurationMs',
+    Math.max(DEFAULT_DOWNLOAD_MAX_DURATION_MS, largestDownloadMs),
+    1
+  )
+  if (downloadMaxDurationMs < downloadIdleTimeout) {
+    fail('downloadMaxDurationMs', 'must be greater than or equal to downloadIdleTimeout')
+  }
+  if (root.downloadMaxDurationMs !== undefined && downloadMaxDurationMs < largestDownloadMs) {
+    fail(
+      'downloadMaxDurationMs',
+      `must be at least ${largestDownloadMs}, the time an ${String(root.uploadLimitSizeBytes)} ` +
+        `byte file needs at downloadMinBytesPerSecond ${downloadMinBytesPerSecond} ` +
+        `plus the ${downloadIdleTimeout} ms idle allowance`
+    )
+  }
+
+  const cors = requireObject(root.cors, 'cors')
+
+  // Owns the storage lifecycle and replication policy. Both sections are
+  // optional: every option falls back to a documented default so that config
+  // files written before this feature keep working.
+  let storage: StorageConfig
+  let replication: ReplicationConfig
+  let health: HealthConfig
+  try {
+    storage = resolveStorageConfig(root.storage, root.uploadLimitSizeBytes as number)
+    replication = resolveReplicationConfig(root.replication)
+    health = resolveHealthConfig(root.health, nodes.length)
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      throw err
+    }
+    throw new ConfigError((err as Error).message)
+  }
+
+  if (storage.confirmationRequired && replication.requireQuorumOnUpload) {
+    fail(
+      'replication.requireQuorumOnUpload',
+      'cannot be true while storage.confirmationRequired is true'
+    )
+  }
+
+  return {
+    nodes: nodes.map(({ name, multiAddr }) => ({ name, multiAddr })),
+    storeFolder,
+    logLevel: logLevel as LogLevel,
+    prettyLogs: root.prettyLogs === true,
+    peerDiscovery: { bootstrap, listen },
+    serverPort,
+    diskUsageScanPeriod,
+    peeringSchedule,
+    uploadLimitSizeBytes: root.uploadLimitSizeBytes as number,
+    maxFileCount: root.maxFileCount as number,
+    findFileTimeout,
+    downloadIdleTimeout,
+    downloadMinBytesPerSecond,
+    downloadMaxDurationMs,
+    cors: { allowedOrigins: cors.allowedOrigins as string[] },
+    trustProxy: (root.trustProxy ?? false) as TrustProxySetting,
+    rateLimits: root.rateLimits as Config['rateLimits'],
+    adminApiKey: (root.adminApiKey ?? '') as string,
+    enableDebugApi: root.enableDebugApi === true,
+    storage,
+    replication,
+    health
+  }
+}
+
+/**
+ * Read and validate a config file from the repository root.
+ *
+ * @param fileName Config file name, see {@link configFileName}
+ */
+export function loadConfig(fileName: string): Config {
+  const configPath = join(rootDir, fileName)
+
+  let contents: string
+  try {
+    contents = fs.readFileSync(configPath, 'utf8')
+  } catch (err) {
+    throw new ConfigError(`Cannot read config file ${configPath}: ${(err as Error).message}`)
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON5.parse(contents)
+  } catch (err) {
+    throw new ConfigError(`Cannot parse config file ${configPath}: ${(err as Error).message}`)
+  }
+
+  return validateConfig(parsed)
+}
+
+/**
+ * Config file used by the running node.
+ *
+ * The name comes from `IPFS_NODE_CONFIG` when set, otherwise from the first CLI
+ * argument as documented in `README.md`. The environment variable takes
+ * priority so that the config can be selected when the process is started by a
+ * tool that owns the argument list, such as the test runner.
+ */
+export const CONFIG_FILE_NAME = configFileName(process.env.IPFS_NODE_CONFIG ?? process.argv[2])
+
+export const config = loadConfig(CONFIG_FILE_NAME)
+
+export const packageJson = JSON.parse(
+  fs.readFileSync(join(rootDir, 'package.json'), 'utf8')
+) as Record<string, unknown> & { version: string }

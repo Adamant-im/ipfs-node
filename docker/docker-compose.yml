@@ -1,0 +1,61 @@
+# Minimal Compose stack for evaluating ADAMANT IPFS Node locally.
+#
+#   cd docker
+#   cp config.example.json5 config.json5   # then edit it
+#   docker compose up --build
+#
+# Set IPFS_NODE_IMAGE to a published, pinned tag to run the maintained image
+# instead of building from this checkout:
+#
+#   IPFS_NODE_IMAGE=ghcr.io/adamant-im/ipfs-node:0.1.0 docker compose up
+#
+# This stack terminates no TLS. Never expose port 4000 to the internet directly;
+# put an HTTPS reverse proxy in front of it. See
+# https://ipfs-node.docs.adamant.im/guide/security
+
+services:
+  ipfs-node:
+    image: ${IPFS_NODE_IMAGE:-ipfs-node:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+    # Shutdown closes the HTTP server, stops the background jobs, and stops
+    # Helia, with a 15 s internal deadline. Anything shorter risks killing the
+    # process while it is still writing persistent state.
+    stop_grace_period: 20s
+
+    ports:
+      # The API is bound to loopback: reach it through a reverse proxy.
+      - '127.0.0.1:4000:4000'
+      # The libp2p listener has to be reachable by the configured peers.
+      - '4001:4001'
+
+    volumes:
+      # Every piece of persistent state lives under /data: blockstore,
+      # datastore, libp2p peer identity, pin set, lifecycle registry, repair
+      # cursor, and health checkpoint. Replacing the container while keeping
+      # this volume keeps the node's identity and content.
+      - ipfs-node-data:/data
+      # Deployment configuration is mounted, never baked into the image.
+      - ./config.json5:/app/config.json5:ro
+
+    # Container health follows the documented readiness semantics rather than
+    # the HTTP status code, which is always 200. Overrides the image default
+    # only to show the knobs; see docker/healthcheck.mjs.
+    healthcheck:
+      test: ['CMD', 'node', '/app/docker/healthcheck.mjs']
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 3
+
+    # The image already runs as the unprivileged `node` user (uid 1000). These
+    # keep an escalation from being useful if one is ever found.
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+
+volumes:
+  ipfs-node-data:

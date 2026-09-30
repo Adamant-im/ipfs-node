@@ -1,0 +1,99 @@
+name: Docs
+
+# Builds the VitePress documentation site and deploys it to GitHub Pages at
+# https://ipfs-node.docs.adamant.im.
+#
+# `dev` is the default branch of this repository, so the branch trigger points
+# there. Repository settings must have Pages source set to "GitHub Actions" and
+# the custom domain set to ipfs-node.docs.adamant.im with HTTPS enforced.
+#
+# There is deliberately no `release` trigger. The `github-pages` environment
+# admits deployments from the `dev` branch only, and a release run's ref is the
+# tag, so such a run is rejected before its first step. A release is cut from
+# `master`, which only ever receives merges from `dev`, so the push above has
+# already published that content and the trigger would add a guaranteed failure
+# and nothing new.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'docs/**'
+      - 'scripts/generate-api-reference.mjs'
+      - 'scripts/check-docs-artifact.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'docs/**'
+      - 'scripts/generate-api-reference.mjs'
+      - 'scripts/check-docs-artifact.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time, and never cancel one that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # The site build touches no runtime dependency, so the node-datachannel
+      # prebuild download that `npm ci` normally performs is skipped here.
+      # `--ignore-scripts` overrides allowScripts; every other workflow
+      # installs with scripts enabled.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Generates the API reference from docs/openapi.yaml, builds the site,
+      # and fails on a broken link, a missing CNAME, missing generated API
+      # content, or a leaked build path.
+      - name: Build documentation
+        run: npm run docs:build
+
+      - name: Configure Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    # A pull request validates the build only; nothing is published from a fork
+    # or from an unmerged branch.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
